@@ -9,7 +9,7 @@ Headless agent execution core. Discord is the only official adapter.
 
 Early execution-kernel scaffold. The development harness connects to an
 OpenAI-compatible model endpoint; the Core execution contracts and SQLite
-durability boundary are in place.
+durability boundary are in place, along with the authorized Tool Runtime.
 
 ## Layout
 

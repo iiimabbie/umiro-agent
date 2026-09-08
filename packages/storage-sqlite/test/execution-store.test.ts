@@ -76,6 +76,7 @@ function authorizedOperation(id = "operation-1", stepId = "step-1"): { operation
       id,
       stepId,
       kind: "test.echo",
+      input: { text: "ping" },
       state: "authorized",
       capability: "test.echo",
       authorizationTier: "common",
@@ -183,6 +184,44 @@ test("reopens an in-flight operation with enough evidence for safe recovery", as
     } finally {
       reopened.close();
     }
+  } finally {
+    database.cleanup();
+  }
+});
+
+test("replaces an unknown current outcome after an idempotent retry", async () => {
+  const database = fixture();
+  try {
+    await database.store.createRunWithStep(run(), step());
+    const { operation, decision } = authorizedOperation();
+    await database.store.recordOperationAuthorization(operation, decision);
+    await database.store.markOperationExecuting(operation.id, at);
+    await database.store.recordOperationOutcome(operation.id, {
+      operationId: operation.id,
+      outcome: "outcome_unknown",
+      effectStatus: "unknown",
+      error: { code: "connection_lost", message: "confirmation was lost", retryable: true },
+      completedAt: at,
+    }, at);
+    await database.store.markOperationExecuting(operation.id, "2026-09-08T12:01:00.000Z");
+    await database.store.recordOperationOutcome(operation.id, {
+      operationId: operation.id,
+      outcome: "succeeded",
+      effectStatus: "confirmed",
+      output: { text: "confirmed" },
+      completedAt: "2026-09-08T12:01:01.000Z",
+    }, "2026-09-08T12:01:01.000Z");
+    assert.deepEqual(await database.store.getOperationResult(operation.id), {
+      operationId: operation.id,
+      outcome: "succeeded",
+      effectStatus: "confirmed",
+      output: { text: "confirmed" },
+      completedAt: "2026-09-08T12:01:01.000Z",
+    });
+    assert.deepEqual(
+      (await database.store.listAuditEvents("run-1")).map(event => event.kind).slice(-4),
+      ["operation.executing", "operation.completed", "operation.executing", "operation.completed"],
+    );
   } finally {
     database.cleanup();
   }

@@ -35,6 +35,7 @@ CREATE TABLE authorization_decisions (
   principal_id TEXT NOT NULL,
   capability TEXT NOT NULL,
   tier TEXT NOT NULL CHECK (tier IN ('common','sensitive','privileged')),
+  interaction_requirement TEXT NOT NULL CHECK (interaction_requirement IN ('not_required','interactive_required')),
   resource_json TEXT CHECK (resource_json IS NULL OR json_valid(resource_json)),
   decided_at TEXT NOT NULL
 );
@@ -43,6 +44,7 @@ CREATE TABLE operations (
   id TEXT PRIMARY KEY,
   step_id TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
   kind TEXT NOT NULL,
+  input_json TEXT NOT NULL CHECK (json_valid(input_json) AND json_type(input_json) = 'object'),
   state TEXT NOT NULL CHECK (state IN ('proposed','authorized','denied','executing','succeeded','failed','outcome_unknown','cancelled')),
   capability TEXT NOT NULL,
   authorization_tier TEXT NOT NULL CHECK (authorization_tier IN ('common','sensitive','privileged')),
@@ -61,14 +63,15 @@ CREATE UNIQUE INDEX operations_idempotency
 
 CREATE TABLE operation_results (
   operation_id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
-  outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed','outcome_unknown')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed','outcome_unknown','cancelled')),
   effect_status TEXT NOT NULL CHECK (effect_status IN ('not_applicable','confirmed','unknown')),
   output_json TEXT CHECK (output_json IS NULL OR json_valid(output_json)),
   error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
   completed_at TEXT NOT NULL,
   CHECK (outcome != 'outcome_unknown' OR effect_status = 'unknown'),
   CHECK (outcome != 'succeeded' OR error_json IS NULL),
-  CHECK (outcome != 'failed' OR error_json IS NOT NULL)
+  CHECK (outcome != 'failed' OR error_json IS NOT NULL),
+  CHECK (outcome != 'cancelled' OR (error_json IS NOT NULL AND effect_status != 'unknown'))
 );
 
 CREATE TABLE checkpoints (

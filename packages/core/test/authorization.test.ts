@@ -62,6 +62,12 @@ test("privileged operations require an owner but permit bounded automation", () 
     tier: "privileged",
   }).allow, true);
   assert.equal(authorize({
+    context: context(owner, { kind: "schedule", scheduleId: "schedule-1" }, privileged),
+    capability: "shell.execute",
+    tier: "privileged",
+    interactionRequirement: "interactive_required",
+  }).reason, "interactive_origin_required");
+  assert.equal(authorize({
     context: context(owner, { kind: "interactive", transport: "discord", conversationId: "c1" }, privileged),
     capability: "shell.execute",
     tier: "privileged",

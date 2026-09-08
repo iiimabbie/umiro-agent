@@ -13,6 +13,7 @@ import {
   type ExecutionContext,
   type ExecutionProgressUpdate,
   type ExecutionStore,
+  type JsonObject,
   type JsonValue,
   type Operation,
   type OperationResult,
@@ -54,6 +55,7 @@ interface OperationRow {
   id: string;
   step_id: string;
   kind: string;
+  input_json: string;
   state: Operation["state"];
   capability: string;
   authorization_tier: Operation["authorizationTier"];
@@ -73,6 +75,7 @@ interface DecisionRow {
   principal_id: string;
   capability: string;
   tier: AuthorizationDecisionRecord["tier"];
+  interaction_requirement: AuthorizationDecisionRecord["interactionRequirement"];
   resource_json: string | null;
   decided_at: string;
 }
@@ -181,8 +184,8 @@ export class SQLiteExecutionStore implements ExecutionStore {
       this.database.prepare(`
         INSERT INTO authorization_decisions(
           id, operation_id, allow, reason, policy_id, principal_id,
-          capability, tier, resource_json, decided_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          capability, tier, interaction_requirement, resource_json, decided_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         decision.id,
         decision.operationId,
@@ -192,18 +195,20 @@ export class SQLiteExecutionStore implements ExecutionStore {
         decision.principalId,
         decision.capability,
         decision.tier,
+        decision.interactionRequirement,
         decision.resource ? json(decision.resource) : null,
         decision.decidedAt,
       );
       this.database.prepare(`
         INSERT INTO operations(
-          id, step_id, kind, state, capability, authorization_tier, side_effect,
+          id, step_id, kind, input_json, state, capability, authorization_tier, side_effect,
           idempotency_key, authorization_decision_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         operation.id,
         operation.stepId,
         operation.kind,
+        json(operation.input),
         operation.state,
         operation.capability,
         operation.authorizationTier,
@@ -246,6 +251,12 @@ export class SQLiteExecutionStore implements ExecutionStore {
       this.database.prepare(`
         INSERT INTO operation_results(operation_id, outcome, effect_status, output_json, error_json, completed_at)
         VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(operation_id) DO UPDATE SET
+          outcome = excluded.outcome,
+          effect_status = excluded.effect_status,
+          output_json = excluded.output_json,
+          error_json = excluded.error_json,
+          completed_at = excluded.completed_at
       `).run(
         operationId,
         result.outcome,
@@ -367,6 +378,7 @@ export class SQLiteExecutionStore implements ExecutionStore {
       id: row.id,
       stepId: row.step_id,
       kind: row.kind,
+      input: parseJson<JsonObject>(row.input_json),
       state: row.state,
       capability: row.capability,
       authorizationTier: row.authorization_tier,
@@ -389,6 +401,7 @@ export class SQLiteExecutionStore implements ExecutionStore {
       principalId: row.principal_id,
       capability: row.capability,
       tier: row.tier,
+      interactionRequirement: row.interaction_requirement,
       ...(row.resource_json ? { resource: parseJson<NonNullable<AuthorizationDecisionRecord["resource"]>>(row.resource_json) } : {}),
       decidedAt: row.decided_at,
     } : undefined;

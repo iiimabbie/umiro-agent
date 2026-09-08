@@ -1,5 +1,6 @@
 import type { AuthorizationTier } from "../authorization/authorize.js";
 import type { Capability } from "../authorization/capability.js";
+import type { JsonObject } from "../ports/json.js";
 import type { StepId } from "../run/entities.js";
 
 export type OperationId = string;
@@ -18,6 +19,8 @@ export interface Operation {
   readonly id: OperationId;
   readonly stepId: StepId;
   readonly kind: string;
+  /** Canonical invocation input required to resume an idempotent operation. */
+  readonly input: JsonObject;
   readonly state: OperationState;
   readonly capability: Capability;
   readonly authorizationTier: AuthorizationTier;

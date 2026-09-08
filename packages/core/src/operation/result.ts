@@ -1,7 +1,7 @@
 import type { JsonValue } from "../ports/json.js";
 import type { OperationId } from "./entities.js";
 
-export type OperationOutcomeState = "succeeded" | "failed" | "outcome_unknown";
+export type OperationOutcomeState = "succeeded" | "failed" | "outcome_unknown" | "cancelled";
 export type ExternalEffectStatus = "not_applicable" | "confirmed" | "unknown";
 
 export interface OperationError {
@@ -28,5 +28,8 @@ export function assertOperationResult(result: OperationResult): void {
   }
   if (result.outcome === "failed" && !result.error) {
     throw new TypeError("a failed operation requires an error");
+  }
+  if (result.outcome === "cancelled" && (!result.error || result.effectStatus === "unknown")) {
+    throw new TypeError("a cancelled operation requires an error and a known external effect status");
   }
 }

@@ -13,6 +13,7 @@ function operation(values: Partial<Operation> = {}): Operation {
     id: "operation-1",
     stepId: "step-1",
     kind: "test.echo",
+    input: { text: "ping" },
     state: "proposed",
     capability: "test.echo",
     authorizationTier: "common",

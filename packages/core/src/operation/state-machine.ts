@@ -4,10 +4,10 @@ const OPERATION_TRANSITIONS: Readonly<Record<OperationState, readonly OperationS
   proposed: ["authorized", "denied", "cancelled"],
   authorized: ["executing", "cancelled"],
   denied: [],
-  executing: ["succeeded", "failed", "outcome_unknown"],
+  executing: ["succeeded", "failed", "outcome_unknown", "cancelled"],
   succeeded: [],
   failed: [],
-  outcome_unknown: ["succeeded", "failed"],
+  outcome_unknown: ["executing", "succeeded", "failed"],
   cancelled: [],
 };
 
@@ -41,7 +41,13 @@ export function operationRecoveryDisposition(
 ): OperationRecoveryDisposition {
   if (operation.state === "proposed") return "resume_authorization";
   if (operation.state === "authorized") return "safe_to_execute";
-  if (operation.state === "outcome_unknown") return "manual_review";
+  if (operation.state === "outcome_unknown") {
+    if (operation.sideEffect === "none") return "safe_to_retry";
+    if (operation.sideEffect === "idempotent" && operation.idempotencyKey?.trim()) {
+      return "retry_with_idempotency_key";
+    }
+    return "manual_review";
+  }
   if (operation.state !== "executing") return "no_action";
   if (operation.sideEffect === "none") return "safe_to_retry";
   if (operation.sideEffect === "idempotent" && operation.idempotencyKey?.trim()) {

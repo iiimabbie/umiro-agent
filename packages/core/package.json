@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
   "exports": {
     ".": "./dist/src/index.js",
     "./audit": "./dist/src/audit/index.js",
@@ -11,7 +14,8 @@
     "./model": "./dist/src/model/index.js",
     "./operation": "./dist/src/operation/index.js",
     "./ports": "./dist/src/ports/index.js",
-    "./run": "./dist/src/run/index.js"
+    "./run": "./dist/src/run/index.js",
+    "./tool": "./dist/src/tool/index.js"
   },
   "scripts": {
     "build": "tsc -b",

@@ -1,0 +1,65 @@
+import type { AuthorizationTier, InteractionRequirement, ResourceRef } from "../authorization/authorize.js";
+import type { Capability } from "../authorization/capability.js";
+import type { ExecutionContext } from "../identity/execution-context.js";
+import type { OperationError, SideEffectClass } from "../operation/index.js";
+import type { JsonObject, JsonValue } from "../ports/json.js";
+
+export interface ToolPolicy {
+  readonly capability: Capability;
+  readonly tier: AuthorizationTier;
+  /** Separate from privilege: only operations that truly need a live human set this. */
+  readonly interactionRequirement: InteractionRequirement;
+  readonly sideEffect: SideEffectClass;
+  readonly timeoutMs?: number;
+  readonly resource?: (input: JsonObject) => ResourceRef | undefined;
+}
+
+export interface ToolExecutionContext {
+  readonly execution: ExecutionContext;
+  readonly operationId: string;
+  readonly idempotencyKey?: string;
+  readonly signal: AbortSignal;
+}
+
+export type ToolExecutionResult =
+  | {
+      readonly ok: true;
+      readonly output: JsonValue;
+      readonly effectStatus: "not_applicable" | "confirmed";
+    }
+  | {
+      readonly ok: false;
+      readonly error: OperationError;
+      readonly effectStatus: "not_applicable" | "confirmed" | "unknown";
+      readonly output?: JsonValue;
+    };
+
+export interface ToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema. The root must describe an object. */
+  readonly inputSchema: Record<string, unknown>;
+  readonly policy: ToolPolicy;
+  readonly execute: (input: JsonObject, context: ToolExecutionContext) => Promise<ToolExecutionResult>;
+}
+
+export type ToolInvocationResult =
+  | { readonly status: "tool_not_found"; readonly error: OperationError }
+  | { readonly status: "invalid_input"; readonly error: OperationError }
+  | { readonly status: "denied"; readonly operationId: string; readonly error: OperationError }
+  | { readonly status: "succeeded"; readonly operationId: string; readonly output: JsonValue }
+  | {
+      readonly status: "failed" | "cancelled" | "outcome_unknown";
+      readonly operationId: string;
+      readonly error: OperationError;
+      readonly output?: JsonValue;
+    };
+
+export interface ToolInvocation {
+  readonly toolName: string;
+  readonly input: Record<string, unknown>;
+  readonly stepId: string;
+  readonly context: ExecutionContext;
+  readonly idempotencyKey?: string;
+  readonly signal?: AbortSignal;
+}

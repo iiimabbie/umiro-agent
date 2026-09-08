@@ -4,6 +4,7 @@ import type { Capability } from "./capability.js";
 import { hasCapability } from "./capability.js";
 
 export type AuthorizationTier = "common" | "sensitive" | "privileged";
+export type InteractionRequirement = "not_required" | "interactive_required";
 
 export interface ResourceRef {
   readonly kind: string;
@@ -16,6 +17,7 @@ export interface AuthorizationRequest {
   readonly context: ExecutionContext;
   readonly capability: Capability;
   readonly tier: AuthorizationTier;
+  readonly interactionRequirement?: InteractionRequirement;
   readonly resource?: ResourceRef;
 }
 
@@ -24,7 +26,8 @@ export type AuthorizationReason =
   | "capability_not_granted"
   | "resource_required"
   | "resource_outside_visibility"
-  | "owner_required";
+  | "owner_required"
+  | "interactive_origin_required";
 
 export interface AuthorizationDecision {
   readonly allow: boolean;
@@ -33,6 +36,7 @@ export interface AuthorizationDecision {
   readonly principalId: PrincipalId;
   readonly capability: Capability;
   readonly tier: AuthorizationTier;
+  readonly interactionRequirement: InteractionRequirement;
   readonly resource?: ResourceRef;
 }
 
@@ -52,6 +56,7 @@ export function authorize(request: AuthorizationRequest): AuthorizationDecision 
     principalId: request.context.actor.id,
     capability: request.capability,
     tier: request.tier,
+    interactionRequirement: request.interactionRequirement ?? "not_required",
     ...(request.resource ? { resource: request.resource } : {}),
   } as const;
 
@@ -66,6 +71,9 @@ export function authorize(request: AuthorizationRequest): AuthorizationDecision 
   }
   if (request.tier === "privileged" && !isOwner(request.context.actor)) {
     return { ...base, allow: false, reason: "owner_required" };
+  }
+  if (request.interactionRequirement === "interactive_required" && request.context.origin.kind !== "interactive") {
+    return { ...base, allow: false, reason: "interactive_origin_required" };
   }
   return { ...base, allow: true, reason: "granted" };
 }
