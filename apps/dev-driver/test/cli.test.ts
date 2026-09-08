@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ModelPort, ModelResponse } from "@umiro/core/model";
+import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { parseCliArgs, runCli } from "../src/cli.js";
 
 const response: ModelResponse = {
@@ -47,6 +48,7 @@ test("sends stdin to the selected model and keeps response text on stdout", asyn
     writeStderr: value => { stderr += value; },
     listModels: async () => { throw new Error("explicit model must skip discovery"); },
     createModel: () => fakeModel,
+    createStore: () => new SQLiteExecutionStore(":memory:"),
   });
 
   assert.equal(requestModel, "gemma4:31b");
@@ -71,6 +73,7 @@ test("discovers a default model when none is configured", async () => {
         return response;
       },
     }),
+    createStore: () => new SQLiteExecutionStore(":memory:"),
   });
   assert.equal(selectedModel, "gemma4:31b");
 });

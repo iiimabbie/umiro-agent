@@ -124,6 +124,9 @@ importers:
       '@umiro/model-openai':
         specifier: workspace:*
         version: link:../../packages/model-openai
+      '@umiro/storage-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/storage-sqlite
 
   packages/core:
     dependencies:

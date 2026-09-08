@@ -170,6 +170,16 @@ test("reopens an in-flight operation with enough evidence for safe recovery", as
   const database = fixture();
   try {
     await database.store.createRunWithStep(run(), step());
+    await database.store.updateExecutionProgress({
+      runId: "run-1",
+      expectedRunRevision: 0,
+      expectedRunState: "queued",
+      runState: "running",
+      resumeEligibility: "eligible",
+      runUpdatedAt: at,
+      step: { id: "step-1", expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: at },
+      checkpoint: { runId: "run-1", version: 1, data: { next: "operation-1" }, updatedAt: at },
+    });
     const { operation, decision } = authorizedOperation();
     await database.store.recordOperationAuthorization(operation, decision);
     await database.store.markOperationExecuting(operation.id, at);
@@ -181,6 +191,7 @@ test("reopens an in-flight operation with enough evidence for safe recovery", as
       assert.ok(persisted);
       assert.equal(persisted.state, "executing");
       assert.equal(operationRecoveryDisposition(persisted), "retry_with_idempotency_key");
+      assert.deepEqual((await reopened.listRecoverableRuns()).map(candidate => candidate.id), ["run-1"]);
     } finally {
       reopened.close();
     }
@@ -285,6 +296,64 @@ test("rejects stale state transitions instead of overwriting newer state", async
       /changed concurrently/,
     );
     assert.equal((await database.store.getRun("run-1"))?.state, "running");
+  } finally {
+    database.cleanup();
+  }
+});
+
+test("rolls back run completion when the output cannot be persisted", async () => {
+  const database = fixture();
+  try {
+    await database.store.createRunWithStep(run("run-1"), step("run-1", "step-1"));
+    await database.store.updateExecutionProgress({
+      runId: "run-1",
+      expectedRunRevision: 0,
+      expectedRunState: "queued",
+      runState: "running",
+      resumeEligibility: "eligible",
+      runUpdatedAt: at,
+      checkpoint: { runId: "run-1", version: 1, data: { messages: [] }, updatedAt: at },
+    });
+    await database.store.completeRunWithOutput({
+      output: {
+        id: "shared-output",
+        runId: "run-1",
+        text: "first",
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+        createdAt: at,
+      },
+      expectedRunRevision: 1,
+      runUpdatedAt: at,
+    });
+
+    await database.store.createRunWithStep(run("run-2"), step("run-2", "step-2"));
+    await database.store.updateExecutionProgress({
+      runId: "run-2",
+      expectedRunRevision: 0,
+      expectedRunState: "queued",
+      runState: "running",
+      resumeEligibility: "eligible",
+      runUpdatedAt: at,
+      checkpoint: { runId: "run-2", version: 1, data: { messages: [] }, updatedAt: at },
+    });
+    await assert.rejects(
+      database.store.completeRunWithOutput({
+        output: {
+          id: "shared-output",
+          runId: "run-2",
+          text: "second",
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+          createdAt: at,
+        },
+        expectedRunRevision: 1,
+        runUpdatedAt: at,
+      }),
+      /UNIQUE constraint failed/,
+    );
+
+    assert.equal((await database.store.getRun("run-2"))?.state, "running");
+    assert.equal((await database.store.getCheckpoint("run-2"))?.version, 1);
+    assert.equal(await database.store.getRunOutput("run-2"), undefined);
   } finally {
     database.cleanup();
   }

@@ -81,10 +81,28 @@ CREATE TABLE checkpoints (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE model_calls (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL UNIQUE REFERENCES steps(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  messages_json TEXT NOT NULL CHECK (json_valid(messages_json)),
+  response_json TEXT NOT NULL CHECK (json_valid(response_json)),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE run_outputs (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  usage_json TEXT NOT NULL CHECK (json_valid(usage_json)),
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE audit_events (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
-  entity_type TEXT NOT NULL CHECK (entity_type IN ('run','step','operation','authorization')),
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('run','step','operation','authorization','model_call','output')),
   entity_id TEXT NOT NULL,
   run_id TEXT NOT NULL REFERENCES runs(id),
   data_json TEXT NOT NULL CHECK (json_valid(data_json)),

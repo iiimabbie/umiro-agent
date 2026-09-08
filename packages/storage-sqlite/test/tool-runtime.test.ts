@@ -204,6 +204,73 @@ test("passes and persists the idempotency key for a mutating tool", async () => 
   }
 });
 
+test("projects a completed operation when an idempotency key is repeated", async () => {
+  let calls = 0;
+  const mutation: ToolDefinition = {
+    ...echoTool(async input => {
+      calls += 1;
+      return { ok: true, output: input, effectStatus: "confirmed" };
+    }),
+    policy: { capability: "test.echo", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" },
+  };
+  const database = fixture(undefined, mutation);
+  const invocation = {
+    toolName: "test.echo",
+    input: { text: "write once" },
+    stepId: step.id,
+    context: database.execution,
+    idempotencyKey: "run-1:step-1:call-1",
+  } as const;
+  try {
+    await database.initialize();
+    const first = await database.runtime.execute(invocation);
+    const second = await database.runtime.execute(invocation);
+    assert.deepEqual(second, first);
+    assert.equal(calls, 1);
+    assert.equal((await database.store.listAuditEvents("run-1")).filter(event => event.kind === "operation.authorization_decided").length, 1);
+  } finally {
+    database.cleanup();
+  }
+});
+
+test("retries an unknown idempotent outcome on the same operation", async () => {
+  let calls = 0;
+  const mutation: ToolDefinition = {
+    ...echoTool(async input => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: false,
+          error: { code: "confirmation_lost", message: "confirmation was lost", retryable: true },
+          effectStatus: "unknown",
+        };
+      }
+      return { ok: true, output: input, effectStatus: "confirmed" };
+    }),
+    policy: { capability: "test.echo", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" },
+  };
+  const database = fixture(undefined, mutation);
+  const invocation = {
+    toolName: "test.echo",
+    input: { text: "confirm write" },
+    stepId: step.id,
+    context: database.execution,
+    idempotencyKey: "run-1:step-1:call-1",
+  } as const;
+  try {
+    await database.initialize();
+    const first = await database.runtime.execute(invocation);
+    const second = await database.runtime.execute(invocation);
+    assert.equal(first.status, "outcome_unknown");
+    assert.deepEqual(second, { status: "succeeded", operationId: "operation-1", output: { text: "confirm write" } });
+    assert.equal(calls, 2);
+    assert.equal((await database.store.getOperation("operation-1"))?.state, "succeeded");
+    assert.equal((await database.store.getOperationResult("operation-1"))?.outcome, "succeeded");
+  } finally {
+    database.cleanup();
+  }
+});
+
 test("allows a scheduled owner to execute a privileged automation-safe tool", async () => {
   let calls = 0;
   const scheduled: ExecutionContext = {
@@ -317,6 +384,34 @@ test("times out a non-idempotent tool as outcome_unknown", async () => {
     });
     assert.equal(result.status, "outcome_unknown");
     assert.equal((await database.store.getOperation("operation-1"))?.state, "outcome_unknown");
+    assert.equal((await database.store.getOperationResult("operation-1"))?.effectStatus, "unknown");
+  } finally {
+    database.cleanup();
+  }
+});
+
+test("treats a mutating tool contract violation as outcome_unknown", async () => {
+  let externalEffect = false;
+  const mutation: ToolDefinition = {
+    ...echoTool(async () => {
+      externalEffect = true;
+      return { ok: true, output: { written: true }, effectStatus: "not_applicable" };
+    }),
+    policy: { capability: "test.echo", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" },
+  };
+  const database = fixture(undefined, mutation);
+  try {
+    await database.initialize();
+    const result = await database.runtime.execute({
+      toolName: "test.echo",
+      input: { text: "mutate" },
+      stepId: step.id,
+      context: database.execution,
+      idempotencyKey: "run-1:step-1:call-1",
+    });
+    assert.equal(externalEffect, true);
+    assert.equal(result.status, "outcome_unknown");
+    assert.equal(result.error.code, "tool_contract_violation");
     assert.equal((await database.store.getOperationResult("operation-1"))?.effectStatus, "unknown");
   } finally {
     database.cleanup();

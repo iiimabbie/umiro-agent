@@ -1,10 +1,11 @@
-import type { ModelPort } from "@umiro/core/model";
+import { capabilities, HeadlessRunEngine, ToolRegistry, type ExecutionContext, type ExecutionStore, type ModelPort } from "@umiro/core";
 import {
   OpenAIChatCompletionsModel,
   type OpenAIConnectionConfig,
   OpenAIModelCatalog,
   OpenAIResponsesModel,
 } from "@umiro/model-openai";
+import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 
 export type ModelProtocol = "openai_responses" | "openai_chat_completions";
 
@@ -22,6 +23,7 @@ export interface CliRuntime {
   readonly writeStderr: (text: string) => void;
   readonly listModels?: (config: OpenAIConnectionConfig) => Promise<readonly string[]>;
   readonly createModel?: (protocol: ModelProtocol, config: OpenAIConnectionConfig) => ModelPort;
+  readonly createStore?: (filename: string) => ExecutionStore;
 }
 
 export class CliUsageError extends Error {}
@@ -123,9 +125,26 @@ export async function runCli(args: readonly string[], runtime: CliRuntime): Prom
       : new OpenAIResponsesModel(value));
 
   runtime.writeStderr(`model: ${model}\nprotocol: ${protocol}\n`);
-  const response = await createModel(protocol, config).generate({
-    model,
-    messages: [{ role: "user", content: prompt }],
-  });
-  runtime.writeStdout(`${response.text}\n`);
+  const database = runtime.env.UMIRO_DB_PATH?.trim() || "data/execution.db";
+  const store = (runtime.createStore ?? (filename => new SQLiteExecutionStore(filename)))(database);
+  const context: ExecutionContext = {
+    actor: { id: "dev-owner", kind: "human", roles: ["owner"] },
+    origin: { kind: "event", pluginId: "dev-driver" },
+    authority: {
+      capabilities: capabilities(),
+      visibility: { kind: "all" },
+      instructionAuthority: "full",
+    },
+  };
+  try {
+    const engine = new HeadlessRunEngine(createModel(protocol, config), new ToolRegistry(), store);
+    const result = await engine.run({ context, model, prompt });
+    runtime.writeStderr(`run: ${result.runId}\ndatabase: ${database}\n`);
+    if (result.status !== "succeeded") {
+      throw new Error(result.status === "waiting" ? result.reason : result.error);
+    }
+    runtime.writeStdout(`${result.text}\n`);
+  } finally {
+    store.close();
+  }
 }

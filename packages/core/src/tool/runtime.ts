@@ -3,7 +3,7 @@ import type { AuthorizationDecisionRecord } from "../audit/records.js";
 import { authorize } from "../authorization/authorize.js";
 import type { Operation, OperationError, OperationResult } from "../operation/index.js";
 import type { ExecutionStore } from "../ports/execution-store.js";
-import type { JsonObject } from "../ports/json.js";
+import type { JsonObject, JsonValue } from "../ports/json.js";
 import type {
   ToolDefinition,
   ToolExecutionContext,
@@ -39,6 +39,29 @@ function operationError(code: string, message: string, retryable: boolean): Oper
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function projectResult(result: OperationResult): ToolInvocationResult {
+  if (result.outcome === "succeeded") {
+    return { status: "succeeded", operationId: result.operationId, output: result.output ?? null };
+  }
+  const error = result.error
+    ?? operationError("operation_outcome_unknown", "the external effect could not be confirmed", true);
+  return {
+    status: result.outcome,
+    operationId: result.operationId,
+    error,
+    ...(result.output !== undefined ? { output: result.output } : {}),
+  };
 }
 
 function validateReturnedResult(tool: ToolDefinition, result: ToolExecutionResult): void {
@@ -135,6 +158,41 @@ export class ToolRuntime {
       interactionRequirement: tool.policy.interactionRequirement,
       ...(resource ? { resource } : {}),
     });
+    const operationKind = `tool:${tool.name}`;
+    const suppliedIdempotencyKey = tool.policy.sideEffect === "idempotent"
+      ? invocation.idempotencyKey?.trim() || undefined
+      : undefined;
+    if (decision.allow && suppliedIdempotencyKey) {
+      const existing = await this.store.getOperationByIdempotencyKey(operationKind, suppliedIdempotencyKey);
+      if (existing) {
+        if (canonicalJson(existing.input) !== canonicalJson(input)) {
+          return {
+            status: "invalid_input",
+            error: operationError(
+              "idempotency_key_reused",
+              "the idempotency key is already associated with different input",
+              false,
+            ),
+          };
+        }
+        const persisted = await this.store.getOperationResult(existing.id);
+        if (existing.state === "authorized") {
+          return this.executeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
+        }
+        if (existing.state === "outcome_unknown" && !invocation.signal?.aborted) {
+          return this.executeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
+        }
+        if (persisted) return projectResult(persisted);
+        if (existing.state === "executing") {
+          return {
+            status: "outcome_unknown",
+            operationId: existing.id,
+            error: operationError("operation_in_progress", "an operation with this idempotency key is already executing", true),
+          };
+        }
+        throw new Error(`operation ${existing.id} has terminal state ${existing.state} without a result`);
+      }
+    }
     const decisionRecord: AuthorizationDecisionRecord = {
       ...decision,
       id: authorizationId,
@@ -142,12 +200,12 @@ export class ToolRuntime {
       decidedAt: this.now(),
     };
     const idempotencyKey = tool.policy.sideEffect === "idempotent"
-      ? invocation.idempotencyKey?.trim() || operationId
+      ? (decision.allow ? suppliedIdempotencyKey : undefined) ?? operationId
       : undefined;
     const operation: Operation = {
       id: operationId,
       stepId: invocation.stepId,
-      kind: `tool:${tool.name}`,
+      kind: operationKind,
       input,
       state: decision.allow ? "authorized" : "denied",
       capability: tool.policy.capability,
@@ -167,6 +225,17 @@ export class ToolRuntime {
       };
     }
 
+    return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
+  }
+
+  private async executeAuthorizedTool(
+    tool: ToolDefinition,
+    operation: Operation,
+    invocation: ToolInvocation,
+    input: JsonObject,
+    idempotencyKey: string | undefined,
+  ): Promise<ToolInvocationResult> {
+    const operationId = operation.id;
     if (invocation.signal?.aborted) {
       const cancelled = operationError("tool_cancelled", "tool invocation was cancelled before execution", false);
       await this.persistOutcome(operation, {
@@ -243,7 +312,9 @@ export class ToolRuntime {
         : contractViolation
           ? operationError("tool_contract_violation", caughtError.message, false)
           : operationError("tool_execution_failed", caughtError.message, false);
-    const effectCouldBeUnknown = operation.sideEffect !== "none" && !contractViolation;
+    // Once execution has started, an invalid return value says nothing about
+    // whether a mutating tool already changed the external world.
+    const effectCouldBeUnknown = operation.sideEffect !== "none";
     const outcome = effectCouldBeUnknown ? "outcome_unknown" : cancelled ? "cancelled" : "failed";
     await this.persistOutcome(operation, {
       operationId: operation.id,

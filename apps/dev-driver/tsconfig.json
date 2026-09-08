@@ -8,6 +8,7 @@
   "include": ["src/**/*.ts", "test/**/*.ts"],
   "references": [
     { "path": "../../packages/core" },
-    { "path": "../../packages/model-openai" }
+    { "path": "../../packages/model-openai" },
+    { "path": "../../packages/storage-sqlite" }
   ]
 }

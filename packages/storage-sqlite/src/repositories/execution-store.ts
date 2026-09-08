@@ -10,15 +10,18 @@ import {
   ExecutionStoreConflictError,
   type AuditEvent,
   type AuthorizationDecisionRecord,
+  type CompleteRunWithOutput,
   type ExecutionContext,
   type ExecutionProgressUpdate,
   type ExecutionStore,
   type JsonObject,
   type JsonValue,
+  type ModelCallRecord,
   type Operation,
   type OperationResult,
   type Run,
   type RunCheckpoint,
+  type RunOutput,
   type RunState,
   type Step,
   type StepState,
@@ -167,6 +170,60 @@ export class SQLiteExecutionStore implements ExecutionStore {
       `).run(firstStep.id, firstStep.runId, firstStep.revision, firstStep.sequence, firstStep.kind, firstStep.state, firstStep.createdAt, firstStep.updatedAt);
       this.insertAudit("run.created", "run", run.id, run.id, { state: run.state }, run.createdAt);
       this.insertAudit("step.created", "step", firstStep.id, run.id, { kind: firstStep.kind, sequence: firstStep.sequence }, firstStep.createdAt);
+    })();
+  }
+
+  async appendStep(step: Step): Promise<void> {
+    if (step.revision !== 0 || step.state !== "pending") throw new TypeError("new steps must begin pending at revision zero");
+    this.database.transaction(() => {
+      const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM steps WHERE run_id = ?")
+        .get(step.runId) as { sequence: number };
+      if (step.sequence !== next.sequence) throw new ExecutionStoreConflictError(`step sequence must be ${next.sequence}`);
+      this.database.prepare(`
+        INSERT INTO steps(id, run_id, revision, sequence, kind, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(step.id, step.runId, step.revision, step.sequence, step.kind, step.state, step.createdAt, step.updatedAt);
+      this.insertAudit("step.created", "step", step.id, step.runId, { kind: step.kind, sequence: step.sequence }, step.createdAt);
+    })();
+  }
+
+  async recordModelCall(call: ModelCallRecord): Promise<void> {
+    this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO model_calls(id, run_id, step_id, model, messages_json, response_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(call.id, call.runId, call.stepId, call.model, json(call.messages), json(call.response), call.createdAt);
+      this.insertAudit("model_call.completed", "model_call", call.id, call.runId, { stepId: call.stepId, model: call.model }, call.createdAt);
+    })();
+  }
+
+  async completeRunWithOutput(completion: CompleteRunWithOutput): Promise<void> {
+    const { output } = completion;
+    this.database.transaction(() => {
+      const runUpdate = this.database.prepare(`
+        UPDATE runs
+        SET revision = revision + 1, state = 'succeeded', waiting_reason = NULL,
+            interruption_json = NULL, resume_eligibility = 'not_applicable', updated_at = ?
+        WHERE id = ? AND state = 'running' AND revision = ?
+      `).run(completion.runUpdatedAt, output.runId, completion.expectedRunRevision);
+      expectOne(runUpdate.changes, `run ${output.runId} changed concurrently`);
+      this.database.prepare("INSERT INTO run_outputs(id, run_id, text, usage_json, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(output.id, output.runId, output.text, json(output.usage), output.createdAt);
+      this.database.prepare("DELETE FROM checkpoints WHERE run_id = ?").run(output.runId);
+      this.insertAudit("run.output_recorded", "output", output.id, output.runId, { textLength: output.text.length }, output.createdAt);
+      this.insertAudit(
+        "run.progressed",
+        "run",
+        output.runId,
+        output.runId,
+        {
+          from: "running",
+          to: "succeeded",
+          revision: completion.expectedRunRevision + 1,
+          checkpointCleared: true,
+        },
+        completion.runUpdatedAt,
+      );
     })();
   }
 
@@ -341,7 +398,20 @@ export class SQLiteExecutionStore implements ExecutionStore {
 
   async getRun(runId: string): Promise<Run | undefined> {
     const row = this.database.prepare("SELECT * FROM runs WHERE id = ?").get(runId) as RunRow | undefined;
-    if (!row) return undefined;
+    return row ? this.runFromRow(row) : undefined;
+  }
+
+  async listRecoverableRuns(): Promise<readonly Run[]> {
+    const rows = this.database.prepare(`
+      SELECT * FROM runs
+      WHERE state IN ('queued', 'running', 'waiting')
+        AND resume_eligibility IN ('eligible', 'manual_review')
+      ORDER BY created_at, id
+    `).all() as RunRow[];
+    return rows.map(row => this.runFromRow(row));
+  }
+
+  private runFromRow(row: RunRow): Run {
     return {
       id: row.id,
       revision: row.revision,
@@ -374,7 +444,17 @@ export class SQLiteExecutionStore implements ExecutionStore {
 
   async getOperation(operationId: string): Promise<Operation | undefined> {
     const row = this.database.prepare("SELECT * FROM operations WHERE id = ?").get(operationId) as OperationRow | undefined;
-    return row ? {
+    return row ? this.operationFromRow(row) : undefined;
+  }
+
+  async getOperationByIdempotencyKey(kind: string, idempotencyKey: string): Promise<Operation | undefined> {
+    const row = this.database.prepare("SELECT * FROM operations WHERE kind = ? AND idempotency_key = ?")
+      .get(kind, idempotencyKey) as OperationRow | undefined;
+    return row ? this.operationFromRow(row) : undefined;
+  }
+
+  private operationFromRow(row: OperationRow): Operation {
+    return {
       id: row.id,
       stepId: row.step_id,
       kind: row.kind,
@@ -387,7 +467,7 @@ export class SQLiteExecutionStore implements ExecutionStore {
       authorizationDecisionId: row.authorization_decision_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-    } : undefined;
+    };
   }
 
   async getAuthorizationDecision(decisionId: string): Promise<AuthorizationDecisionRecord | undefined> {
@@ -426,6 +506,34 @@ export class SQLiteExecutionStore implements ExecutionStore {
       version: row.version,
       data: parseJson<JsonValue>(row.data_json),
       updatedAt: row.updated_at,
+    } : undefined;
+  }
+
+  async listModelCalls(runId: string): Promise<readonly ModelCallRecord[]> {
+    const rows = this.database.prepare("SELECT * FROM model_calls WHERE run_id = ? ORDER BY rowid").all(runId) as Array<{
+      id: string; run_id: string; step_id: string; model: string; messages_json: string; response_json: string; created_at: string;
+    }>;
+    return rows.map(row => ({
+      id: row.id,
+      runId: row.run_id,
+      stepId: row.step_id,
+      model: row.model,
+      messages: parseJson<ModelCallRecord["messages"]>(row.messages_json),
+      response: parseJson<ModelCallRecord["response"]>(row.response_json),
+      createdAt: row.created_at,
+    }));
+  }
+
+  async getRunOutput(runId: string): Promise<RunOutput | undefined> {
+    const row = this.database.prepare("SELECT * FROM run_outputs WHERE run_id = ?").get(runId) as {
+      id: string; run_id: string; text: string; usage_json: string; created_at: string;
+    } | undefined;
+    return row ? {
+      id: row.id,
+      runId: row.run_id,
+      text: row.text,
+      usage: parseJson<RunOutput["usage"]>(row.usage_json),
+      createdAt: row.created_at,
     } : undefined;
   }
 
@@ -469,13 +577,21 @@ export class SQLiteExecutionStore implements ExecutionStore {
     }
     const result = this.database.prepare(`
       INSERT INTO checkpoints(run_id, version, data_json, updated_at)
-      SELECT ?, ?, ?, ? WHERE ? = 1
+      SELECT ?, ?, ?, ?
+      WHERE ? = 1 OR EXISTS (SELECT 1 FROM checkpoints WHERE run_id = ?)
       ON CONFLICT(run_id) DO UPDATE SET
         version = excluded.version,
         data_json = excluded.data_json,
         updated_at = excluded.updated_at
       WHERE excluded.version = checkpoints.version + 1
-    `).run(checkpoint.runId, checkpoint.version, json(checkpoint.data), checkpoint.updatedAt, checkpoint.version);
+    `).run(
+      checkpoint.runId,
+      checkpoint.version,
+      json(checkpoint.data),
+      checkpoint.updatedAt,
+      checkpoint.version,
+      checkpoint.runId,
+    );
     expectOne(result.changes, `checkpoint ${checkpoint.runId} version is stale or skipped`);
   }
 

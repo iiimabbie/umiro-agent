@@ -5,7 +5,8 @@
   "type": "module",
   "dependencies": {
     "@umiro/core": "workspace:*",
-    "@umiro/model-openai": "workspace:*"
+    "@umiro/model-openai": "workspace:*",
+    "@umiro/storage-sqlite": "workspace:*"
   },
   "scripts": {
     "build": "tsc -b",
