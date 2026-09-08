@@ -11,6 +11,7 @@ import {
   type AuditEvent,
   type AuthorizationDecisionRecord,
   type CompleteRunWithOutput,
+  type DeliveryIntent,
   type ExecutionContext,
   type ExecutionProgressUpdate,
   type ExecutionStore,
@@ -198,7 +199,10 @@ export class SQLiteExecutionStore implements ExecutionStore {
   }
 
   async completeRunWithOutput(completion: CompleteRunWithOutput): Promise<void> {
-    const { output } = completion;
+    const { output, delivery } = completion;
+    if (delivery.runId !== output.runId || delivery.state !== "pending" || delivery.deliveredAt !== undefined) {
+      throw new TypeError("new delivery intent must be pending and belong to the output Run");
+    }
     this.database.transaction(() => {
       const runUpdate = this.database.prepare(`
         UPDATE runs
@@ -209,8 +213,13 @@ export class SQLiteExecutionStore implements ExecutionStore {
       expectOne(runUpdate.changes, `run ${output.runId} changed concurrently`);
       this.database.prepare("INSERT INTO run_outputs(id, run_id, text, usage_json, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(output.id, output.runId, output.text, json(output.usage), output.createdAt);
+      this.database.prepare(`
+        INSERT INTO delivery_intents(id, run_id, destination_json, payload_json, state, created_at, delivered_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, NULL)
+      `).run(delivery.id, delivery.runId, json(delivery.destination), json(delivery.payload), delivery.createdAt);
       this.database.prepare("DELETE FROM checkpoints WHERE run_id = ?").run(output.runId);
       this.insertAudit("run.output_recorded", "output", output.id, output.runId, { textLength: output.text.length }, output.createdAt);
+      this.insertAudit("delivery.created", "delivery", delivery.id, output.runId, { state: "pending" }, delivery.createdAt);
       this.insertAudit(
         "run.progressed",
         "run",
@@ -442,9 +451,35 @@ export class SQLiteExecutionStore implements ExecutionStore {
     } : undefined;
   }
 
+  async listSteps(runId: string): Promise<readonly Step[]> {
+    const rows = this.database.prepare("SELECT * FROM steps WHERE run_id = ? ORDER BY sequence")
+      .all(runId) as StepRow[];
+    return rows.map(row => ({
+      id: row.id,
+      runId: row.run_id,
+      revision: row.revision,
+      sequence: row.sequence,
+      kind: row.kind,
+      state: row.state,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   async getOperation(operationId: string): Promise<Operation | undefined> {
     const row = this.database.prepare("SELECT * FROM operations WHERE id = ?").get(operationId) as OperationRow | undefined;
     return row ? this.operationFromRow(row) : undefined;
+  }
+
+  async listOperations(runId: string): Promise<readonly Operation[]> {
+    const rows = this.database.prepare(`
+      SELECT operations.*
+      FROM operations
+      JOIN steps ON steps.id = operations.step_id
+      WHERE steps.run_id = ?
+      ORDER BY steps.sequence, operations.rowid
+    `).all(runId) as OperationRow[];
+    return rows.map(row => this.operationFromRow(row));
   }
 
   async getOperationByIdempotencyKey(kind: string, idempotencyKey: string): Promise<Operation | undefined> {
@@ -535,6 +570,49 @@ export class SQLiteExecutionStore implements ExecutionStore {
       usage: parseJson<RunOutput["usage"]>(row.usage_json),
       createdAt: row.created_at,
     } : undefined;
+  }
+
+  async getDeliveryIntent(deliveryId: string): Promise<DeliveryIntent | undefined> {
+    const row = this.database.prepare("SELECT * FROM delivery_intents WHERE id = ?").get(deliveryId) as {
+      id: string; run_id: string; destination_json: string; payload_json: string; state: DeliveryIntent["state"];
+      created_at: string; delivered_at: string | null;
+    } | undefined;
+    return row ? this.deliveryFromRow(row) : undefined;
+  }
+
+  async listPendingDeliveries(): Promise<readonly DeliveryIntent[]> {
+    const rows = this.database.prepare("SELECT * FROM delivery_intents WHERE state = 'pending' ORDER BY created_at, id").all() as Array<{
+      id: string; run_id: string; destination_json: string; payload_json: string; state: DeliveryIntent["state"];
+      created_at: string; delivered_at: string | null;
+    }>;
+    return rows.map(row => this.deliveryFromRow(row));
+  }
+
+  async markDeliveryDelivered(deliveryId: string, deliveredAt: string): Promise<void> {
+    this.database.transaction(() => {
+      const update = this.database.prepare(`
+        UPDATE delivery_intents SET state = 'delivered', delivered_at = ?
+        WHERE id = ? AND state = 'pending'
+      `).run(deliveredAt, deliveryId);
+      expectOne(update.changes, `delivery ${deliveryId} changed concurrently`);
+      const row = this.database.prepare("SELECT run_id FROM delivery_intents WHERE id = ?").get(deliveryId) as { run_id: string };
+      this.insertAudit("delivery.delivered", "delivery", deliveryId, row.run_id, { state: "delivered" }, deliveredAt);
+    })();
+  }
+
+  private deliveryFromRow(row: {
+    id: string; run_id: string; destination_json: string; payload_json: string; state: DeliveryIntent["state"];
+    created_at: string; delivered_at: string | null;
+  }): DeliveryIntent {
+    return {
+      id: row.id,
+      runId: row.run_id,
+      destination: parseJson<DeliveryIntent["destination"]>(row.destination_json),
+      payload: parseJson<DeliveryIntent["payload"]>(row.payload_json),
+      state: row.state,
+      createdAt: row.created_at,
+      ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+    };
   }
 
   async listAuditEvents(runId: string): Promise<readonly AuditEvent[]> {

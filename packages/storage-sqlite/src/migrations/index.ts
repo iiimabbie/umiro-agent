@@ -1,7 +1,8 @@
 import type Database from "better-sqlite3";
 import { INITIAL_SCHEMA } from "./001-initial.js";
+import { DELIVERY_INTENTS_SCHEMA } from "./002-delivery-intents.js";
 
-const LATEST_VERSION = 1;
+const LATEST_VERSION = 2;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -20,6 +21,13 @@ export function migrate(database: Database.Database): void {
       database.exec(INITIAL_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
         .run(1, new Date().toISOString());
+    })();
+  }
+  if (current.version < 2) {
+    database.transaction(() => {
+      database.exec(DELIVERY_INTENTS_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+        .run(2, new Date().toISOString());
     })();
   }
 }

@@ -2,7 +2,7 @@ import type { AuditEvent, AuthorizationDecisionRecord } from "../audit/records.j
 import type { Operation } from "../operation/entities.js";
 import type { OperationResult } from "../operation/result.js";
 import type { Run, RunState, Step, StepState } from "../run/entities.js";
-import type { ModelCallRecord, RunOutput } from "../run/records.js";
+import type { DeliveryIntent, ModelCallRecord, RunOutput } from "../run/records.js";
 import type { JsonValue } from "./json.js";
 
 export interface RunCheckpoint {
@@ -35,6 +35,7 @@ export interface ExecutionProgressUpdate {
 
 export interface CompleteRunWithOutput {
   readonly output: RunOutput;
+  readonly delivery: DeliveryIntent;
   readonly expectedRunRevision: number;
   readonly runUpdatedAt: string;
 }
@@ -60,13 +61,18 @@ export interface ExecutionStore {
   /** Used by the singleton daemon's startup sweep before it accepts new work. */
   listRecoverableRuns(): Promise<readonly Run[]>;
   getStep(stepId: string): Promise<Step | undefined>;
+  listSteps(runId: string): Promise<readonly Step[]>;
   getOperation(operationId: string): Promise<Operation | undefined>;
+  listOperations(runId: string): Promise<readonly Operation[]>;
   getOperationByIdempotencyKey(kind: string, idempotencyKey: string): Promise<Operation | undefined>;
   getAuthorizationDecision(decisionId: string): Promise<AuthorizationDecisionRecord | undefined>;
   getOperationResult(operationId: string): Promise<OperationResult | undefined>;
   getCheckpoint(runId: string): Promise<RunCheckpoint | undefined>;
   listModelCalls(runId: string): Promise<readonly ModelCallRecord[]>;
   getRunOutput(runId: string): Promise<RunOutput | undefined>;
+  getDeliveryIntent(deliveryId: string): Promise<DeliveryIntent | undefined>;
+  listPendingDeliveries(): Promise<readonly DeliveryIntent[]>;
+  markDeliveryDelivered(deliveryId: string, deliveredAt: string): Promise<void>;
   listAuditEvents(runId: string): Promise<readonly AuditEvent[]>;
   close(): void;
 }

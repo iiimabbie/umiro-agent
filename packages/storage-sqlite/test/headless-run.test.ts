@@ -41,7 +41,7 @@ function ownerContext(...granted: string[]): ExecutionContext {
 
 function deterministicIds() {
   const counters = new Map<string, number>();
-  return (kind: "run" | "step" | "model_call" | "output" | "operation" | "authorization") => {
+  return (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization") => {
     const next = (counters.get(kind) ?? 0) + 1;
     counters.set(kind, next);
     return `${kind}-${next}`;
@@ -102,6 +102,7 @@ test("runs model to tool to model and persists the final output", async () => {
     assert.deepEqual(result, {
       status: "succeeded",
       runId: "run-1",
+      deliveryId: "delivery-1",
       text: "done",
       usage: { inputTokens: 20, outputTokens: 4, reasoningTokens: 0 },
     });
@@ -117,6 +118,18 @@ test("runs model to tool to model and persists the final output", async () => {
       createdAt: at,
     });
     assert.equal(await store.getCheckpoint("run-1"), undefined);
+    assert.deepEqual(await store.getDeliveryIntent("delivery-1"), {
+      id: "delivery-1",
+      runId: "run-1",
+      destination: { kind: "caller" },
+      payload: { text: "done" },
+      state: "pending",
+      createdAt: at,
+    });
+    assert.deepEqual((await store.listPendingDeliveries()).map(delivery => delivery.id), ["delivery-1"]);
+    await store.markDeliveryDelivered("delivery-1", at);
+    assert.equal((await store.getDeliveryIntent("delivery-1"))?.state, "delivered");
+    assert.deepEqual(await store.listPendingDeliveries(), []);
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

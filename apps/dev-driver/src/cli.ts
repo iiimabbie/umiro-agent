@@ -138,12 +138,13 @@ export async function runCli(args: readonly string[], runtime: CliRuntime): Prom
   };
   try {
     const engine = new HeadlessRunEngine(createModel(protocol, config), new ToolRegistry(), store);
-    const result = await engine.run({ context, model, prompt });
+    const result = await engine.run({ context, model, prompt, deliveryDestination: { kind: "dev_stdout" } });
     runtime.writeStderr(`run: ${result.runId}\ndatabase: ${database}\n`);
     if (result.status !== "succeeded") {
       throw new Error(result.status === "waiting" ? result.reason : result.error);
     }
     runtime.writeStdout(`${result.text}\n`);
+    await store.markDeliveryDelivered(result.deliveryId, new Date().toISOString());
   } finally {
     store.close();
   }
