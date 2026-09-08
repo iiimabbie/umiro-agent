@@ -7,18 +7,19 @@ Headless agent execution core. Discord is the only official adapter.
 
 ## Status
 
-Early scaffold. The first runnable path connects the development harness to an
-OpenAI-compatible model endpoint.
+Early execution-kernel scaffold. The development harness connects to an
+OpenAI-compatible model endpoint; the Core execution contracts and SQLite
+durability boundary are in place.
 
 ## Layout
 
 ```
 packages/core             @umiro/core            domain model + runtime contracts
 packages/model-openai     @umiro/model-openai     OpenAI-compatible model adapter
+packages/storage-sqlite   @umiro/storage-sqlite   durable execution storage
 apps/dev-driver           @umiro/dev-driver      development harness (not a product)
 apps/gateway                                        future service entrypoint
 packages/adapter-discord                            future official product adapter
-packages/storage-sqlite                             future SQLite storage adapter
 plugins/*                                           future capability plugins
 ```
 

@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/model-openai" },
+    { "path": "./packages/storage-sqlite" },
     { "path": "./apps/dev-driver" }
   ]
 }

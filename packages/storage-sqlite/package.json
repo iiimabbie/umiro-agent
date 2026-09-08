@@ -1,0 +1,19 @@
+{
+  "name": "@umiro/storage-sqlite",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/src/index.js",
+  "dependencies": {
+    "@umiro/core": "workspace:*",
+    "better-sqlite3": "^12.9.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "pnpm build && node --test dist/test/*.test.js"
+  }
+}
