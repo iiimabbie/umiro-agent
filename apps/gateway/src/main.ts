@@ -18,7 +18,7 @@ import { SemanticRecallProvider } from "./semantic-recall.js";
 import { JsonLineLogger } from "./structured-logger.js";
 import { approvalDetails } from "./approval-presentation.js";
 import { DiscordStreamingDelivery } from "./discord-streaming.js";
-import { ControlPanelServer } from "./control-panel.js";
+import { ControlPanelServer, validateControlConfig } from "./control-panel.js";
 import { artifactModelContent } from "./artifact-input.js";
 import { ActiveWorkTracker } from "./active-work.js";
 
@@ -28,7 +28,7 @@ const readiness = { storage: false, plugins: false, discord: false, scheduler: f
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);

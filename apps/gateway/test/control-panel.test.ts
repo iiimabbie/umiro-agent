@@ -8,6 +8,8 @@ import { CONFIG_EXPLANATIONS, ControlPanelServer, validateControlConfig } from "
 test("model capabilities are explicit and reject unknown values", () => {
   assert.deepEqual(validateControlConfig({ model: "gemma4", modelCapabilities: ["vision", "hosted_web_search"] }), { model: "gemma4", modelCapabilities: ["vision", "hosted_web_search"] });
   assert.throws(() => validateControlConfig({ model: "gemma4", modelCapabilities: ["web_search"] }), /modelCapabilities/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { apiKey: "must-not-live-here" } }), /must use SecretSource/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", plugins: [{ path: "/plugin", config: { token: "secret" } }] }), /must use SecretSource/);
 });
 
 test("localhost control panel authenticates config and fixed workspace file operations", async () => {

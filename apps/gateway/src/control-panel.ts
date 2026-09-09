@@ -3,6 +3,7 @@ import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { parseDiscordTriggerPolicy } from "@umiro/adapter-discord";
+import { assertConfigContainsNoSecrets } from "@umiro/core/config";
 
 const EDITABLE_FILES = new Set(["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "PEOPLE.md"]);
 const MAX_BODY = 1024 * 1024;
@@ -60,6 +61,7 @@ async function body(request: IncomingMessage): Promise<unknown> {
 }
 
 export function validateControlConfig(value: unknown): Record<string, unknown> {
+  assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
   const config = value as Record<string, unknown>; const allowed = new Set(["model", "modelCapabilities", "embedding", "discord", "plugins", "webUi"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
