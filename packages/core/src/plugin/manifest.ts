@@ -1,5 +1,5 @@
 import { Ajv } from "ajv";
-import { isAuthoritySubset, type Authority } from "../authorization/authority.js";
+import { isAuthoritySubset, isInstructionAuthorityAtMost, type Authority } from "../authorization/authority.js";
 import { PLUGIN_API_VERSION, type PluginManifestV0 } from "./contract.js";
 
 const ID = /^[a-z][a-z0-9_.-]{0,127}$/;
@@ -67,6 +67,7 @@ const validateShape = new Ajv({ allErrors: true, strict: true }).compile<PluginM
         jobs: { type: "array", items: { type: "string" }, uniqueItems: true },
         commands: { type: "array", items: { type: "string" }, uniqueItems: true },
         skills: { type: "array", items: { type: "string" }, uniqueItems: true },
+        policy: { type: "array", maxItems: 16, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 2000 } },
       },
     },
   },
@@ -98,8 +99,13 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
   unique(manifest.contributes.tools, "contributes.tools");
   unique(manifest.contributes.contextProviders, "contributes.contextProviders");
   unique(manifest.contributes.skills, "contributes.skills");
+  if (manifest.contributes.policy?.some(item => !item.trim())) throw new TypeError("plugin manifest contributes.policy contains an empty policy");
+  if ((manifest.contributes.policy?.reduce((total, item) => total + item.length, 0) ?? 0) > 8000) throw new TypeError("plugin manifest contributes.policy exceeds 8000 characters");
   unique(manifest.requiredSecrets, "requiredSecrets", /^[A-Z][A-Z0-9_]*$/);
   if (hostCeiling && !isAuthoritySubset(manifest.permissions, hostCeiling)) {
     throw new TypeError(`plugin ${manifest.id} permissions exceed the host ceiling`);
+  }
+  if (hostCeiling && manifest.contributes.policy?.length && !isInstructionAuthorityAtMost("scoped", hostCeiling.instructionAuthority)) {
+    throw new TypeError(`plugin ${manifest.id} policy exceeds the host instruction authority ceiling`);
   }
 }

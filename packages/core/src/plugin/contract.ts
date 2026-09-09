@@ -48,6 +48,8 @@ export interface PluginManifestV0 {
     readonly jobs?: readonly string[];
     readonly commands?: readonly string[];
     readonly skills?: readonly string[];
+    /** Static, author-auditable usage policy rendered by the Host as scoped instructions. */
+    readonly policy?: readonly string[];
   };
 }
 
@@ -58,7 +60,16 @@ export interface PluginSetupContext {
   readonly config: JsonObject;
   readonly state?: PluginStateStore;
   readonly services?: PluginHostServices;
+  /** Namespaced, secret-redacted observability for non-fatal plugin conditions. */
+  readonly logger?: PluginLogger;
   getSecret(name: string): string | undefined;
+}
+
+export interface PluginLogger {
+  readonly debug: (event: string, message: string, data?: JsonObject) => void;
+  readonly info: (event: string, message: string, data?: JsonObject) => void;
+  readonly warn: (event: string, message: string, data?: JsonObject) => void;
+  readonly error: (event: string, message: string, data?: JsonObject) => void;
 }
 
 export interface LegacyPluginServices {

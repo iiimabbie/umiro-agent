@@ -3,7 +3,8 @@ import { Ajv } from "ajv";
 import { ContextProviderRegistry } from "../context/registry.js";
 import type { ContextProvider } from "../context/contract.js";
 import { ToolRegistry } from "../tool/registry.js";
-import type { LoadedPlugin, PluginEnableOptions, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule } from "./contract.js";
+import type { LoadedPlugin, PluginEnableOptions, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
+import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 import { validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
@@ -42,6 +43,36 @@ function providerWithinCeiling(provider: ContextProvider, manifest: PluginManife
   };
 }
 
+function manifestPolicyProvider(manifest: PluginManifestV0): ContextProvider | undefined {
+  const policy = manifest.contributes.policy?.map(item => item.trim()).filter(Boolean);
+  if (!policy?.length) return undefined;
+  const id = `${manifest.id}.policy`;
+  const content = `[Plugin policy: ${manifest.id}@${manifest.version}]\n${policy.map(item => `- ${item}`).join("\n")}`;
+  return {
+    id,
+    role: "plugin-policy",
+    priority: 350,
+    async load() {
+      return [{ id: `${id}:manifest`, providerId: id, role: "plugin-policy", content, source: { kind: "plugin-manifest-policy", ref: `${manifest.id}@${manifest.version}` }, influence: "instruction", instructionAuthority: "scoped", retention: "normal" }];
+    },
+  };
+}
+
+function redact(value: import("../ports/json.js").JsonValue, secrets: readonly string[], key?: string): import("../ports/json.js").JsonValue {
+  if (key && /(secret|token|password|authorization|api.?key)/i.test(key)) return "[REDACTED]";
+  if (typeof value === "string") return secrets.reduce((result, secret) => secret ? result.split(secret).join("[REDACTED]") : result, value);
+  if (Array.isArray(value)) return value.map(item => redact(item, secrets));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redact(item, secrets, name)]));
+  return value;
+}
+
+function pluginLogger(base: StructuredLogger, pluginId: string, namespace: string, secrets: readonly string[]): PluginLogger {
+  const write = (level: "debug" | "info" | "warn" | "error", event: string, message: string, data?: import("../ports/json.js").JsonObject) => {
+    try { base.write({ level, event: `plugin.${namespace}.${event}`, message, occurredAt: new Date().toISOString(), pluginId, ...(data ? { data: redact(data, secrets) as import("../ports/json.js").JsonObject } : {}) }); } catch { /* logging must not alter plugin behavior */ }
+  };
+  return { debug: (e, m, d) => write("debug", e, m, d), info: (e, m, d) => write("info", e, m, d), warn: (e, m, d) => write("warn", e, m, d), error: (e, m, d) => write("error", e, m, d) };
+}
+
 export class PluginHost {
   private readonly plugins = new Map<string, ActivePlugin>();
   private readonly ajv = new Ajv({ allErrors: true, strict: true });
@@ -56,6 +87,7 @@ export class PluginHost {
     private readonly commands = new PluginCommandRegistry(),
     private readonly services: PluginHostServices = {},
     private readonly skills = new SkillRegistry(),
+    private readonly logger: StructuredLogger = NOOP_LOGGER,
   ) {}
 
   async enable(module: PluginModule, options: PluginEnableOptions = {}): Promise<void> {
@@ -85,6 +117,7 @@ export class PluginHost {
         config,
         ...(this.stateForNamespace ? { state: this.stateForNamespace(manifest.namespace) } : {}),
         services: this.services,
+        logger: pluginLogger(this.logger, manifest.id, manifest.namespace, Object.values(options.secrets ?? {})),
         getSecret: name => allowedSecrets.has(name) ? options.secrets?.[name] : undefined,
       }),
       state: "starting",
@@ -103,6 +136,7 @@ export class PluginHost {
     const registeredJobs: string[] = [];
     const registeredCommands: string[] = [];
     const registeredSkills: string[] = [];
+    const policyProvider = manifestPolicyProvider(manifest);
     try {
       exactContributionSet(toolNames, manifest.contributes.tools, `plugin ${manifest.id} tools`);
       exactContributionSet(providerIds, manifest.contributes.contextProviders, `plugin ${manifest.id} context providers`);
@@ -124,6 +158,7 @@ export class PluginHost {
         this.contextProviders.register(providerWithinCeiling(provider, manifest));
         registeredProviders.push(provider.id);
       }
+      if (policyProvider) { this.contextProviders.register(policyProvider); registeredProviders.push(policyProvider.id); }
       for (const hook of active.instance.contributions.hooks ?? []) {
         this.hooks.register(manifest.id, hook);
         registeredHooks.push(hook.id);
@@ -162,6 +197,7 @@ export class PluginHost {
     for (const provider of active.instance.contributions.contextProviders ?? []) {
       this.contextProviders.unregister(provider.id);
     }
+    if (active.manifest.contributes.policy?.length) this.contextProviders.unregister(`${active.manifest.id}.policy`);
     for (const hook of active.instance.contributions.hooks ?? []) this.hooks.unregister(hook.id);
     for (const job of active.instance.contributions.jobs ?? []) this.jobs.unregister(job.id);
     for (const command of active.instance.contributions.commands ?? []) this.commands.unregister(command.name);

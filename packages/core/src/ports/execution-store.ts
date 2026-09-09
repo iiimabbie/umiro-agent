@@ -60,6 +60,8 @@ export interface ExecutionStore extends ApprovalStore {
   updateExecutionProgress(update: ExecutionProgressUpdate): Promise<void>;
 
   getRun(runId: string): Promise<Run | undefined>;
+  /** Bounded newest-first query for operations and local control surfaces. */
+  listRuns(limit?: number): Promise<readonly Run[]>;
   /** Used by the singleton daemon's startup sweep before it accepts new work. */
   listRecoverableRuns(): Promise<readonly Run[]>;
   getStep(stepId: string): Promise<Step | undefined>;

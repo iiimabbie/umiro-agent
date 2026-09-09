@@ -152,6 +152,17 @@ test("persists an execution atomically and survives close/reopen", async () => {
   }
 });
 
+test("lists recent runs newest first with a bounded limit", async () => {
+  const database = fixture();
+  try {
+    await database.store.createRunWithStep({ ...run("run-old"), createdAt: "2026-09-08T10:00:00.000Z", updatedAt: "2026-09-08T10:00:00.000Z" }, step("run-old", "step-old"));
+    await database.store.createRunWithStep({ ...run("run-new"), createdAt: "2026-09-08T11:00:00.000Z", updatedAt: "2026-09-08T11:00:00.000Z" }, step("run-new", "step-new"));
+    assert.deepEqual((await database.store.listRuns(1)).map(item => item.id), ["run-new"]);
+    await assert.rejects(database.store.listRuns(0), /between 1 and 200/);
+    await assert.rejects(database.store.listRuns(201), /between 1 and 200/);
+  } finally { database.cleanup(); }
+});
+
 test("rolls back the decision when its operation cannot be inserted", async () => {
   const database = fixture();
   try {

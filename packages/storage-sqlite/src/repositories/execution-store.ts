@@ -1159,6 +1159,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return row ? this.runFromRow(row) : undefined;
   }
 
+  async listRuns(limit = 50): Promise<readonly Run[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new TypeError("run list limit must be between 1 and 200");
+    const rows = this.database.prepare("SELECT * FROM runs ORDER BY created_at DESC, id DESC LIMIT ?").all(limit) as RunRow[];
+    return rows.map(row => this.runFromRow(row));
+  }
+
   async listRecoverableRuns(): Promise<readonly Run[]> {
     const rows = this.database.prepare(`
       SELECT * FROM runs

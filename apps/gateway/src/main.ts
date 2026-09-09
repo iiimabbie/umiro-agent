@@ -101,6 +101,9 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     if (outcome.status === "resumed") { await delivery.drain(); return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.result.status }; }
     return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.runState };
   },
+}, runs: {
+  list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); return { id: run.id, state: run.state, origin: run.context.origin.kind, createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
+  get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
 }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: () => readiness, processId: process.pid });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
@@ -110,7 +113,7 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
   if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
   await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
 }
-host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, artifacts, legacy: legacyServices });
+host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, artifacts, legacy: legacyServices }, undefined, logger);
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());
 readiness.plugins = true;
