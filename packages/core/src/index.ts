@@ -13,4 +13,5 @@ export * from "./ports/index.js";
 export * from "./plugin/index.js";
 export * from "./run/index.js";
 export * from "./search/index.js";
+export * from "./scheduler/index.js";
 export * from "./tool/index.js";

@@ -41,6 +41,9 @@ import {
   type SearchHit,
   type VisibilityScope,
   type EmbeddingJob,
+  type CreateScheduledTrigger,
+  type ScheduledOccurrence,
+  type ScheduledTrigger,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -146,6 +149,9 @@ interface TurnRow {
   reply_to_turn_id: string | null;
   created_at: string;
 }
+
+interface TriggerRow { id: string; revision: number; name: string; enabled: number; schedule_json: string; timezone: string; job_ref: string; input_json: string; creator_principal_id: string; creator_roles_json: string; authority_json: string; destination_json: string | null; misfire_policy: ScheduledTrigger["misfirePolicy"]; max_attempts: number; retry_backoff_ms: number; next_fire_at: string | null; created_at: string; updated_at: string }
+interface OccurrenceRow { id: string; trigger_id: string; scheduled_for: string; status: ScheduledOccurrence["status"]; attempts: number; run_id: string; next_retry_at: string | null; error: string | null; claimed_at: string; completed_at: string | null }
 
 interface DelegationRow {
   id: string;
@@ -377,6 +383,62 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (text.trim()) this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)")
       .run(turn.id, turn.conversationId, turn.actorPrincipalId, text);
     if (text.trim()) this.enqueueEmbedding(turn.id, text);
+  }
+
+  private triggerFromRow(row: TriggerRow): ScheduledTrigger {
+    return { id: row.id, revision: row.revision, name: row.name, enabled: row.enabled === 1, schedule: parseJson<ScheduledTrigger["schedule"]>(row.schedule_json), timezone: row.timezone, jobRef: row.job_ref, input: parseJson<JsonObject>(row.input_json), creatorPrincipalId: row.creator_principal_id, creatorRoles: parseJson<ScheduledTrigger["creatorRoles"]>(row.creator_roles_json), authority: parseJson<ScheduledTrigger["authority"]>(row.authority_json), ...(row.destination_json ? { destination: parseJson<JsonObject>(row.destination_json) } : {}), misfirePolicy: row.misfire_policy, maxAttempts: row.max_attempts, retryBackoffMs: row.retry_backoff_ms, nextFireAt: row.next_fire_at, createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  private occurrenceFromRow(row: OccurrenceRow): ScheduledOccurrence {
+    return { id: row.id, triggerId: row.trigger_id, scheduledFor: row.scheduled_for, status: row.status, attempts: row.attempts, runId: row.run_id, ...(row.next_retry_at ? { nextRetryAt: row.next_retry_at } : {}), ...(row.error ? { error: row.error } : {}), claimedAt: row.claimed_at, ...(row.completed_at ? { completedAt: row.completed_at } : {}) };
+  }
+  async createScheduledTrigger(trigger: CreateScheduledTrigger): Promise<ScheduledTrigger> {
+    this.database.prepare(`INSERT INTO scheduled_triggers(id, revision, name, enabled, schedule_json, timezone, job_ref, input_json, creator_principal_id, creator_roles_json, authority_json, destination_json, misfire_policy, max_attempts, retry_backoff_ms, next_fire_at, created_at, updated_at)
+      VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(trigger.id, trigger.name, trigger.enabled ? 1 : 0, json(trigger.schedule), trigger.timezone, trigger.jobRef, json(trigger.input), trigger.creatorPrincipalId, json([...trigger.creatorRoles]), json(trigger.authority), trigger.destination ? json(trigger.destination) : null, trigger.misfirePolicy, trigger.maxAttempts, trigger.retryBackoffMs, trigger.nextFireAt, trigger.createdAt, trigger.createdAt);
+    return (await this.getScheduledTrigger(trigger.id))!;
+  }
+  async listScheduledTriggers(): Promise<readonly ScheduledTrigger[]> { return (this.database.prepare("SELECT * FROM scheduled_triggers ORDER BY created_at, id").all() as TriggerRow[]).map(row => this.triggerFromRow(row)); }
+  async getScheduledTrigger(id: string): Promise<ScheduledTrigger | undefined> { const row = this.database.prepare("SELECT * FROM scheduled_triggers WHERE id=?").get(id) as TriggerRow | undefined; return row ? this.triggerFromRow(row) : undefined; }
+  async getScheduledOccurrence(id: string): Promise<ScheduledOccurrence | undefined> { const row = this.database.prepare("SELECT * FROM scheduled_occurrences WHERE id=?").get(id) as OccurrenceRow | undefined; return row ? this.occurrenceFromRow(row) : undefined; }
+  async setScheduledTriggerEnabled(id: string, enabled: boolean, nextFireAt: string | null, expectedRevision: number, updatedAt: string): Promise<ScheduledTrigger> {
+    const update = this.database.prepare("UPDATE scheduled_triggers SET enabled=?, next_fire_at=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?").run(enabled ? 1 : 0, nextFireAt, updatedAt, id, expectedRevision);
+    expectOne(update.changes, `scheduled trigger changed: ${id}`); return (await this.getScheduledTrigger(id))!;
+  }
+  async deleteScheduledTrigger(id: string): Promise<boolean> { return this.database.prepare("DELETE FROM scheduled_triggers WHERE id=?").run(id).changes === 1; }
+  async listDueScheduledTriggers(now: string, limit: number): Promise<readonly ScheduledTrigger[]> {
+    return (this.database.prepare("SELECT * FROM scheduled_triggers WHERE enabled=1 AND next_fire_at IS NOT NULL AND next_fire_at <= ? ORDER BY next_fire_at, id LIMIT ?").all(now, limit) as TriggerRow[]).map(row => this.triggerFromRow(row));
+  }
+  async claimScheduledOccurrence(triggerId: string, expectedRevision: number, scheduledFor: string, nextFireAt: string | null, disable: boolean, occurrenceId: string, runId: string, claimedAt: string): Promise<ScheduledOccurrence | undefined> {
+    return this.database.transaction(() => {
+      const exists = this.database.prepare("SELECT 1 FROM scheduled_occurrences WHERE trigger_id=? AND scheduled_for=?").get(triggerId, scheduledFor); if (exists) return undefined;
+      const updated = this.database.prepare("UPDATE scheduled_triggers SET revision=revision+1, next_fire_at=?, enabled=?, updated_at=? WHERE id=? AND revision=? AND enabled=1 AND next_fire_at=?")
+        .run(nextFireAt, disable ? 0 : 1, claimedAt, triggerId, expectedRevision, scheduledFor);
+      if (updated.changes !== 1) return undefined;
+      this.database.prepare("INSERT INTO scheduled_occurrences(id, trigger_id, scheduled_for, status, attempts, run_id, claimed_at) VALUES (?, ?, ?, 'running', 1, ?, ?)").run(occurrenceId, triggerId, scheduledFor, runId, claimedAt);
+      this.database.prepare("INSERT INTO scheduled_occurrence_attempts(occurrence_id, attempt, run_id, status, claimed_at) VALUES (?, 1, ?, 'running', ?)").run(occurrenceId, runId, claimedAt);
+      return this.occurrenceFromRow(this.database.prepare("SELECT * FROM scheduled_occurrences WHERE id=?").get(occurrenceId) as OccurrenceRow);
+    })();
+  }
+  async listRetryableScheduledOccurrences(now: string, limit: number): Promise<readonly ScheduledOccurrence[]> { return (this.database.prepare("SELECT * FROM scheduled_occurrences WHERE status='failed' AND next_retry_at IS NOT NULL AND next_retry_at <= ? ORDER BY next_retry_at, id LIMIT ?").all(now, limit) as OccurrenceRow[]).map(row => this.occurrenceFromRow(row)); }
+  async claimScheduledRetry(id: string, expectedAttempts: number, runId: string, claimedAt: string): Promise<ScheduledOccurrence | undefined> {
+    return this.database.transaction(() => {
+      const update = this.database.prepare("UPDATE scheduled_occurrences SET status='running', attempts=attempts+1, run_id=?, next_retry_at=NULL, error=NULL, claimed_at=?, completed_at=NULL WHERE id=? AND status='failed' AND attempts=?").run(runId, claimedAt, id, expectedAttempts);
+      if (update.changes !== 1) return undefined;
+      this.database.prepare("INSERT INTO scheduled_occurrence_attempts(occurrence_id, attempt, run_id, status, claimed_at) VALUES (?, ?, ?, 'running', ?)").run(id, expectedAttempts + 1, runId, claimedAt);
+      return this.occurrenceFromRow(this.database.prepare("SELECT * FROM scheduled_occurrences WHERE id=?").get(id) as OccurrenceRow);
+    })();
+  }
+  async completeScheduledOccurrence(id: string, completedAt: string): Promise<void> { this.database.transaction(() => { expectOne(this.database.prepare("UPDATE scheduled_occurrences SET status='succeeded', completed_at=?, next_retry_at=NULL, error=NULL WHERE id=? AND status='running'").run(completedAt, id).changes, `scheduled occurrence changed: ${id}`); this.database.prepare("UPDATE scheduled_occurrence_attempts SET status='succeeded', completed_at=? WHERE occurrence_id=? AND status='running'").run(completedAt, id); })(); }
+  async failScheduledOccurrence(id: string, error: string, nextRetryAt: string | undefined, completedAt: string): Promise<void> { this.database.transaction(() => { const message = error.slice(0, 2000); expectOne(this.database.prepare("UPDATE scheduled_occurrences SET status='failed', error=?, next_retry_at=?, completed_at=? WHERE id=? AND status='running'").run(message, nextRetryAt ?? null, completedAt, id).changes, `scheduled occurrence changed: ${id}`); this.database.prepare("UPDATE scheduled_occurrence_attempts SET status='failed', error=?, completed_at=? WHERE occurrence_id=? AND status='running'").run(message, completedAt, id); })(); }
+  async recoverScheduledOccurrences(recoveredAt: string): Promise<number> {
+    return this.database.transaction(() => {
+      const rows = this.database.prepare(`SELECT o.id, o.attempts, o.run_id, t.max_attempts, r.state AS run_state FROM scheduled_occurrences o JOIN scheduled_triggers t ON t.id=o.trigger_id LEFT JOIN runs r ON r.id=o.run_id WHERE o.status='running'`).all() as Array<{ id: string; attempts: number; run_id: string; max_attempts: number; run_state: RunState | null }>;
+      for (const row of rows) {
+        if (row.run_state === "succeeded") { this.database.prepare("UPDATE scheduled_occurrences SET status='succeeded', completed_at=? WHERE id=?").run(recoveredAt, row.id); this.database.prepare("UPDATE scheduled_occurrence_attempts SET status='succeeded', completed_at=? WHERE occurrence_id=? AND attempt=?").run(recoveredAt, row.id, row.attempts); }
+        else { const retry = row.run_state === "waiting" || row.attempts >= row.max_attempts ? null : recoveredAt; this.database.prepare("UPDATE scheduled_occurrences SET status='failed', error='daemon restarted during scheduled execution', next_retry_at=?, completed_at=? WHERE id=?").run(retry, recoveredAt, row.id); this.database.prepare("UPDATE scheduled_occurrence_attempts SET status='failed', error='daemon restarted during scheduled execution', completed_at=? WHERE occurrence_id=? AND attempt=?").run(recoveredAt, row.id, row.attempts); }
+      }
+      return rows.length;
+    })();
   }
 
   private contentHash(text: string): string { return createHash("sha256").update(text).digest("hex"); }

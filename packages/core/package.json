@@ -23,6 +23,7 @@
     "./plugin": { "types": "./dist/src/plugin/index.d.ts", "default": "./dist/src/plugin/index.js" },
     "./run": "./dist/src/run/index.js",
     "./search": "./dist/src/search/index.js",
+    "./scheduler": "./dist/src/scheduler/index.js",
     "./tool": { "types": "./dist/src/tool/index.d.ts", "default": "./dist/src/tool/index.js" }
   },
   "scripts": {

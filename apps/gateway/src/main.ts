@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, type JsonObject } from "@umiro/core";
+import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
 import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -7,8 +7,8 @@ import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
 import { pluginStateDirectory } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
-import { PluginJobScheduler } from "./plugin-jobs.js";
 import { EmbeddingWorker, GeminiEmbedder, HybridConversationSearch } from "./embedding-worker.js";
+import { DurableScheduler } from "./durable-scheduler.js";
 
 const paths = umiroPaths();
 const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
@@ -28,10 +28,10 @@ const googleApiKey = process.env.GOOGLE_API_KEY?.trim();
 const embedder = googleApiKey ? new GeminiEmbedder(process.env.UMIRO_EMBEDDING_MODEL?.trim() || "gemini-embedding-2", googleApiKey) : undefined;
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefined;
 const search = new HybridConversationSearch(store, embedder);
-const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search });
+const scheduler = new DurableScheduler(store);
+const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
-const pluginJobs = new PluginJobScheduler(host);
-pluginJobs.start();
+await scheduler.syncPluginJobs(host.listJobs());
 embeddingWorker?.start();
 
 const baseUrl = process.env.LLM_BASE_URL?.trim();
@@ -39,12 +39,23 @@ if (!baseUrl) throw new Error("LLM_BASE_URL is required");
 const apiKey = process.env.LLM_API_KEY?.trim();
 const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
 const engine = new HeadlessRunEngine(modelPort, tools, store);
+const contextEngine = new ContextEngine(providers);
 const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
 if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
-const ingress = new InteractiveIngress(identities, store, store, new ContextEngine(providers), engine);
+const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord);
+scheduler.setDispatcher(async (trigger, occurrence, signal) => {
+  if (trigger.jobRef.startsWith("plugin:")) { await host.runJob(trigger.jobRef.slice("plugin:".length), signal); return; }
+  if (trigger.jobRef !== "agent.prompt" || typeof trigger.input.prompt !== "string") throw new Error(`unsupported scheduled job: ${trigger.jobRef}`);
+  const execution = { origin: { kind: "schedule" as const, scheduleId: trigger.id }, actor: { id: trigger.creatorPrincipalId, kind: trigger.creatorRoles.includes("system") ? "system" as const : "human" as const, roles: trigger.creatorRoles }, authority: intersectAuthority(trigger.authority, authority) };
+  const prompt = `[Authoritative current time: ${new Date().toISOString()}]\n[Scheduled task: ${trigger.name}; originally due ${occurrence.scheduledFor}]\n\n${trigger.input.prompt}`;
+  const assembledContext = await contextEngine.assemble({ runId: occurrence.runId, execution, prompt, maxCharacters: 100_000, ...(signal ? { signal } : {}) });
+  const result = await engine.run({ runId: occurrence.runId, context: execution, model: typeof trigger.input.model === "string" ? trigger.input.model : config.model, prompt, assembledContext, ...(trigger.destination ? { deliveryDestination: trigger.destination } : {}), ...(signal ? { signal } : {}) });
+  if (result.status !== "succeeded") throw new Error(`scheduled Run ${result.runId} ended ${result.status}`);
+  await delivery.drain(signal);
+});
 discord.onCommand(host.listCommands(), async (name, input, userId) => {
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);
@@ -59,6 +70,7 @@ const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await discord.start(token);
 await delivery.drain();
-const shutdown = async () => { pluginJobs.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); process.exit(0); };
+scheduler.start();
+const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); process.exit(0); };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

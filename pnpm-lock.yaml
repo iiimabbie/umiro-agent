@@ -203,6 +203,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
 
+  plugins/scheduler:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
   plugins/soul-guardian:
     dependencies:
       '@umiro/core':

@@ -5,11 +5,16 @@ import type { ToolDefinition } from "../tool/contract.js";
 import type { PluginStateStore } from "./state.js";
 import type { PluginHookDefinition } from "./hooks.js";
 import type { ConversationSearch } from "../search/contract.js";
+import type { SchedulerControl } from "../scheduler/contract.js";
 
 /** Protocol-neutral declarations; Scheduler/Adapter registries consume these later. */
 export interface PluginJobDefinition {
   readonly id: string;
   readonly schedule: string;
+  readonly timezone?: string;
+  readonly misfirePolicy?: "catch_up" | "coalesce" | "skip";
+  readonly maxAttempts?: number;
+  readonly retryBackoffMs?: number;
   readonly run: (context: { readonly jobId: string; readonly signal?: AbortSignal }) => Promise<void>;
 }
 
@@ -47,11 +52,11 @@ export interface PluginSetupContext {
   readonly permissionCeiling: Authority;
   readonly config: JsonObject;
   readonly state?: PluginStateStore;
-  readonly services?: { readonly conversationSearch?: ConversationSearch };
+  readonly services?: PluginHostServices;
   getSecret(name: string): string | undefined;
 }
 
-export interface PluginHostServices { readonly conversationSearch?: ConversationSearch }
+export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl }
 
 export interface PluginEnableOptions {
   readonly config?: JsonObject;

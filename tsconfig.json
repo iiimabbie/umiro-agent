@@ -10,6 +10,7 @@
     { "path": "./plugins/context-files" },
     { "path": "./plugins/people" },
     { "path": "./plugins/memory" },
+    { "path": "./plugins/scheduler" },
     { "path": "./plugins/soul-guardian" },
     { "path": "./apps/dev-driver" }
   ]
