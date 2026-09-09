@@ -2,7 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type HeadlessRunResult, type JsonObject } from "@umiro/core";
-import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordApprovalAction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
+import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
@@ -77,6 +77,7 @@ if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
+discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
@@ -219,6 +220,17 @@ await discord.start(token);
 await delivery.drain();
 await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
 scheduler.start();
-const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await controlPanel?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(0); };
+let shuttingDown = false;
+const shutdown = async (exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  scheduler.stop(); embeddingWorker?.stop(); await controlPanel?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(exitCode);
+};
+const fatal = (event: "unhandledRejection" | "uncaughtException", error: unknown) => {
+  try { logger.write({ level: "error", event: `process.${event}`, message: "Fatal process error; shutting down cleanly", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }); } catch { /* Last-resort handler must continue shutdown. */ }
+  void shutdown(1);
+};
+process.once("unhandledRejection", error => fatal("unhandledRejection", error));
+process.once("uncaughtException", error => fatal("uncaughtException", error));
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

@@ -53,6 +53,8 @@ export function decideDiscordIngress(
   config: DiscordTriggerPolicyConfig,
   ownerDiscordId: string,
 ): DiscordTriggerDecision {
+  // Discord threads are independent policy scopes. Lists match the exact
+  // channel/thread ID and intentionally do not inherit the parent channel.
   const ignored = new Set(config.ignoredChannels ?? []);
   if (ignored.has(facts.channelId)) return { disposition: "ignore", reason: "ignored_channel" };
   if (facts.authorBot && config.respondToBots !== true) return { disposition: "ignore", reason: "bot_messages_disabled" };

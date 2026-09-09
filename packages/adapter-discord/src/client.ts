@@ -4,6 +4,8 @@ import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
 export type DiscordApprovalAction = "approve" | "deny";
 export interface DiscordApprovalPrompt { readonly approvalId: string; readonly operation: string; readonly details: string; readonly expiresAt: string }
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
+export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "approval"; readonly channelId?: string; readonly messageId?: string }
+export type DiscordAdapterErrorHandler = (error: unknown, context: DiscordAdapterErrorContext) => void;
 
 export function approvalCustomId(action: DiscordApprovalAction, approvalId: string): string {
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(approvalId)) throw new TypeError("invalid Discord approval ID");
@@ -21,16 +23,21 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
+  private errorHandler?: DiscordAdapterErrorHandler;
   private readonly messageTimes = new Map<string, number[]>();
   private readonly channelQueues = new Map<string, Promise<void>>();
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
   onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
+  onError(handler: DiscordAdapterErrorHandler): void { this.errorHandler = handler; }
 
   async start(token: string): Promise<void> {
     this.client.on("messageCreate", message => this.enqueueMessage(message));
-    this.client.on("interactionCreate", interaction => { if (interaction.isChatInputCommand()) void this.handleCommand(interaction); else if (interaction.isButton()) void this.handleApproval(interaction); });
+    this.client.on("interactionCreate", interaction => {
+      if (interaction.isChatInputCommand()) void this.handleCommand(interaction).catch(error => this.reportError(error, { event: "command", channelId: interaction.channelId }));
+      else if (interaction.isButton()) void this.handleApproval(interaction).catch(error => this.reportError(error, { event: "approval", channelId: interaction.channelId }));
+    });
     await this.client.login(token);
     if (!this.client.user) throw new Error("Discord login returned without a bot user");
     console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
@@ -43,9 +50,13 @@ export class DiscordJsAdapter implements DiscordTextTransport {
 
   private enqueueMessage(message: Message): void {
     const previous = this.channelQueues.get(message.channelId) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(() => this.handle(message));
+    const current = previous.then(() => this.handle(message)).catch(error => this.reportError(error, { event: "message", channelId: message.channelId, messageId: message.id }));
     this.channelQueues.set(message.channelId, current);
-    void current.finally(() => { if (this.channelQueues.get(message.channelId) === current) this.channelQueues.delete(message.channelId); }).catch(() => undefined);
+    void current.finally(() => { if (this.channelQueues.get(message.channelId) === current) this.channelQueues.delete(message.channelId); });
+  }
+
+  private reportError(error: unknown, context: DiscordAdapterErrorContext): void {
+    try { this.errorHandler?.(error, context); } catch { /* Observability must not alter adapter behavior. */ }
   }
 
   async sendText(channelId: string, text: string): Promise<{ messageId: string }> {
