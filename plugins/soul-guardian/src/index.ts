@@ -15,7 +15,8 @@ const fail = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus
 const paths = (input: JsonObject): string[] => Array.isArray(input.paths) ? input.paths.filter((p): p is string => typeof p === "string") : [];
 
 export function createPlugin(context: PluginSetupContext): PluginInstance {
-  const service = new SoulGuardianService(context.config as unknown as SoulGuardianConfig, context.state!);
+  const config = context.config as unknown as SoulGuardianConfig;
+  const service = new SoulGuardianService(config, context.state!);
   const tool = (name: string, description: string, capability: string, inputSchema: Record<string, unknown>, run: (input: JsonObject) => Promise<ToolExecutionResult>): ToolDefinition => ({
     name, description, inputSchema, policy: { capability, tier: "privileged", interactionRequirement: "not_required", sideEffect: name.includes("approve") || name.includes("restore") ? "idempotent" : "none" }, execute: run,
   });
@@ -26,7 +27,9 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
       tool("soul_guardian_history", "List approval history for a monitored file.", CAP.history, { type: "object", required: ["path"], properties: { path: { type: "string" } } }, async input => { try { return ok(await service.history(String(input.path))); } catch (e) { return fail(e); } }),
       tool("soul_guardian_approve", "Approve current contents as the new baseline.", CAP.approve, { type: "object", required: ["paths"], properties: { paths: { type: "array", items: { type: "string" } } } }, async input => { try { return ok(await service.approve(paths(input))); } catch (e) { return fail(e); } }),
       tool("soul_guardian_restore", "Restore monitored files from their approved baseline.", CAP.restore, { type: "object", required: ["paths"], properties: { paths: { type: "array", items: { type: "string" } } } }, async input => { try { return ok(await service.restore(paths(input))); } catch (e) { return fail(e); } }),
-    ] },
+    ], jobs: [{ id: "soul-guardian.check", schedule: config.schedule, async run() { await service.check(); } }],
+    commands: [{ name: "soul-guardian", description: "Show Soul Guardian integrity status", ownerOnly: true, async execute() { return { items: await service.status() } as never; } }],
+    },
     start: () => service.start(),
   };
 }

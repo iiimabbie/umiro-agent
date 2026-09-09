@@ -13,9 +13,10 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["workspacePath", "targets"],
+    "required": ["workspacePath", "targets", "schedule"],
     "properties": {
       "workspacePath": { "type": "string", "minLength": 1 },
+      "schedule": { "type": "string", "minLength": 1 },
       "targets": {
         "type": "array",
         "items": {
@@ -27,5 +28,9 @@
       }
     }
   },
-  "contributes": { "tools": ["soul_guardian_status", "soul_guardian_check", "soul_guardian_history", "soul_guardian_approve", "soul_guardian_restore"] }
+  "contributes": {
+    "tools": ["soul_guardian_status", "soul_guardian_check", "soul_guardian_history", "soul_guardian_approve", "soul_guardian_restore"],
+    "jobs": ["soul-guardian.check"],
+    "commands": ["soul-guardian"]
+  }
 }

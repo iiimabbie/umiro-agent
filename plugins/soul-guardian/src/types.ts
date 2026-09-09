@@ -8,6 +8,7 @@ export interface SoulGuardianTarget {
 export interface SoulGuardianConfig {
   readonly workspacePath: string;
   readonly targets: readonly SoulGuardianTarget[];
+  readonly schedule: string;
 }
 
 export type SoulGuardianStatus = "ok" | "drift" | "missing" | "unapproved" | "ignored";
