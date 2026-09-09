@@ -10,8 +10,10 @@ import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, GeminiEmbedder, HybridConversationSearch } from "./embedding-worker.js";
 import { DurableScheduler } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
+import { acquireSingletonLock } from "./singleton-lock.js";
 
 const paths = umiroPaths();
+const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
@@ -138,6 +140,6 @@ await discord.start(token);
 await delivery.drain();
 await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
 scheduler.start();
-const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); process.exit(0); };
+const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(0); };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
