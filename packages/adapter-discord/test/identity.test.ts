@@ -37,6 +37,7 @@ test("delivers pending Discord output and records confirmation", async () => {
   const worker = new DiscordDeliveryWorker({
     async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "hello" }, state: "pending", createdAt: "now" }]; },
     async markDeliveryDelivered(id) { marked.push(id); },
+    async markDeliveryFailed() {},
   }, { async sendText(channelId, text) { sent.push(`${channelId}:${text}`); return { messageId: "m" }; } });
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
   assert.deepEqual(sent, ["c:hello"]);
@@ -48,6 +49,7 @@ test("delivers durable artifacts before marking the intent delivered", async () 
   const worker = new DiscordDeliveryWorker({
     async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "", artifactIds: ["a"] }, state: "pending" as const, createdAt: "now" }]; },
     async markDeliveryDelivered(id) { events.push(`marked:${id}`); },
+    async markDeliveryFailed() {},
   }, {
     async sendText() { throw new Error("text path must not run"); },
     async sendFiles(channelId, files) { events.push(`files:${channelId}:${files[0]?.name}`); return { messageId: "m" }; },
@@ -56,4 +58,17 @@ test("delivers durable artifacts before marking the intent delivered", async () 
   });
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
   assert.deepEqual(events, ["files:c:report.txt", "marked:d"]);
+});
+
+test("persists delivery failure and retries only after durable backoff", async () => {
+  const failures: string[] = []; let attempts = 0;
+  const intent = { id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "hello" }, state: "pending" as const, attempts: 0, createdAt: "now" };
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [intent]; },
+    async markDeliveryDelivered() {},
+    async markDeliveryFailed(_id, error, next) { failures.push(`${error}:${next}`); },
+  }, { async sendText() { attempts++; throw new Error("rate limited"); } }, () => "2026-09-09T00:00:00.000Z");
+  assert.deepEqual(await worker.drain(), { delivered: 0, skipped: 1 });
+  assert.equal(attempts, 1);
+  assert.deepEqual(failures, ["rate limited:2026-09-09T00:00:01.000Z"]);
 });

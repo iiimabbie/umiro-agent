@@ -1134,34 +1134,43 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async getDeliveryIntent(deliveryId: string): Promise<DeliveryIntent | undefined> {
     const row = this.database.prepare("SELECT * FROM delivery_intents WHERE id = ?").get(deliveryId) as {
       id: string; run_id: string; destination_json: string; payload_json: string; state: DeliveryIntent["state"];
-      created_at: string; delivered_at: string | null;
+      created_at: string; delivered_at: string | null; attempts: number; next_attempt_at: string | null; last_error: string | null; delivery_evidence_json: string | null;
     } | undefined;
     return row ? this.deliveryFromRow(row) : undefined;
   }
 
-  async listPendingDeliveries(): Promise<readonly DeliveryIntent[]> {
-    const rows = this.database.prepare("SELECT * FROM delivery_intents WHERE state = 'pending' ORDER BY created_at, id").all() as Array<{
+  async listPendingDeliveries(now = new Date().toISOString()): Promise<readonly DeliveryIntent[]> {
+    const rows = this.database.prepare("SELECT * FROM delivery_intents WHERE state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at, id").all(now) as Array<{
       id: string; run_id: string; destination_json: string; payload_json: string; state: DeliveryIntent["state"];
-      created_at: string; delivered_at: string | null;
+      created_at: string; delivered_at: string | null; attempts: number; next_attempt_at: string | null; last_error: string | null; delivery_evidence_json: string | null;
     }>;
     return rows.map(row => this.deliveryFromRow(row));
   }
 
-  async markDeliveryDelivered(deliveryId: string, deliveredAt: string): Promise<void> {
+  async markDeliveryDelivered(deliveryId: string, deliveredAt: string, evidence?: JsonObject): Promise<void> {
     this.database.transaction(() => {
       const update = this.database.prepare(`
-        UPDATE delivery_intents SET state = 'delivered', delivered_at = ?
+        UPDATE delivery_intents SET state = 'delivered', delivered_at = ?, delivery_evidence_json = ?, next_attempt_at = NULL, last_error = NULL
         WHERE id = ? AND state = 'pending'
-      `).run(deliveredAt, deliveryId);
+      `).run(deliveredAt, evidence ? json(evidence) : null, deliveryId);
       expectOne(update.changes, `delivery ${deliveryId} changed concurrently`);
       const row = this.database.prepare("SELECT run_id FROM delivery_intents WHERE id = ?").get(deliveryId) as { run_id: string };
-      this.insertAudit("delivery.delivered", "delivery", deliveryId, row.run_id, { state: "delivered" }, deliveredAt);
+      this.insertAudit("delivery.delivered", "delivery", deliveryId, row.run_id, { state: "delivered", ...(evidence ? { evidence } : {}) }, deliveredAt);
+    })();
+  }
+
+  async markDeliveryFailed(deliveryId: string, error: string, nextAttemptAt: string, occurredAt: string): Promise<void> {
+    this.database.transaction(() => {
+      const update = this.database.prepare("UPDATE delivery_intents SET attempts = attempts + 1, last_error = ?, next_attempt_at = ? WHERE id = ? AND state = 'pending'").run(error.slice(0, 2000), nextAttemptAt, deliveryId);
+      expectOne(update.changes, `delivery ${deliveryId} changed concurrently`);
+      const row = this.database.prepare("SELECT run_id, attempts FROM delivery_intents WHERE id = ?").get(deliveryId) as { run_id: string; attempts: number };
+      this.insertAudit("delivery.failed", "delivery", deliveryId, row.run_id, { state: "pending", attempts: row.attempts, nextAttemptAt }, occurredAt);
     })();
   }
 
   private deliveryFromRow(row: {
     id: string; run_id: string; destination_json: string; payload_json: string; state: DeliveryIntent["state"];
-    created_at: string; delivered_at: string | null;
+    created_at: string; delivered_at: string | null; attempts: number; next_attempt_at: string | null; last_error: string | null; delivery_evidence_json: string | null;
   }): DeliveryIntent {
     return {
       id: row.id,
@@ -1169,8 +1178,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       destination: parseJson<DeliveryIntent["destination"]>(row.destination_json),
       payload: parseJson<DeliveryIntent["payload"]>(row.payload_json),
       state: row.state,
+      ...(row.attempts ? { attempts: row.attempts } : {}),
       createdAt: row.created_at,
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+      ...(row.next_attempt_at ? { nextAttemptAt: row.next_attempt_at } : {}),
+      ...(row.last_error ? { lastError: row.last_error } : {}),
+      ...(row.delivery_evidence_json ? { deliveryEvidence: parseJson<JsonObject>(row.delivery_evidence_json) } : {}),
     };
   }
 

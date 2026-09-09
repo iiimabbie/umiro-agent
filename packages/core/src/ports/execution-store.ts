@@ -71,8 +71,9 @@ export interface ExecutionStore {
   listModelCalls(runId: string): Promise<readonly ModelCallRecord[]>;
   getRunOutput(runId: string): Promise<RunOutput | undefined>;
   getDeliveryIntent(deliveryId: string): Promise<DeliveryIntent | undefined>;
-  listPendingDeliveries(): Promise<readonly DeliveryIntent[]>;
-  markDeliveryDelivered(deliveryId: string, deliveredAt: string): Promise<void>;
+  listPendingDeliveries(now?: string): Promise<readonly DeliveryIntent[]>;
+  markDeliveryDelivered(deliveryId: string, deliveredAt: string, evidence?: import("./json.js").JsonObject): Promise<void>;
+  markDeliveryFailed(deliveryId: string, error: string, nextAttemptAt: string, occurredAt: string): Promise<void>;
   listAuditEvents(runId: string): Promise<readonly AuditEvent[]>;
   close(): void;
 }

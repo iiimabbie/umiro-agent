@@ -74,7 +74,7 @@ export interface DiscordTextTransport {
 
 export class DiscordDeliveryWorker {
   constructor(
-    private readonly store: Pick<ExecutionStore, "listPendingDeliveries" | "markDeliveryDelivered">,
+    private readonly store: Pick<ExecutionStore, "listPendingDeliveries" | "markDeliveryDelivered" | "markDeliveryFailed">,
     private readonly transport: DiscordTextTransport,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly artifacts?: Pick<ArtifactStore, "getArtifact">,
@@ -83,27 +83,36 @@ export class DiscordDeliveryWorker {
   async drain(signal?: AbortSignal): Promise<{ delivered: number; skipped: number }> {
     let delivered = 0;
     let skipped = 0;
-    for (const intent of await this.store.listPendingDeliveries()) {
+    const drainAt = this.now();
+    for (const intent of await this.store.listPendingDeliveries(drainAt)) {
       if (intent.destination.kind !== "discord" || typeof intent.destination.channelId !== "string") {
         skipped++;
         continue;
       }
-      const text = intent.payload.text;
-      if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
-      const artifactIds = intent.payload.artifactIds;
-      if (Array.isArray(artifactIds) && artifactIds.length) {
-        if (!this.transport.sendFiles || !this.artifacts) throw new Error("Discord artifact delivery is unavailable");
-        const files: { path: string; name?: string }[] = [];
-        for (const id of artifactIds) {
-          if (typeof id !== "string") throw new TypeError(`Discord delivery ${intent.id} has an invalid artifact id`);
-          const artifact = await this.artifacts.getArtifact(id);
-          if (!artifact || artifact.state === "deleted") throw new Error(`artifact ${id} is unavailable`);
-          files.push({ path: artifact.location, ...(artifact.filename ? { name: artifact.filename } : {}) });
-        }
-        await this.transport.sendFiles(intent.destination.channelId, files, signal);
-      } else await this.transport.sendText(intent.destination.channelId, text, signal);
-      await this.store.markDeliveryDelivered(intent.id, this.now());
-      delivered++;
+      try {
+        const text = intent.payload.text;
+        if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
+        const artifactIds = intent.payload.artifactIds;
+        let sent: { readonly messageId: string };
+        if (Array.isArray(artifactIds) && artifactIds.length) {
+          if (!this.transport.sendFiles || !this.artifacts) throw new Error("Discord artifact delivery is unavailable");
+          const files: { path: string; name?: string }[] = [];
+          for (const id of artifactIds) {
+            if (typeof id !== "string") throw new TypeError(`Discord delivery ${intent.id} has an invalid artifact id`);
+            const artifact = await this.artifacts.getArtifact(id);
+            if (!artifact || artifact.state === "deleted") throw new Error(`artifact ${id} is unavailable`);
+            files.push({ path: artifact.location, ...(artifact.filename ? { name: artifact.filename } : {}) });
+          }
+          sent = await this.transport.sendFiles(intent.destination.channelId, files, signal);
+        } else sent = await this.transport.sendText(intent.destination.channelId, text, signal);
+        await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", messageId: sent.messageId, channelId: intent.destination.channelId });
+        delivered++;
+      } catch (error) {
+        const attempts = (intent.attempts ?? 0) + 1;
+        const next = new Date(Date.parse(drainAt) + Math.min(300_000, 1000 * 2 ** Math.min(attempts - 1, 8))).toISOString();
+        await this.store.markDeliveryFailed(intent.id, error instanceof Error ? error.message : String(error), next, this.now());
+        skipped++;
+      }
     }
     return { delivered, skipped };
   }

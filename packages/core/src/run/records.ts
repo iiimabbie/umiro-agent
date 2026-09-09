@@ -26,6 +26,10 @@ export interface DeliveryIntent {
   readonly destination: JsonObject;
   readonly payload: JsonObject;
   readonly state: "pending" | "delivered";
+  readonly attempts?: number;
+  readonly nextAttemptAt?: string;
+  readonly lastError?: string;
   readonly createdAt: string;
   readonly deliveredAt?: string;
+  readonly deliveryEvidence?: JsonObject;
 }

@@ -377,6 +377,25 @@ test("rolls back run completion when the output cannot be persisted", async () =
   }
 });
 
+test("delivery retry state and external evidence survive reopen", async () => {
+  const database = fixture();
+  try {
+    await database.store.createRunWithStep(run(), step());
+    await database.store.updateExecutionProgress({ runId: "run-1", expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: at });
+    await database.store.completeRunWithOutput({ output: { id: "output-retry", runId: "run-1", text: "hello", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, createdAt: at }, delivery: { id: "delivery-retry", runId: "run-1", destination: { kind: "discord", channelId: "c" }, payload: { text: "hello" }, state: "pending", createdAt: at }, expectedRunRevision: 1, runUpdatedAt: at });
+    await database.store.markDeliveryFailed("delivery-retry", "rate limited", "2026-09-08T12:01:00.000Z", "2026-09-08T12:00:01.000Z");
+    assert.equal((await database.store.listPendingDeliveries("2026-09-08T12:00:30.000Z")).length, 0);
+    assert.equal((await database.store.listPendingDeliveries("2026-09-08T12:01:00.000Z")).length, 1);
+    await database.store.markDeliveryDelivered("delivery-retry", "2026-09-08T12:01:01.000Z", { transport: "discord", messageId: "m" });
+    database.store.close();
+    const reopened = new SQLiteExecutionStore(database.filename);
+    const saved = await reopened.getDeliveryIntent("delivery-retry");
+    assert.equal(saved?.attempts, 1);
+    assert.deepEqual(saved?.deliveryEvidence, { transport: "discord", messageId: "m" });
+    reopened.close();
+  } finally { database.cleanup(); }
+});
+
 test("upgrades a version 1 database with pending delivery support", async () => {
   const directory = mkdtempSync(join(tmpdir(), "umiro-v1-migration-"));
   const filename = join(directory, "execution.db");
