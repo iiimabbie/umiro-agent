@@ -110,6 +110,7 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
   return host.executeCommand(name, input, commandContext);
 });
 discord.onMessage(async message => {
+  await discord.sendTyping(message.channelId);
   const artifactIds: string[] = [];
   for (const attachment of message.attachments ?? []) {
     const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });

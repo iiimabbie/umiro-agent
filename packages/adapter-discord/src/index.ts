@@ -67,6 +67,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
 
 export interface DiscordTextTransport {
   sendText(channelId: string, text: string, signal?: AbortSignal): Promise<{ readonly messageId: string }>;
+  sendTyping?(channelId: string): Promise<void>;
 }
 
 export class DiscordDeliveryWorker {

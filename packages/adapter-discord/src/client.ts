@@ -30,6 +30,12 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     return { messageId: sent.id };
   }
 
+  async sendTyping(channelId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased() || !("sendTyping" in channel)) return;
+    await channel.sendTyping();
+  }
+
   async editText(channelId: string, messageId: string, text: string): Promise<{ messageId: string; migrated: boolean }> {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${channelId}`);
