@@ -122,6 +122,7 @@ if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
+await discord.setRespondToBots(discordPolicy.respondToBots === true);
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
@@ -235,7 +236,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     authorBot: message.authorBot === true,
     botMentioned: message.botMentioned === true,
     replyToBot: message.replyToBot === true,
-  }, discordPolicy, ownerDiscordId);
+  }, { ...discordPolicy, respondToBots: discord.respondsToBots() }, ownerDiscordId);
   if (decision.disposition === "ignore") {
     logger.write({ level: "debug", event: "discord.ingress.ignored", message: "Discord event ignored by trigger policy", occurredAt: new Date().toISOString(), data: { reason: decision.reason, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
     return;

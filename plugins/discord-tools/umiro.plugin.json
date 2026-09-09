@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "coreApi": "0",
   "entry": "./dist/src/index.js",
-  "permissions": { "capabilities": ["discord.message.write", "discord.message.react", "discord.message.pin", "discord.message.read", "discord.thread.write", "discord.thread.delete", "discord.message.delete"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
+  "permissions": { "capabilities": ["discord.message.write", "discord.message.react", "discord.message.pin", "discord.message.read", "discord.thread.write", "discord.thread.delete", "discord.message.delete", "discord.policy.write"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
   "namespace": "discord-tools",
-  "contributes": { "tools": ["discord_send_message", "discord_react", "discord_pin", "discord_unpin", "discord_fetch_message", "discord_create_thread", "discord_create_forum_post", "discord_archive_thread", "discord_delete_thread", "discord_edit_message", "discord_delete_message", "discord_fetch_channel_messages"] }
+  "contributes": { "tools": ["discord_send_message", "discord_react", "discord_pin", "discord_unpin", "discord_fetch_message", "discord_create_thread", "discord_create_forum_post", "discord_archive_thread", "discord_delete_thread", "discord_edit_message", "discord_delete_message", "discord_fetch_channel_messages", "discord_bot_mention_toggle"] }
 }

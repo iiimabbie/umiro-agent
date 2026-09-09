@@ -28,6 +28,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private errorHandler?: DiscordAdapterErrorHandler;
   private readonly messageTimes = new Map<string, number[]>();
   private readonly channelQueues = new Map<string, Promise<void>>();
+  private respondToBots = true;
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
@@ -196,6 +197,9 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     const messages = await channel.messages.fetch({ limit: Math.min(100, Math.max(1, input.limit ?? 50)) });
     return [...messages.values()].map(item => ({ messageId: item.id, authorId: item.author.id, content: item.content, createdAt: item.createdAt.toISOString() }));
   }
+
+  async setRespondToBots(enabled: boolean): Promise<void> { this.respondToBots = enabled; }
+  respondsToBots(): boolean { return this.respondToBots; }
 
   private async handle(message: Message): Promise<void> {
     if (!this.listener) return;
