@@ -79,6 +79,7 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
 const builtinCommands = [
   { name: "stop", description: "Cancel an active Run.", ownerOnly: false, ephemeral: true, options: [{ name: "run_id", description: "Run identifier", type: "string" as const, required: true }] },
   { name: "followup", description: "Send a follow-up turn to this conversation.", ownerOnly: false, ephemeral: true, options: [{ name: "prompt", description: "Follow-up message", type: "string" as const, required: true }] },
+  { name: "archive", description: "Archive this conversation and start fresh on the next message.", ownerOnly: true, ephemeral: true },
 ];
 discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
   if (name === "stop") {
@@ -103,6 +104,11 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
       await delivery.drain(controller.signal);
       return { conversationId: result.conversationId, turnId: result.turnId, runId: result.status === "duplicate" ? result.runId : result.result.runId, status: result.status };
     } finally { activeRuns.delete(runId); activeRuns.delete(event.id); }
+  }
+  if (name === "archive") {
+    if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
+    const archived = await store.archiveBoundConversation("discord", commandContext.channelId, new Date().toISOString());
+    return archived ? { archived: true, conversationId: archived.id } : { archived: false, reason: "no_active_conversation" };
   }
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);

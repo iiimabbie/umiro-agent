@@ -393,11 +393,26 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (request.expectedState !== "active" || request.state !== "archived") {
       throw new TypeError(`invalid conversation transition: ${request.expectedState} -> ${request.state}`);
     }
-    const update = this.database.prepare(`
-      UPDATE conversations SET revision = revision + 1, state = ?, updated_at = ?
-      WHERE id = ? AND revision = ? AND state = ?
-    `).run(request.state, request.updatedAt, request.conversationId, request.expectedRevision, request.expectedState);
-    expectOne(update.changes, `conversation ${request.conversationId} changed concurrently`);
+    this.database.transaction(() => {
+      const update = this.database.prepare(`
+        UPDATE conversations SET revision = revision + 1, state = ?, updated_at = ?
+        WHERE id = ? AND revision = ? AND state = ?
+      `).run(request.state, request.updatedAt, request.conversationId, request.expectedRevision, request.expectedState);
+      expectOne(update.changes, `conversation ${request.conversationId} changed concurrently`);
+      this.database.prepare("DELETE FROM conversation_bindings WHERE conversation_id = ?").run(request.conversationId);
+    })();
+  }
+
+  async archiveBoundConversation(transport: string, externalId: string, archivedAt: string): Promise<Conversation | undefined> {
+    return this.database.transaction(() => {
+      const row = this.database.prepare("SELECT c.* FROM conversations c JOIN conversation_bindings b ON b.conversation_id = c.id WHERE b.transport = ? AND b.external_id = ?").get(transport, externalId) as ConversationRow | undefined;
+      if (!row) return undefined;
+      if (row.state !== "active") throw new ExecutionStoreConflictError(`conversation ${row.id} is not active`);
+      const update = this.database.prepare("UPDATE conversations SET revision = revision + 1, state = 'archived', updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'").run(archivedAt, row.id, row.revision);
+      expectOne(update.changes, `conversation ${row.id} changed concurrently`);
+      this.database.prepare("DELETE FROM conversation_bindings WHERE transport = ? AND external_id = ?").run(transport, externalId);
+      return { ...this.conversationFromRow(row), revision: row.revision + 1, state: "archived" as const, updatedAt: archivedAt };
+    })();
   }
 
   async getConversation(conversationId: string): Promise<Conversation | undefined> {

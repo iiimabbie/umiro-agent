@@ -24,6 +24,7 @@ export interface ConversationStore {
   getTurn(turnId: string): Promise<Turn | undefined>;
   getTurnByInputEventId(inputEventId: string): Promise<Turn | undefined>;
   listTurns(conversationId: string): Promise<readonly Turn[]>;
+  archiveBoundConversation(transport: string, externalId: string, archivedAt: string): Promise<Conversation | undefined>;
 }
 
 export interface IngestInputEventRequest {
