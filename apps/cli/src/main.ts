@@ -1,4 +1,6 @@
 import { cp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -6,6 +8,7 @@ const home = resolve(process.env.UMIRO_HOME?.trim() || join(homedir(), ".umiro-v
 const workspace = join(home, "workspace");
 const plugins = join(home, "config", "plugins.json");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
+const exec = promisify(execFile);
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -21,7 +24,16 @@ async function plugin(action: string, source?: string): Promise<void> {
   const entries: string[] = JSON.parse(await readFile(plugins, "utf8"));
   if (action === "list") { console.log(entries.join("\n")); return; }
   if (!source) throw new Error(`plugin ${action} requires a path`);
-  const path = resolve(source);
+  let path = resolve(source);
+  if (action === "install" && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
+    const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, "");
+    path = join(home, "app", "plugins", repo);
+    await mkdir(join(home, "app", "plugins"), { recursive: true, mode: 0o700 });
+    await rm(path, { recursive: true, force: true });
+    await exec("git", ["clone", "--depth", "1", source, path]);
+  } else if (action === "install" && /^(?:https?|git):/.test(source)) {
+    throw new Error("only public GitHub HTTPS plugin URLs are supported");
+  }
   const next = action === "install" ? [...new Set([...entries, path])] : entries.filter(item => item !== path);
   await writeFile(plugins, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   if (action === "remove") await rm(join(home, "data", "plugins", path), { recursive: true, force: true });
