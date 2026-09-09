@@ -19,7 +19,7 @@ import { JsonLineLogger } from "./structured-logger.js";
 import { approvalDetails } from "./approval-presentation.js";
 import { DiscordStreamingDelivery } from "./discord-streaming.js";
 import { ControlPanelServer } from "./control-panel.js";
-import type { ModelImagePart, ModelTextPart } from "@umiro/core/model";
+import { artifactModelContent } from "./artifact-input.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -202,27 +202,16 @@ discord.onMessage(async message => {
   }
   await discord.sendTyping(message.channelId);
   const artifactIds: string[] = [];
-  const userContent: Array<ModelTextPart | ModelImagePart> = [];
-  const attachmentNotes: string[] = [];
+  const importedArtifacts = [];
   for (const attachment of message.attachments ?? []) {
     const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
     const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId);
     artifactIds.push(artifact.id);
-    const mediaType = artifact.mediaType.toLowerCase();
-    if (mediaType.startsWith("image/")) {
-      const bytes = await readFile(artifact.location);
-      userContent.push({ type: "image", url: `data:${artifact.mediaType};base64,${bytes.toString("base64")}`, detail: "auto" });
-    } else if (mediaType.startsWith("text/") || mediaType === "application/json") {
-      const bytes = await readFile(artifact.location);
-      userContent.push({ type: "text", text: `Attached file ${artifact.filename ?? artifact.id}:\n${bytes.toString("utf8").slice(0, 200_000)}` });
-    } else {
-      attachmentNotes.push(`Attached file: ${artifact.filename ?? artifact.id} (${artifact.mediaType}, ${artifact.size} bytes)`);
-    }
+    importedArtifacts.push(artifact);
   }
   const controller = new AbortController();
   const event = toInputEvent(message, artifactIds);
-  if (attachmentNotes.length) userContent.push({ type: "text", text: attachmentNotes.join("\n") });
-  if (userContent.length && message.content.trim()) userContent.unshift({ type: "text", text: message.content });
+  const userContent = await artifactModelContent(message.content, importedArtifacts);
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));

@@ -607,11 +607,22 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       .run(turnId, hash, new Date().toISOString());
   }
 
+  private refreshTurnSearchProjection(runId: string, assistantText: string): void {
+    const row = this.database.prepare("SELECT id, conversation_id, actor_principal_id, content_json FROM turns WHERE primary_run_id = ?").get(runId) as { id: string; conversation_id: string; actor_principal_id: string; content_json: string } | undefined;
+    if (!row || !assistantText.trim()) return;
+    const content = parseJson<Turn["content"]>(row.content_json);
+    const input = content.filter(block => block.type === "text").map(block => block.text).join("\n").trim();
+    const text = [input, assistantText.trim()].filter(Boolean).join("\n\n");
+    this.database.prepare("DELETE FROM conversation_fts WHERE turn_id = ?").run(row.id);
+    this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)").run(row.id, row.conversation_id, row.actor_principal_id, text);
+    this.enqueueEmbedding(row.id, text);
+  }
+
   private seedEmbeddingJobs(): void {
-    const rows = this.database.prepare(`SELECT t.id, t.content_json FROM turns t LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string }>;
+    const rows = this.database.prepare(`SELECT t.id, t.content_json, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string; assistant_text: string | null }>;
     for (const row of rows) {
       const content = parseJson<Turn["content"]>(row.content_json);
-      const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+      const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? ""].filter(value => value.trim()).join("\n\n");
       if (text.trim()) this.enqueueEmbedding(row.id, text);
     }
   }
@@ -630,14 +641,14 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("embedding claim limit must be between 1 and 100");
     return this.database.transaction(() => {
-      const rows = this.database.prepare(`SELECT j.turn_id, j.content_hash, j.attempts, t.content_json
-        FROM conversation_embedding_jobs j JOIN turns t ON t.id=j.turn_id
+      const rows = this.database.prepare(`SELECT j.turn_id, j.content_hash, j.attempts, t.content_json, o.text AS assistant_text
+        FROM conversation_embedding_jobs j JOIN turns t ON t.id=j.turn_id LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id
         WHERE (j.status='pending' OR (j.status='failed' AND (j.next_retry_at IS NULL OR j.next_retry_at <= ?)) OR (j.status='processing' AND j.updated_at < ?))
-        ORDER BY j.updated_at, j.turn_id LIMIT ?`).all(now, staleBefore, limit) as Array<{ turn_id: string; content_hash: string; attempts: number; content_json: string }>;
+      ORDER BY j.updated_at, j.turn_id LIMIT ?`).all(now, staleBefore, limit) as Array<{ turn_id: string; content_hash: string; attempts: number; content_json: string; assistant_text: string | null }>;
       const update = this.database.prepare("UPDATE conversation_embedding_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE turn_id=? AND content_hash=?");
       return rows.flatMap(row => {
         if (update.run(now, row.turn_id, row.content_hash).changes !== 1) return [];
-        const content = parseJson<Turn["content"]>(row.content_json); const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        const content = parseJson<Turn["content"]>(row.content_json); const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? ""].filter(value => value.trim()).join("\n\n");
         return [{ turnId: row.turn_id, text, contentHash: row.content_hash, attempts: row.attempts + 1 }];
       });
     })();
@@ -706,11 +717,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async rebuildSearchProjection(): Promise<void> {
     this.database.transaction(() => {
       this.database.prepare("DELETE FROM conversation_fts").run();
-      const rows = this.database.prepare("SELECT * FROM turns ORDER BY conversation_id, sequence").all() as TurnRow[];
+      const rows = this.database.prepare("SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id ORDER BY t.conversation_id, t.sequence").all() as Array<TurnRow & { assistant_text: string | null }>;
       const insert = this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)");
       for (const row of rows) {
         const content = parseJson<Turn["content"]>(row.content_json);
-        const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        const input = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        const text = [input, row.assistant_text ?? ""].filter(value => value.trim()).join("\n\n");
         if (text.trim()) insert.run(row.id, row.conversation_id, row.actor_principal_id, text);
       }
     })();
@@ -883,6 +895,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       expectOne(runUpdate.changes, `run ${output.runId} changed concurrently`);
       this.database.prepare("INSERT INTO run_outputs(id, run_id, text, usage_json, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(output.id, output.runId, output.text, json(output.usage), output.createdAt);
+      this.refreshTurnSearchProjection(output.runId, output.text);
       this.database.prepare(`
         INSERT INTO delivery_intents(id, run_id, destination_json, payload_json, state, created_at, delivered_at)
         VALUES (?, ?, ?, ?, 'pending', ?, NULL)

@@ -388,6 +388,28 @@ test("rolls back run completion when the output cannot be persisted", async () =
   }
 });
 
+test("completed assistant output joins the turn search and embedding projections", async () => {
+  const database = fixture();
+  try {
+    await database.store.createConversationWithTurn(
+      { id: "conversation-1", revision: 0, state: "active", createdAt: at, updatedAt: at },
+      { id: "turn-1", conversationId: "conversation-1", sequence: 0, actorPrincipalId: "owner", inputEventId: "event-1", primaryRunId: "run-1", content: [{ type: "text", text: "使用者問題" }], createdAt: at },
+    );
+    await database.store.createRunWithStep(run(), step());
+    await database.store.updateExecutionProgress({ runId: "run-1", expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: at });
+    await database.store.completeRunWithOutput({
+      output: { id: "output-search", runId: "run-1", text: "授權設計的結論是最小權限", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, createdAt: at },
+      delivery: { id: "delivery-search", runId: "run-1", destination: { kind: "test" }, payload: { text: "done" }, state: "pending", createdAt: at },
+      expectedRunRevision: 1, runUpdatedAt: at,
+    });
+    assert.equal((await database.store.search("最小權限", 10, { kind: "all" }))[0]?.turnId, "turn-1");
+    const [job] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:01:00.000Z", "2026-09-08T11:00:00.000Z");
+    assert.match(job?.text ?? "", /使用者問題[\s\S]*最小權限/);
+    await database.store.rebuildSearchProjection();
+    assert.equal((await database.store.search("授權設計", 10, { kind: "all" }))[0]?.turnId, "turn-1");
+  } finally { database.cleanup(); }
+});
+
 test("delivery retry state and external evidence survive reopen", async () => {
   const database = fixture();
   try {
