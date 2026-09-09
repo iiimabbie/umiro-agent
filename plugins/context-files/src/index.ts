@@ -7,15 +7,17 @@ interface ContextFilesConfig {
   readonly workspacePath: string;
 }
 
-const FILES: Readonly<Record<"soul" | "agent" | "memory", string>> = {
+const FILES: Readonly<Record<"soul" | "agent" | "owner" | "memory", string>> = {
   soul: "SOUL.md",
   agent: "AGENT.md",
+  owner: "OWNER.md",
   memory: "MEMORY.md",
 };
 
-const PRIORITY: Readonly<Record<"soul" | "agent" | "memory", number>> = {
+const PRIORITY: Readonly<Record<"soul" | "agent" | "owner" | "memory", number>> = {
   soul: 100,
   agent: 200,
+  owner: 250,
   memory: 300,
 };
 
@@ -24,7 +26,7 @@ function isMissing(error: unknown): boolean {
 }
 
 function provider(
-  role: "soul" | "agent" | "memory",
+  role: "soul" | "agent" | "owner" | "memory",
   config: ContextFilesConfig,
   getRoot: () => string,
 ): ContextProvider {
@@ -46,8 +48,8 @@ function provider(
           role,
           content,
           source: { kind: "file", ref: path },
-          influence: role === "memory" ? "information" : "instruction",
-          instructionAuthority: role === "memory" ? "none" : "full",
+          influence: "information",
+          instructionAuthority: "none",
         }];
       } catch (error) {
         if (isMissing(error)) return [];
@@ -65,6 +67,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
       contextProviders: [
         provider("soul", config, () => workspaceRoot),
         provider("agent", config, () => workspaceRoot),
+        provider("owner", config, () => workspaceRoot),
         provider("memory", config, () => workspaceRoot),
       ],
     },
