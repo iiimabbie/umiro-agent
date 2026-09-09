@@ -12,7 +12,7 @@ export interface AuthorizationDecisionRecord extends AuthorizationDecision {
 export interface AuditEvent {
   readonly sequence: number;
   readonly kind: string;
-  readonly entityType: "run" | "step" | "operation" | "authorization" | "model_call" | "output" | "delivery";
+  readonly entityType: "run" | "step" | "operation" | "authorization" | "approval" | "model_call" | "output" | "delivery";
   readonly entityId: string;
   readonly runId: string;
   readonly data: JsonValue;

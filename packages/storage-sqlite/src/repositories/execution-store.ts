@@ -48,6 +48,9 @@ import {
   type Artifact,
   type ArtifactStore,
   type CreateArtifactRequest,
+  type ApprovalRequest,
+  type ApprovalResolution,
+  exactOperationFingerprint,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -132,6 +135,19 @@ interface AuditRow {
   occurred_at: string;
 }
 
+interface ApprovalRow {
+  id: string;
+  operation_id: string;
+  fingerprint: string;
+  state: ApprovalRequest["state"];
+  required_role: ApprovalRequest["requiredRole"];
+  requested_at: string;
+  expires_at: string;
+  resolved_by_principal_id: string | null;
+  resolved_at: string | null;
+  consumed_at: string | null;
+}
+
 interface ConversationRow {
   id: string;
   revision: number;
@@ -177,6 +193,21 @@ function json(value: JsonValue | object): string {
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function approvalFromRow(row: ApprovalRow): ApprovalRequest {
+  return {
+    id: row.id,
+    operationId: row.operation_id,
+    fingerprint: row.fingerprint,
+    state: row.state,
+    requiredRole: row.required_role,
+    requestedAt: row.requested_at,
+    expiresAt: row.expires_at,
+    ...(row.resolved_by_principal_id ? { resolvedByPrincipalId: row.resolved_by_principal_id } : {}),
+    ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
+    ...(row.consumed_at ? { consumedAt: row.consumed_at } : {}),
+  };
 }
 
 function expectOne(changes: number, message: string): void {
@@ -835,7 +866,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     })();
   }
 
-  async recordOperationAuthorization(operation: Operation, decision: AuthorizationDecisionRecord): Promise<void> {
+  async recordOperationAuthorization(operation: Operation, decision: AuthorizationDecisionRecord, approval?: ApprovalRequest): Promise<void> {
     assertOperationInvariants(operation);
     if (operation.authorizationDecisionId !== decision.id) throw new TypeError("operation must reference its authorization decision");
     if (decision.operationId !== operation.id) throw new TypeError("authorization decision must reference its operation");
@@ -844,6 +875,13 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     }
     const expectedState = decision.allow ? "authorized" : "denied";
     if (operation.state !== expectedState) throw new TypeError(`authorization outcome requires operation state ${expectedState}`);
+    if (approval) {
+      if (!decision.allow || approval.operationId !== operation.id || approval.state !== "pending") throw new TypeError("approval must reference an authorized operation and begin pending");
+      if (approval.fingerprint !== exactOperationFingerprint(operation, decision)) throw new TypeError("approval fingerprint does not match the exact operation");
+      if (!/^[a-f0-9]{64}$/.test(approval.fingerprint)) throw new TypeError("approval fingerprint must be a SHA-256 digest");
+      if (approval.resolvedAt || approval.resolvedByPrincipalId || approval.consumedAt) throw new TypeError("pending approval cannot have resolution fields");
+      if (!Number.isFinite(Date.parse(approval.requestedAt)) || !Number.isFinite(Date.parse(approval.expiresAt)) || Date.parse(approval.expiresAt) <= Date.parse(approval.requestedAt)) throw new TypeError("approval expiry must be after its request time");
+    }
 
     this.database.transaction(() => {
       this.database.prepare(`
@@ -884,6 +922,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         operation.updatedAt,
       );
       const runId = this.runIdForOperation(operation.id);
+      if (approval) {
+        this.database.prepare(`INSERT INTO approval_requests(id, operation_id, fingerprint, state, required_role, requested_at, expires_at)
+          VALUES (?, ?, ?, 'pending', ?, ?, ?)`)
+          .run(approval.id, approval.operationId, approval.fingerprint, approval.requiredRole, approval.requestedAt, approval.expiresAt);
+        this.insertAudit("approval.requested", "approval", approval.id, runId, { operationId: operation.id, expiresAt: approval.expiresAt, fingerprint: approval.fingerprint }, approval.requestedAt);
+      }
       this.insertAudit(
         "operation.authorization_decided",
         "authorization",
@@ -893,6 +937,65 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         decision.decidedAt,
       );
     })();
+  }
+
+  async getApproval(id: string): Promise<ApprovalRequest | undefined> {
+    const row = this.database.prepare("SELECT * FROM approval_requests WHERE id = ?").get(id) as ApprovalRow | undefined;
+    return row ? approvalFromRow(row) : undefined;
+  }
+
+  async getApprovalByOperation(operationId: string): Promise<ApprovalRequest | undefined> {
+    const row = this.database.prepare("SELECT * FROM approval_requests WHERE operation_id = ?").get(operationId) as ApprovalRow | undefined;
+    return row ? approvalFromRow(row) : undefined;
+  }
+
+  async listPendingApprovals(limit: number): Promise<readonly ApprovalRequest[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("approval limit must be between 1 and 100");
+    const rows = this.database.prepare("SELECT * FROM approval_requests WHERE state = 'pending' ORDER BY requested_at, id LIMIT ?").all(limit) as ApprovalRow[];
+    return rows.map(approvalFromRow);
+  }
+
+  async resolveApproval(id: string, resolution: ApprovalResolution, resolvedByPrincipalId: string, resolvedAt: string): Promise<ApprovalRequest> {
+    if (!resolvedByPrincipalId.trim()) throw new TypeError("approval resolver Principal is required");
+    if (resolution !== "approve" && resolution !== "deny") throw new TypeError("invalid approval resolution");
+    if (!Number.isFinite(Date.parse(resolvedAt))) throw new TypeError("approval resolution time is invalid");
+    return this.database.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM approval_requests WHERE id = ?").get(id) as ApprovalRow | undefined;
+      if (!row) throw new Error(`approval not found: ${id}`);
+      if (row.state !== "pending") return approvalFromRow(row);
+      const state: ApprovalRequest["state"] = Date.parse(resolvedAt) >= Date.parse(row.expires_at) ? "expired" : resolution === "approve" ? "approved" : "denied";
+      const update = this.database.prepare(`UPDATE approval_requests SET state=?, resolved_by_principal_id=?, resolved_at=? WHERE id=? AND state='pending'`)
+        .run(state, state === "expired" ? null : resolvedByPrincipalId, resolvedAt, id);
+      expectOne(update.changes, `approval ${id} changed concurrently`);
+      const runId = this.runIdForOperation(row.operation_id);
+      this.insertAudit(`approval.${state}`, "approval", id, runId, { operationId: row.operation_id, resolvedByPrincipalId: state === "expired" ? null : resolvedByPrincipalId }, resolvedAt);
+      return approvalFromRow({ ...row, state, resolved_by_principal_id: state === "expired" ? null : resolvedByPrincipalId, resolved_at: resolvedAt });
+    })();
+  }
+
+  async consumeApprovalAndMarkExecuting(operationId: string, fingerprint: string, consumedAt: string): Promise<void> {
+    if (!Number.isFinite(Date.parse(consumedAt))) throw new TypeError("approval consumption time is invalid");
+    const result = this.database.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM approval_requests WHERE operation_id = ?").get(operationId) as ApprovalRow | undefined;
+      if (!row) throw new Error(`approval not found for operation: ${operationId}`);
+      if (row.fingerprint !== fingerprint) throw new Error("approval fingerprint no longer matches the exact operation");
+      if (row.state !== "approved") throw new Error(`approval is not executable: ${row.state}`);
+      if (Date.parse(consumedAt) >= Date.parse(row.expires_at)) {
+        this.database.prepare("UPDATE approval_requests SET state='expired', consumed_at=NULL WHERE id=? AND state='approved'").run(row.id);
+        const runId = this.runIdForOperation(operationId);
+        this.insertAudit("approval.expired", "approval", row.id, runId, { operationId }, consumedAt);
+        return "expired" as const;
+      }
+      const operationState = this.operationState(operationId);
+      if (operationState !== "authorized") throw new Error(`approved operation is not authorized: ${operationState}`);
+      expectOne(this.database.prepare("UPDATE approval_requests SET state='consumed', consumed_at=? WHERE id=? AND state='approved'").run(consumedAt, row.id).changes, `approval ${row.id} changed concurrently`);
+      expectOne(this.database.prepare("UPDATE operations SET state='executing', updated_at=? WHERE id=? AND state='authorized'").run(consumedAt, operationId).changes, `operation ${operationId} changed concurrently`);
+      const runId = this.runIdForOperation(operationId);
+      this.insertAudit("approval.consumed", "approval", row.id, runId, { operationId, fingerprint }, consumedAt);
+      this.insertAudit("operation.executing", "operation", operationId, runId, { from: "authorized", to: "executing", approvalId: row.id }, consumedAt);
+      return "consumed" as const;
+    })();
+    if (result === "expired") throw new Error("approval expired before execution");
   }
 
   async markOperationExecuting(operationId: string, updatedAt: string): Promise<void> {

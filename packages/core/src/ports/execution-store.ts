@@ -1,4 +1,6 @@
 import type { AuditEvent, AuthorizationDecisionRecord } from "../audit/records.js";
+import type { ApprovalRequest } from "../approval/entities.js";
+import type { ApprovalStore } from "../approval/store.js";
 import type { Operation } from "../operation/entities.js";
 import type { OperationResult } from "../operation/result.js";
 import type { Run, RunState, Step, StepState } from "../run/entities.js";
@@ -47,12 +49,12 @@ export class ExecutionStoreConflictError extends Error {
   }
 }
 
-export interface ExecutionStore {
+export interface ExecutionStore extends ApprovalStore {
   createRunWithStep(run: Run, firstStep: Step): Promise<void>;
   appendStep(step: Step): Promise<void>;
   recordModelCall(call: ModelCallRecord): Promise<void>;
   completeRunWithOutput(completion: CompleteRunWithOutput): Promise<void>;
-  recordOperationAuthorization(operation: Operation, decision: AuthorizationDecisionRecord): Promise<void>;
+  recordOperationAuthorization(operation: Operation, decision: AuthorizationDecisionRecord, approval?: ApprovalRequest): Promise<void>;
   markOperationExecuting(operationId: string, updatedAt: string): Promise<void>;
   recordOperationOutcome(operationId: string, result: OperationResult, updatedAt: string): Promise<void>;
   updateExecutionProgress(update: ExecutionProgressUpdate): Promise<void>;
