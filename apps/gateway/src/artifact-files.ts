@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import type { Artifact, ArtifactStore, PrincipalId } from "@umiro/core";
 
@@ -32,8 +32,8 @@ export class ArtifactFileService {
   }
 
   async createFromFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: PrincipalId; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact> {
-    const source = resolve(input.sourcePath);
-    const root = resolve(this.root);
+    const source = await realpath(input.sourcePath);
+    const root = await realpath(this.root);
     const rel = relative(root, source);
     if (rel === "" || rel.startsWith("..") || resolve(root, rel) !== source) throw new Error("artifact source must be inside the artifact staging directory");
     const bytes = new Uint8Array(await readFile(source));
