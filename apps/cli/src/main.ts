@@ -20,17 +20,27 @@ async function init(): Promise<void> {
   console.log(home);
 }
 
-async function plugin(action: string, source?: string): Promise<void> {
+async function plugin(action: string, source?: string, workspaceName?: string): Promise<void> {
   const entries: string[] = JSON.parse(await readFile(plugins, "utf8"));
   if (action === "list") { console.log(entries.join("\n")); return; }
   if (!source) throw new Error(`plugin ${action} requires a path`);
   let path = resolve(source);
   if (action === "install" && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
     const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, "");
-    path = join(home, "app", "plugins", repo);
+    path = join(home, "app", "plugins", workspaceName ? `${repo}-${workspaceName}` : repo);
+    const cloneRoot = workspaceName ? `${path}.checkout` : path;
     await mkdir(join(home, "app", "plugins"), { recursive: true, mode: 0o700 });
     await rm(path, { recursive: true, force: true });
-    await exec("git", ["clone", "--depth", "1", source, path]);
+    await rm(cloneRoot, { recursive: true, force: true });
+    await exec("git", ["clone", "--depth", "1", source, cloneRoot]);
+    if (workspaceName) {
+      const packageRoot = join(cloneRoot, workspaceName);
+      const packagesRoot = join(cloneRoot, "packages", workspaceName);
+      try { await readFile(join(packageRoot, "package.json")); }
+      catch { await readFile(join(packagesRoot, "package.json")); }
+      await cp((await readFile(join(packageRoot, "package.json")).then(() => packageRoot).catch(() => packagesRoot)), path, { recursive: true });
+      await rm(cloneRoot, { recursive: true, force: true });
+    }
     try {
       await readFile(join(path, "umiro.plugin.json"), "utf8");
     } catch (error) {
@@ -60,7 +70,10 @@ async function plugin(action: string, source?: string): Promise<void> {
   console.log(`${action}: ${path}`);
 }
 
-const [command, action, source] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const [command, action, source] = args;
+const workspaceIndex = args.indexOf("--workspace");
+const workspaceName = workspaceIndex >= 0 ? args[workspaceIndex + 1] : undefined;
 if (command === "init") await init();
-else if (command === "plugin") await plugin(action ?? "list", source);
+else if (command === "plugin") await plugin(action ?? "list", source, workspaceName);
 else throw new Error("usage: umiro init | umiro plugin install <path> | umiro plugin list | umiro plugin remove <path>");
