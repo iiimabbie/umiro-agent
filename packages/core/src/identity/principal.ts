@@ -26,6 +26,18 @@ export interface IdentityResolver {
   resolve(identity: TransportIdentity): Promise<ResolvedIdentity>;
 }
 
+export interface PersistedTransportIdentity {
+  readonly transport: string;
+  readonly externalId: string;
+  readonly principalId: PrincipalId;
+  readonly displayName?: string;
+}
+
+export interface IdentityMappingStore {
+  find(transport: string, externalId: string): Promise<PersistedTransportIdentity | undefined>;
+  findOrCreate(identity: PersistedTransportIdentity, createdAt: string): Promise<PersistedTransportIdentity>;
+}
+
 export function isOwner(principal: Principal): boolean {
   return principal.roles.includes("owner");
 }

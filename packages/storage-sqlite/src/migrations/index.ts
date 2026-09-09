@@ -4,8 +4,9 @@ import { DELIVERY_INTENTS_SCHEMA } from "./002-delivery-intents.js";
 import { CONVERSATIONS_SCHEMA } from "./003-conversations.js";
 import { DELEGATIONS_SCHEMA } from "./004-delegations.js";
 import { CONVERSATION_BINDINGS_SCHEMA } from "./005-conversation-bindings.js";
+import { IDENTITIES_SCHEMA } from "./006-identities.js";
 
-const LATEST_VERSION = 5;
+const LATEST_VERSION = 6;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -52,6 +53,13 @@ export function migrate(database: Database.Database): void {
       database.exec(CONVERSATION_BINDINGS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
         .run(5, new Date().toISOString());
+    })();
+  }
+  if (current.version < 6) {
+    database.transaction(() => {
+      database.exec(IDENTITIES_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+        .run(6, new Date().toISOString());
     })();
   }
 }

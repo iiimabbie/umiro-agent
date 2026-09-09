@@ -36,6 +36,7 @@ import {
   type UpdateConversationStateRequest,
   type IngestInputEventRequest,
   type IngestInputEventResult,
+  type PersistedTransportIdentity,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -176,6 +177,19 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (filename !== ":memory:") this.database.pragma("journal_mode = WAL");
     this.database.pragma("synchronous = FULL");
     migrate(this.database);
+  }
+
+  async find(transport: string, externalId: string): Promise<PersistedTransportIdentity | undefined> {
+    const row = this.database.prepare("SELECT transport, external_id, principal_id, display_name FROM transport_identities WHERE transport = ? AND external_id = ?")
+      .get(transport, externalId) as { transport: string; external_id: string; principal_id: string; display_name: string | null } | undefined;
+    return row ? { transport: row.transport, externalId: row.external_id, principalId: row.principal_id, ...(row.display_name ? { displayName: row.display_name } : {}) } : undefined;
+  }
+
+  async findOrCreate(identity: PersistedTransportIdentity, createdAt: string): Promise<PersistedTransportIdentity> {
+    this.database.prepare(`INSERT INTO transport_identities(transport, external_id, principal_id, display_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(transport, external_id) DO UPDATE SET display_name = COALESCE(excluded.display_name, display_name), updated_at = excluded.updated_at`)
+      .run(identity.transport, identity.externalId, identity.principalId, identity.displayName ?? null, createdAt, createdAt);
+    return (await this.find(identity.transport, identity.externalId))!;
   }
 
   async createConversationWithTurn(conversation: Conversation, firstTurn: Turn): Promise<void> {
