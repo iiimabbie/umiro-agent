@@ -1,7 +1,9 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { JsonObject } from "@umiro/core/ports";
 import type { ContextProvider, ContextRole } from "@umiro/core/context";
 import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
+import type { ToolDefinition, ToolExecutionResult } from "@umiro/core/tool";
 
 interface ContextFilesConfig {
   readonly workspacePath: string;
@@ -61,7 +63,17 @@ function provider(
 
 export function createPlugin(context: PluginSetupContext): PluginInstance {
   const config = context.config as unknown as ContextFilesConfig;
-  let workspaceRoot = "";
+  let workspaceRoot = ""; let writeQueue = Promise.resolve();
+  const ownerPath = () => join(workspaceRoot, "OWNER.md");
+  const ownerWrite = async (content: string) => { const normalized = `${content.trim()}\n`; if (normalized.length > 20_000) throw new Error("OWNER.md exceeds 20000 characters"); const temporary = `${ownerPath()}.${process.pid}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, normalized, { mode: 0o600 }); await rename(temporary, ownerPath()); };
+  const serial = async <T>(operation: () => Promise<T>): Promise<T> => { const previous = writeQueue; let release!: () => void; writeQueue = new Promise<void>(resolve => { release = resolve; }); await previous; try { return await operation(); } finally { release(); } };
+  const result = (output: unknown): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: "confirmed" });
+  const failure = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "owner_profile_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
+  const tool = (name: string, description: string, inputSchema: JsonObject, execute: (input: JsonObject) => Promise<unknown>): ToolDefinition => ({ name, description, inputSchema, policy: { capability: "owner.profile.write", tier: "privileged", interactionRequirement: "not_required", sideEffect: "idempotent" }, async execute(input) { try { return result(await execute(input)); } catch (error) { return failure(error); } } });
+  const tools = [
+    tool("owner_profile_add", "Append one durable fact to OWNER.md. Owner only.", { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string", minLength: 1 } } }, async input => serial(async () => { const current = await readFile(ownerPath(), "utf8").catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? "# OWNER\n" : Promise.reject(error)); const content = String(input.content).trim(); if (current.includes(content)) return { added: false }; await ownerWrite(`${current.trim()}\n\n${content}`); return { added: true }; })),
+    tool("owner_profile_replace", "Replace one exact occurrence in OWNER.md. Owner only.", { type: "object", additionalProperties: false, required: ["oldText", "newText"], properties: { oldText: { type: "string", minLength: 1 }, newText: { type: "string" } } }, async input => serial(async () => { const current = await readFile(ownerPath(), "utf8"); const oldText = String(input.oldText); if (current.split(oldText).length !== 2) throw new Error("oldText must match exactly once"); await ownerWrite(current.replace(oldText, String(input.newText))); return { replaced: true }; })),
+  ];
   return {
     contributions: {
       contextProviders: [
@@ -70,6 +82,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
         provider("owner", config, () => workspaceRoot),
         provider("memory", config, () => workspaceRoot),
       ],
+      tools,
     },
     async start() {
       const configured = await lstat(config.workspacePath);

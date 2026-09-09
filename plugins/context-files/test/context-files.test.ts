@@ -15,5 +15,11 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   const request = { runId: "run", execution: {} as never, prompt: "hi" };
   const owner = await providers.find(provider => provider.id === "context.owner")!.load(request);
   assert.equal(owner[0]?.content, "owner");
+  const ownerTools = plugin.contributions.tools ?? [];
+  const add = ownerTools.find(tool => tool.name === "owner_profile_add")!;
+  const replace = ownerTools.find(tool => tool.name === "owner_profile_replace")!;
+  assert.equal((await add.execute({ content: "稱呼：主人" }, {} as never) as { ok: boolean }).ok, true);
+  assert.match(await (await import("node:fs/promises")).readFile(join(root, "OWNER.md"), "utf8"), /稱呼：主人/);
+  assert.equal((await replace.execute({ oldText: "稱呼：主人", newText: "稱呼：Owner" }, {} as never) as { ok: boolean }).ok, true);
   await plugin.stop?.();
 });
