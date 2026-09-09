@@ -23,7 +23,7 @@ export interface GatewayReadiness {
   readonly scheduler: boolean;
   readonly shuttingDown?: boolean;
 }
-export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly approvals?: ControlPanelApprovals; readonly runs?: ControlPanelRuns; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
+export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly approvals?: ControlPanelApprovals; readonly runs?: ControlPanelRuns; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
 
 export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", restartRequired: true },
@@ -147,6 +147,7 @@ export class ControlPanelServer {
         return json(response, 200, await this.options.plugins.run(input.action, input.source, typeof input.workspace === "string" && input.workspace ? input.workspace : undefined, input.config as Record<string, unknown> | undefined));
       }
       if (request.method === "GET" && url.pathname === "/api/runtime") return json(response, 200, this.options.runtime ? await this.options.runtime() : { status: "running" });
+      if (request.method === "GET" && url.pathname === "/api/logs") { if (!this.options.logs) return json(response, 503, { error: "log view unavailable" }); const raw = url.searchParams.get("limit") ?? "100"; if (!/^\d{1,3}$/.test(raw)) throw new TypeError("log limit must be an integer"); const limit = Number(raw); if (limit < 1 || limit > 500) throw new TypeError("log limit must be between 1 and 500"); return json(response, 200, await this.options.logs(limit)); }
       if (request.method === "GET" && url.pathname === "/api/runs") { if (!this.options.runs) return json(response, 503, { error: "run query unavailable" }); const raw = url.searchParams.get("limit") ?? "50"; if (!/^\d{1,3}$/.test(raw)) throw new TypeError("run limit must be an integer"); const limit = Number(raw); if (limit < 1 || limit > 200) throw new TypeError("run limit must be between 1 and 200"); return json(response, 200, await this.options.runs.list(limit)); }
       const runMatch = /^\/api\/runs\/([A-Za-z0-9._:-]{1,160})$/.exec(url.pathname); const runId = runMatch?.[1];
       if (request.method === "GET" && runId) { if (!this.options.runs) return json(response, 503, { error: "run query unavailable" }); const result = await this.options.runs.get(runId); return result === undefined ? json(response, 404, { error: "run not found" }) : json(response, 200, result); }

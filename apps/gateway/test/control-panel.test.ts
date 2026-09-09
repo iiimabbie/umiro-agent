@@ -17,7 +17,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
   let pluginAction: unknown; let approvalAction: unknown; let runLimit: unknown; let runId: unknown;
   const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, schedules: {
     async list() { return schedules; }, async create(input) { created = input; return { id: "new", ...input }; }, async setEnabled(id, value) { enabled = [id, value]; return { id, enabled: value }; }, async remove(id) { removed = id; return true; },
-  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
+  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, logs: limit => [{ event: "test", limit }], runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
   try {
     assert.equal((await fetch(`${endpoint}/api/config`)).status, 401);
@@ -41,6 +41,8 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.deepEqual(await (await fetch(`${endpoint}/api/runs/run-1`, { headers })).json(), { run: { id: "run-1" } }); assert.equal(runId, "run-1");
     assert.equal((await fetch(`${endpoint}/api/runs/missing`, { headers })).status, 404);
     assert.equal((await fetch(`${endpoint}/api/runs?limit=0`, { headers })).status, 400);
+    assert.deepEqual(await (await fetch(`${endpoint}/api/logs?limit=25`, { headers })).json(), [{ event: "test", limit: 25 }]);
+    assert.equal((await fetch(`${endpoint}/api/logs?limit=501`, { headers })).status, 400);
     assert.equal((await fetch(`${endpoint}/api/approvals/approval-1`, { method: "POST", headers, body: JSON.stringify({ action: "approve" }) })).status, 200);
     assert.deepEqual(approvalAction, ["approval-1", "approve"]);
   } finally { await server.stop(); await rm(root, { recursive: true, force: true }); }
