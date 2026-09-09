@@ -2,6 +2,7 @@ import type { InputEvent } from "@umiro/core/input";
 import type { Authority } from "@umiro/core/authorization";
 import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, TransportIdentity } from "@umiro/core/identity";
 import type { ExecutionStore } from "@umiro/core/ports";
+export * from "./client.js";
 
 export interface DiscordMessageEnvelope {
   readonly messageId: string;

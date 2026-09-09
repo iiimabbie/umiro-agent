@@ -3,7 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": { "types": "./dist/src/index.d.ts", "default": "./dist/src/index.js" } },
-  "dependencies": { "@umiro/core": "workspace:*" },
-  "scripts": { "build": "tsc -b", "typecheck": "tsc -b --pretty false", "test": "pnpm build && node --test dist/test/*.test.js" }
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "dependencies": {
+    "@umiro/core": "workspace:*",
+    "discord.js": "^14.27.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "pnpm build && node --test dist/test/*.test.js"
+  }
 }
