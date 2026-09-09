@@ -84,6 +84,7 @@ export interface PluginArtifactService {
 }
 /** Protocol-neutral Discord operations exposed to Plugins; adapter enforces transport details. */
 export interface DiscordPluginService {
+  sendButtons(input: { readonly channelId: string; readonly content: string; readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger"; readonly actionTool?: string; readonly actionArgs?: JsonObject }[]; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly buttonSetId: string }>;
   sendMessage(input: { readonly channelId: string; readonly content: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string }>;
   react(input: { readonly channelId: string; readonly messageId: string; readonly emoji: string; readonly signal?: AbortSignal }): Promise<void>;
   pin(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void>;

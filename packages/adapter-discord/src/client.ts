@@ -110,6 +110,24 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     return this.sendText(input.channelId, input.content, input.signal);
   }
 
+  async sendButtons(input: { readonly channelId: string; readonly content: string; readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger"; readonly actionTool?: string; readonly actionArgs?: Record<string, unknown> }[]; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly buttonSetId: string }> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    if (input.buttons.length < 1 || input.buttons.length > 25) throw new TypeError("Discord button set must contain 1 to 25 buttons");
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${input.channelId}`);
+    const buttonSetId = crypto.randomUUID();
+    const styles = { primary: ButtonStyle.Primary, secondary: ButtonStyle.Secondary, success: ButtonStyle.Success, danger: ButtonStyle.Danger } as const;
+    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+    for (let index = 0; index < input.buttons.length; index += 5) {
+      const row = new ActionRowBuilder<ButtonBuilder>();
+      for (const button of input.buttons.slice(index, index + 5)) row.addComponents(new ButtonBuilder().setCustomId(`umiro:button:${buttonSetId}:${button.id}`.slice(0, 100)).setLabel(button.label.slice(0, 80)).setStyle(styles[button.style]));
+      rows.push(row);
+    }
+    if (input.signal?.aborted) throw input.signal.reason;
+    const sent = await channel.send({ content: input.content.slice(0, 2_000), components: rows });
+    return { messageId: sent.id, buttonSetId };
+  }
+
   async react(input: { readonly channelId: string; readonly messageId: string; readonly emoji: string; readonly signal?: AbortSignal }): Promise<void> {
     if (input.signal?.aborted) throw input.signal.reason;
     const channel = await this.client.channels.fetch(input.channelId);
