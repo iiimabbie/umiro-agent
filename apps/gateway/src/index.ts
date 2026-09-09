@@ -3,4 +3,5 @@ export * from "./file-plugin-state.js";
 export * from "./plugin-composition.js";
 export * from "./plugin-loader.js";
 export * from "./paths.js";
-export * from "./plugin-jobs.js";
+export * from "./durable-scheduler.js";
+export * from "./embedding-worker.js";

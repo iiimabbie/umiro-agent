@@ -8,7 +8,8 @@
     "build": "pnpm -r build",
     "typecheck": "tsc --build",
     "test": "pnpm -r test",
-    "dev": "pnpm --filter @umiro/dev-driver dev"
+    "dev": "pnpm --filter @umiro/dev-driver dev",
+    "umiro": "pnpm --filter @umiro/cli start --"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

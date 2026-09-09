@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
 import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -11,6 +11,7 @@ import { EmbeddingWorker, GeminiEmbedder, HybridConversationSearch } from "./emb
 import { DurableScheduler } from "./durable-scheduler.js";
 
 const paths = umiroPaths();
+try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
@@ -40,6 +41,8 @@ const apiKey = process.env.LLM_API_KEY?.trim();
 const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
 const engine = new HeadlessRunEngine(modelPort, tools, store);
 const contextEngine = new ContextEngine(providers);
+await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
+await scheduler.recover();
 const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
 if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
@@ -70,7 +73,8 @@ const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await discord.start(token);
 await delivery.drain();
+await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
 scheduler.start();
-const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); process.exit(0); };
+const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); process.exit(0); };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

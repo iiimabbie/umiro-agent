@@ -4,6 +4,7 @@ dist/
 *.tsbuildinfo
 .env
 .env.*
+!.env.example
 config.yaml
 data/
 *.db
