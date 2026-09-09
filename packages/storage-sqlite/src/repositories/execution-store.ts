@@ -579,17 +579,17 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     expectOne(update.changes, `embedding job changed: ${turnId}`);
   }
 
-  async semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope): Promise<readonly SearchHit[]> {
+  async semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope, options: { readonly excludeConversationId?: string; readonly beforeCreatedAt?: string; readonly minSimilarity?: number } = {}): Promise<readonly SearchHit[]> {
     if (!vector.length || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid semantic search input");
-    const rows = this.database.prepare(`SELECT e.turn_id, e.vector_json, e.dimensions, f.conversation_id, f.actor_principal_id, f.text
-      FROM conversation_embeddings e JOIN conversation_fts f ON f.turn_id=e.turn_id WHERE e.model=? AND e.dimensions=?`).all(model, vector.length) as Array<{ turn_id: string; vector_json: string; dimensions: number; conversation_id: string; actor_principal_id: string; text: string }>;
-    const visible = rows.filter(row => visibility.kind === "all" || visibility.principalIds.includes(row.actor_principal_id) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === row.conversation_id));
+    const rows = this.database.prepare(`SELECT e.turn_id, e.vector_json, e.dimensions, f.conversation_id, f.actor_principal_id, f.text, t.created_at
+      FROM conversation_embeddings e JOIN conversation_fts f ON f.turn_id=e.turn_id JOIN turns t ON t.id=e.turn_id WHERE e.model=? AND e.dimensions=?`).all(model, vector.length) as Array<{ turn_id: string; vector_json: string; dimensions: number; conversation_id: string; actor_principal_id: string; text: string; created_at: string }>;
+    const visible = rows.filter(row => (!options.excludeConversationId || row.conversation_id !== options.excludeConversationId) && (!options.beforeCreatedAt || row.created_at < options.beforeCreatedAt) && (visibility.kind === "all" || visibility.principalIds.includes(row.actor_principal_id) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === row.conversation_id)));
     const norm = (values: readonly number[]) => Math.sqrt(values.reduce((sum, value) => sum + value * value, 0)); const queryNorm = norm(vector);
     if (!queryNorm) return [];
     return visible.map(row => {
       const candidate = parseJson<number[]>(row.vector_json); const denominator = queryNorm * norm(candidate); const similarity = denominator ? candidate.reduce((sum, value, index) => sum + value * (vector[index] ?? 0), 0) / denominator : -1;
-      return { turnId: row.turn_id, conversationId: row.conversation_id, actorPrincipalId: row.actor_principal_id, text: row.text, rank: 1 - similarity };
-    }).sort((left, right) => left.rank - right.rank).slice(0, limit);
+      return { turnId: row.turn_id, conversationId: row.conversation_id, actorPrincipalId: row.actor_principal_id, text: row.text, rank: 1 - similarity, semanticScore: similarity };
+    }).filter(hit => hit.semanticScore >= (options.minSimilarity ?? -1)).sort((left, right) => left.rank - right.rank).slice(0, limit);
   }
 
   async rebuildEmbeddingProjection(): Promise<void> {

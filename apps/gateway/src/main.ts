@@ -11,6 +11,7 @@ import { EmbeddingWorker, GeminiEmbedder, HybridConversationSearch } from "./emb
 import { DurableScheduler } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
+import { SemanticRecallProvider } from "./semantic-recall.js";
 
 const paths = umiroPaths();
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
@@ -33,6 +34,7 @@ const googleApiKey = process.env.GOOGLE_API_KEY?.trim();
 const embedder = googleApiKey ? new GeminiEmbedder(process.env.UMIRO_EMBEDDING_MODEL?.trim() || "gemini-embedding-2", googleApiKey) : undefined;
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefined;
 const search = new HybridConversationSearch(store, embedder);
+if (embedder) providers.register(new SemanticRecallProvider(store, embedder));
 const scheduler = new DurableScheduler(store);
 const legacyServices = {
   configDirectory: `${paths.config}/plugin-config`,
