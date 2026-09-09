@@ -111,6 +111,14 @@ export interface PluginInstance {
   readonly contributions: PluginContributions;
   start?(): Promise<void>;
   stop?(): Promise<void>;
+  /** Lightweight liveness/readiness check; must not mutate plugin state. */
+  health?(): Promise<{ readonly status: "ok" | "degraded" | "failed"; readonly detail?: string }>;
+}
+
+export interface PluginHealth {
+  readonly id: string;
+  readonly status: "ok" | "degraded" | "failed";
+  readonly detail?: string;
 }
 
 export interface PluginModule {

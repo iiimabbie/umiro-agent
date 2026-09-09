@@ -3,7 +3,7 @@ import { Ajv } from "ajv";
 import { ContextProviderRegistry } from "../context/registry.js";
 import type { ContextProvider } from "../context/contract.js";
 import { ToolRegistry } from "../tool/registry.js";
-import type { LoadedPlugin, PluginEnableOptions, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
+import type { LoadedPlugin, PluginEnableOptions, PluginHealth, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
 import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 import { validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
@@ -245,6 +245,22 @@ export class PluginHost {
   executeCommand(name: string, input: import("../ports/json.js").JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) { return this.commands.execute(name, input, context); }
   listSkills() { return this.skills.list(); }
   getSkill(id: string) { return this.skills.get(id); }
+
+  async health(): Promise<readonly PluginHealth[]> {
+    const results: PluginHealth[] = [];
+    for (const active of this.plugins.values()) {
+      if (active.state !== "enabled") { results.push({ id: active.manifest.id, status: active.state === "failed" ? "failed" : "degraded", detail: `plugin is ${active.state}` }); continue; }
+      if (!active.instance.health) { results.push({ id: active.manifest.id, status: "ok" }); continue; }
+      try {
+        const result = await active.instance.health();
+        if (!result || (result.status !== "ok" && result.status !== "degraded" && result.status !== "failed")) throw new TypeError("health returned an invalid status");
+        results.push({ id: active.manifest.id, ...result });
+      } catch (error) {
+        results.push({ id: active.manifest.id, status: "failed", detail: error instanceof Error ? error.name : "NonErrorThrown" });
+      }
+    }
+    return results.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  }
 
   private snapshot(active: ActivePlugin): LoadedPlugin {
     return {

@@ -96,3 +96,11 @@ test("plugin logger is namespaced, redacts secrets, and cannot break startup", a
   await host.enable(module, { secrets: { PLUGIN_TOKEN: "super-secret" } });
   assert.deepEqual(records, [{ level: "warn", event: "plugin.logger.seed_failed", message: "continuing", occurredAt: (records[0] as { occurredAt: string }).occurredAt, pluginId: "logger-plugin", data: { token: "[REDACTED]", detail: "[REDACTED] appeared" } }]);
 });
+
+test("plugin health is isolated and reports failed checks without throwing", async () => {
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  const manifest = (id: string) => ({ schemaVersion: 0 as const, id, version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: id, permissions: authority, contributes: {} });
+  await host.enable({ manifest: manifest("healthy"), create: () => ({ contributions: {}, async health() { return { status: "ok" as const }; } }) });
+  await host.enable({ manifest: manifest("broken-health"), create: () => ({ contributions: {}, async health() { throw new Error("secret detail"); } }) });
+  assert.deepEqual(await host.health(), [{ id: "broken-health", status: "failed", detail: "Error" }, { id: "healthy", status: "ok" }]);
+});
