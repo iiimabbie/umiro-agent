@@ -100,9 +100,11 @@ async function status(): Promise<boolean> {
 async function start(): Promise<void> {
   if (await status()) return; if (!await exists(join(currentRelease, "gateway", "dist", "src", "main.js"))) await install();
   if (process.env.UMIRO_NO_SYSTEMD !== "1") { try { await exec("systemctl", ["--user", "start", "umiro.service"]); await new Promise(resolveWait => setTimeout(resolveWait, 750)); if (await systemdActive()) { console.log("started (systemd)"); return; } } catch { /* fallback */ } }
-  const entry = resolve(process.env.UMIRO_GATEWAY_ENTRY?.trim() || join(currentRelease, "gateway", "dist", "src", "main.js")); const log = openSync(join(home, "state", "gateway.log"), "a", 0o600);
+  const entry = resolve(process.env.UMIRO_GATEWAY_ENTRY?.trim() || join(currentRelease, "gateway", "dist", "src", "main.js")); const logPath = join(home, "state", "gateway.log"); const log = openSync(logPath, "a", 0o600);
   const child = spawn(process.execPath, [entry], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, UMIRO_HOME: home } }); child.unref(); if (!child.pid) throw new Error("gateway failed to start");
-  await writeFile(pidFile, `${JSON.stringify({ pid: child.pid, entry, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 }); await new Promise(resolveWait => setTimeout(resolveWait, 500)); process.kill(child.pid, 0); console.log(`started ${child.pid}`);
+  await writeFile(pidFile, `${JSON.stringify({ pid: child.pid, entry, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 }); await new Promise(resolveWait => setTimeout(resolveWait, 500));
+  try { process.kill(child.pid, 0); } catch { throw new Error(`gateway exited during startup; inspect ${logPath}`); }
+  console.log(`started ${child.pid}`);
 }
 async function stop(): Promise<void> {
   if (await systemdActive()) { await exec("systemctl", ["--user", "stop", "umiro.service"]); console.log("stopped (systemd)"); return; }
