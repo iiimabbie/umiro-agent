@@ -46,6 +46,7 @@ export interface PluginManifestV0 {
     readonly hooks?: readonly string[];
     readonly jobs?: readonly string[];
     readonly commands?: readonly string[];
+    readonly skills?: readonly string[];
   };
 }
 
@@ -77,7 +78,17 @@ export interface PluginContributions {
     readonly contextProviders?: readonly ContextProvider[];
     readonly hooks?: readonly PluginHookDefinition[];
     readonly jobs?: readonly PluginJobDefinition[];
-    readonly commands?: readonly PluginCommandDefinition[];
+  readonly commands?: readonly PluginCommandDefinition[];
+  readonly skills?: readonly SkillDefinition[];
+}
+
+/** A declarative orchestration guide. Skills can only reference registered tools/models. */
+export interface SkillDefinition {
+  readonly id: string;
+  readonly description: string;
+  readonly requiredTools?: readonly string[];
+  readonly requiredModels?: readonly string[];
+  readonly instructions: string;
 }
 
 export interface PluginInstance {

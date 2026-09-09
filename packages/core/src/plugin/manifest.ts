@@ -66,6 +66,7 @@ const validateShape = new Ajv({ allErrors: true, strict: true }).compile<PluginM
         hooks: { type: "array", items: { type: "string" }, uniqueItems: true },
         jobs: { type: "array", items: { type: "string" }, uniqueItems: true },
         commands: { type: "array", items: { type: "string" }, uniqueItems: true },
+        skills: { type: "array", items: { type: "string" }, uniqueItems: true },
       },
     },
   },
@@ -96,6 +97,7 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
   if (!ID.test(manifest.namespace)) throw new TypeError(`invalid plugin namespace: ${manifest.namespace}`);
   unique(manifest.contributes.tools, "contributes.tools");
   unique(manifest.contributes.contextProviders, "contributes.contextProviders");
+  unique(manifest.contributes.skills, "contributes.skills");
   unique(manifest.requiredSecrets, "requiredSecrets", /^[A-Z][A-Z0-9_]*$/);
   if (hostCeiling && !isAuthoritySubset(manifest.permissions, hostCeiling)) {
     throw new TypeError(`plugin ${manifest.id} permissions exceed the host ceiling`);

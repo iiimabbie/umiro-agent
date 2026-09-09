@@ -7,7 +7,7 @@ import type { LoadedPlugin, PluginEnableOptions, PluginHostServices, PluginInsta
 import { validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
-import { PluginCommandRegistry, PluginJobRegistry } from "./contributions.js";
+import { PluginCommandRegistry, PluginJobRegistry, SkillRegistry } from "./contributions.js";
 
 interface ActivePlugin {
   readonly manifest: PluginManifestV0;
@@ -55,6 +55,7 @@ export class PluginHost {
     private readonly jobs = new PluginJobRegistry(),
     private readonly commands = new PluginCommandRegistry(),
     private readonly services: PluginHostServices = {},
+    private readonly skills = new SkillRegistry(),
   ) {}
 
   async enable(module: PluginModule, options: PluginEnableOptions = {}): Promise<void> {
@@ -95,17 +96,20 @@ export class PluginHost {
     const hookIds = active.instance.contributions.hooks?.map(hook => hook.id) ?? [];
     const jobIds = active.instance.contributions.jobs?.map(job => job.id) ?? [];
     const commandIds = active.instance.contributions.commands?.map(command => command.name) ?? [];
+    const skillIds = active.instance.contributions.skills?.map(skill => skill.id) ?? [];
     const registeredTools: string[] = [];
     const registeredProviders: string[] = [];
     const registeredHooks: string[] = [];
     const registeredJobs: string[] = [];
     const registeredCommands: string[] = [];
+    const registeredSkills: string[] = [];
     try {
       exactContributionSet(toolNames, manifest.contributes.tools, `plugin ${manifest.id} tools`);
       exactContributionSet(providerIds, manifest.contributes.contextProviders, `plugin ${manifest.id} context providers`);
       exactContributionSet(hookIds, manifest.contributes.hooks, `plugin ${manifest.id} hooks`);
       exactContributionSet(jobIds, manifest.contributes.jobs, `plugin ${manifest.id} jobs`);
       exactContributionSet(commandIds, manifest.contributes.commands, `plugin ${manifest.id} commands`);
+      exactContributionSet(skillIds, manifest.contributes.skills, `plugin ${manifest.id} skills`);
       for (const tool of active.instance.contributions.tools ?? []) {
         if (!manifest.permissions.capabilities.includes(tool.policy.capability)) {
           throw new TypeError(`tool ${tool.name} requires undeclared capability ${tool.policy.capability}`);
@@ -126,12 +130,17 @@ export class PluginHost {
       }
       for (const job of active.instance.contributions.jobs ?? []) { this.jobs.register(manifest.id, job); registeredJobs.push(job.id); }
       for (const command of active.instance.contributions.commands ?? []) { this.commands.register(manifest.id, command); registeredCommands.push(command.name); }
+      for (const skill of active.instance.contributions.skills ?? []) {
+        if (skill.requiredTools?.some(name => !this.tools.get(name))) throw new TypeError(`skill ${skill.id} requires an unavailable tool`);
+        this.skills.register(manifest.id, skill); registeredSkills.push(skill.id);
+      }
       active.state = "enabled";
     } catch (error) {
       for (const providerId of registeredProviders.reverse()) this.contextProviders.unregister(providerId);
       for (const hookId of registeredHooks.reverse()) this.hooks.unregister(hookId);
       for (const jobId of registeredJobs.reverse()) this.jobs.unregister(jobId);
       for (const commandId of registeredCommands.reverse()) this.commands.unregister(commandId);
+      for (const skillId of registeredSkills.reverse()) this.skills.unregister(skillId);
       for (const toolName of registeredTools.reverse()) this.tools.unregister(toolName);
       try {
         await active.instance.stop?.();
@@ -156,6 +165,7 @@ export class PluginHost {
     for (const hook of active.instance.contributions.hooks ?? []) this.hooks.unregister(hook.id);
     for (const job of active.instance.contributions.jobs ?? []) this.jobs.unregister(job.id);
     for (const command of active.instance.contributions.commands ?? []) this.commands.unregister(command.name);
+    for (const skill of active.instance.contributions.skills ?? []) this.skills.unregister(skill.id);
     try {
       await active.instance.stop?.();
       active.state = "disabled";
@@ -184,6 +194,8 @@ export class PluginHost {
   runJob(id: string, signal?: AbortSignal) { return this.jobs.run(id, signal); }
   listCommands() { return this.commands.list(); }
   executeCommand(name: string, input: import("../ports/json.js").JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) { return this.commands.execute(name, input, context); }
+  listSkills() { return this.skills.list(); }
+  getSkill(id: string) { return this.skills.get(id); }
 
   private snapshot(active: ActivePlugin): LoadedPlugin {
     return {

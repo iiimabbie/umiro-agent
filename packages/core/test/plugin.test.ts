@@ -26,3 +26,25 @@ test("one plugin entry composes hooks, jobs and commands and removes them on dis
   assert.deepEqual(host.listJobs(), []);
   assert.deepEqual(host.listCommands(), []);
 });
+
+test("skill contributions are manifest-bound and cannot reference missing tools", async () => {
+  const module: PluginModule = {
+    manifest: { schemaVersion: 0, id: "skill-plugin", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "skill-plugin", permissions: authority, contributes: { skills: ["skill-plugin.workflow"] } },
+    create: () => ({ contributions: { skills: [{ id: "skill-plugin.workflow", description: "workflow", instructions: "Use the declared tool.", requiredTools: [] }] } }),
+  };
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  await host.enable(module);
+  assert.equal(host.listSkills()[0]?.id, "skill-plugin.workflow");
+  await host.disable("skill-plugin");
+  assert.deepEqual(host.listSkills(), []);
+});
+
+test("skill activation fails closed when a required tool is unavailable", async () => {
+  const module: PluginModule = {
+    manifest: { schemaVersion: 0, id: "broken-skill", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "broken-skill", permissions: authority, contributes: { skills: ["broken.workflow"] } },
+    create: () => ({ contributions: { skills: [{ id: "broken.workflow", description: "broken", instructions: "", requiredTools: ["missing"] }] } }),
+  };
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  await assert.rejects(host.enable(module), /unavailable tool/);
+  assert.equal(host.get("broken-skill")?.state, "failed");
+});
