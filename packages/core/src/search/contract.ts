@@ -15,6 +15,7 @@ export interface EmbeddingJob {
 }
 
 export interface EmbeddingProjection {
+  prepareEmbeddingModel(model: string): Promise<void>;
   claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]>;
   completeEmbeddingJob(turnId: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void>;
   failEmbeddingJob(turnId: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void>;

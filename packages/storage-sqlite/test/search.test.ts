@@ -42,6 +42,10 @@ test("embedding jobs survive as a rebuildable visibility-aware projection", asyn
   await store.completeEmbeddingJob("t", job!.contentHash, "model", [1, 0], "2026-01-01T00:00:01.000Z");
   assert.equal((await store.semanticSearch([0.9, 0.1], "model", 10, { kind: "all" }))[0]?.turnId, "t");
   assert.equal((await store.semanticSearch([1, 0], "model", 10, { kind: "restricted", principalIds: ["bob"], labels: [], resources: [] })).length, 0);
+  await store.prepareEmbeddingModel("model");
+  assert.equal((await store.claimEmbeddingJobs(10, "2026-01-01T00:00:30.000Z", "2025-12-31T23:55:30.000Z")).length, 0);
+  await store.prepareEmbeddingModel("different-provider:model");
+  assert.equal((await store.claimEmbeddingJobs(10, "2026-01-01T00:00:31.000Z", "2025-12-31T23:55:31.000Z")).length, 1);
   await store.rebuildEmbeddingProjection();
   assert.equal((await store.claimEmbeddingJobs(10, "2026-01-01T00:01:00.000Z", "2025-12-31T23:56:00.000Z")).length, 1);
   store.close();

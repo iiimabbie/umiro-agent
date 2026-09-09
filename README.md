@@ -76,7 +76,24 @@ LLM_BASE_URL=http://localhost:8317/v1
 LLM_API_KEY=
 ```
 
-`GOOGLE_API_KEY` enables semantic memory search. Without it, full-text search remains available.
+Semantic memory search is opt-in. A new installation uses `"embedding": { "provider": "disabled" }`, so full-text search works without an embedding service. Enable either Gemini or any OpenAI-compatible embedding endpoint explicitly; model names and endpoints are user configuration, and credentials stay in `config/secrets.env`.
+
+```bash
+# Gemini; reads the key from GOOGLE_API_KEY by default
+umiro embedding configure --provider gemini --model gemini-embedding-2
+
+# A local or hosted OpenAI-compatible endpoint; authentication is optional
+umiro embedding configure --provider openai-compatible \
+  --model nomic-embed-text --base-url http://localhost:11434/v1
+
+# For an authenticated compatible endpoint, name the environment variable
+umiro embedding configure --provider openai-compatible \
+  --model custom-embed --base-url https://example.com/v1 \
+  --api-key-env UMIRO_EMBEDDING_API_KEY
+
+umiro embedding disable
+umiro embedding status
+```
 
 ## CLI
 
@@ -86,6 +103,7 @@ umiro upgrade
 umiro rollback
 umiro init
 umiro configure --from-env .env
+umiro embedding configure | disable | status
 umiro start | stop | status
 umiro plugin install <path-or-github-url> [--workspace package]
 umiro plugin list

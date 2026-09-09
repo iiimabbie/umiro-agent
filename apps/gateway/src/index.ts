@@ -5,3 +5,4 @@ export * from "./plugin-loader.js";
 export * from "./paths.js";
 export * from "./durable-scheduler.js";
 export * from "./embedding-worker.js";
+export * from "./embedding-config.js";

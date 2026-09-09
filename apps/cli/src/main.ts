@@ -17,6 +17,7 @@ const app = join(home, "app");
 const currentRelease = join(app, "current");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
+interface UmiroConfig { model: string; embedding?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
 async function loadPlugins(): Promise<ManagedPlugin[]> {
@@ -24,14 +25,16 @@ async function loadPlugins(): Promise<ManagedPlugin[]> {
   return raw.map(item => typeof item === "string" ? { source: item, path: item, enabled: true } : item);
 }
 async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> { await mkdir(dirname(pluginsFile), { recursive: true, mode: 0o700 }); await writeFile(pluginsFile, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 }); }
+async function loadConfig(): Promise<UmiroConfig> { return JSON.parse(await readFile(configFile, "utf8")) as UmiroConfig; }
+async function saveConfig(config: UmiroConfig): Promise<void> { await writeFile(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }); }
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "PEOPLE.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
-  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", plugins: [] }, null, 2)}\n`, { mode: 0o600 });
-  if (!await exists(secretsFile)) await writeFile(secretsFile, "# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n", { mode: 0o600 });
+  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", embedding: { provider: "disabled" }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
+  if (!await exists(secretsFile)) await writeFile(secretsFile, "# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\n", { mode: 0o600 });
   console.log(home);
 }
 
@@ -88,6 +91,21 @@ async function install(): Promise<void> {
 
 async function configure(fromEnv?: string): Promise<void> {
   if (!fromEnv) throw new Error("configure requires --from-env <path>"); const source = resolve(fromEnv); await access(source); await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 }); await cp(source, secretsFile); await chmod(secretsFile, 0o600); console.log(secretsFile);
+}
+
+async function embedding(action: string, provider?: string, model?: string, baseUrl?: string, apiKeyEnv?: string): Promise<void> {
+  const config = await loadConfig();
+  if (action === "status") { console.log(JSON.stringify(config.embedding ?? { provider: "disabled" }, null, 2)); return; }
+  if (action === "disable") { await saveConfig({ ...config, embedding: { provider: "disabled" } }); console.log("embedding disabled"); return; }
+  if (action !== "configure") throw new Error("usage: umiro embedding configure|disable|status");
+  if (provider !== "gemini" && provider !== "openai-compatible") throw new Error("--provider must be gemini or openai-compatible");
+  if (!model?.trim()) throw new Error("embedding configure requires --model");
+  if (provider === "openai-compatible" && !baseUrl?.trim()) throw new Error("openai-compatible embedding requires --base-url");
+  const next = provider === "gemini"
+    ? { provider, model: model.trim(), apiKeyEnv: apiKeyEnv?.trim() || "GOOGLE_API_KEY" }
+    : { provider, model: model.trim(), baseUrl: baseUrl!.trim(), ...(apiKeyEnv?.trim() ? { apiKeyEnv: apiKeyEnv.trim() } : {}) };
+  await saveConfig({ ...config, embedding: next });
+  console.log(`embedding configured: ${provider}/${model.trim()}`);
 }
 
 const pidFile = join(home, "state", "gateway.pid.json");
@@ -166,4 +184,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|start|stop|status|plugin ...");
+if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|embedding configure|disable|status|start|stop|status|plugin ...");

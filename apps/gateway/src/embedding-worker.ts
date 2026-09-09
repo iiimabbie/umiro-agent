@@ -1,30 +1,62 @@
 import type { ConversationSearch, EmbeddingProjection, SearchHit } from "@umiro/core/search";
 import type { VisibilityScope } from "@umiro/core/authorization";
+import { createHash } from "node:crypto";
 
 export interface TextEmbedder { readonly model: string; embed(text: string, signal?: AbortSignal): Promise<readonly number[]> }
 
+type Fetcher = typeof fetch;
+
+function embeddingVector(data: unknown): readonly number[] {
+  if (!Array.isArray(data) || !data.every(value => typeof value === "number" && Number.isFinite(value))) {
+    throw new Error("embedding API returned an invalid vector");
+  }
+  return data;
+}
+
 export class GeminiEmbedder implements TextEmbedder {
-  constructor(readonly model: string, private readonly apiKey: string) {}
+  readonly model: string;
+  constructor(private readonly apiModel: string, private readonly apiKey: string, private readonly fetcher: Fetcher = fetch) {
+    this.model = `gemini:${apiModel}`;
+  }
   async embed(text: string, signal?: AbortSignal): Promise<readonly number[]> {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:embedContent?key=${encodeURIComponent(this.apiKey)}`, {
+    const response = await this.fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.apiModel)}:embedContent?key=${encodeURIComponent(this.apiKey)}`, {
       method: "POST", signal: signal ?? AbortSignal.timeout(30_000), headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: `models/${this.model}`, content: { parts: [{ text }] } }),
+      body: JSON.stringify({ model: `models/${this.apiModel}`, content: { parts: [{ text }] } }),
     });
     if (!response.ok) throw new Error(`embedding API failed with status ${response.status}`);
     const data = await response.json() as { embedding?: { values?: unknown } };
-    if (!Array.isArray(data.embedding?.values) || !data.embedding.values.every(value => typeof value === "number" && Number.isFinite(value))) throw new Error("embedding API returned an invalid vector");
-    return data.embedding.values as number[];
+    return embeddingVector(data.embedding?.values);
+  }
+}
+
+export class OpenAICompatibleEmbedder implements TextEmbedder {
+  readonly model: string;
+  constructor(private readonly apiModel: string, private readonly baseUrl: string, private readonly apiKey?: string, private readonly fetcher: Fetcher = fetch) {
+    const endpointIdentity = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
+    this.model = `openai-compatible:${endpointIdentity}:${apiModel}`;
+  }
+  async embed(text: string, signal?: AbortSignal): Promise<readonly number[]> {
+    const response = await this.fetcher(`${this.baseUrl.replace(/\/$/, "")}/embeddings`, {
+      method: "POST",
+      signal: signal ?? AbortSignal.timeout(30_000),
+      headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
+      body: JSON.stringify({ model: this.apiModel, input: text }),
+    });
+    if (!response.ok) throw new Error(`embedding API failed with status ${response.status}`);
+    const data = await response.json() as { data?: Array<{ embedding?: unknown }> };
+    return embeddingVector(data.data?.[0]?.embedding);
   }
 }
 
 export class EmbeddingWorker {
-  private timer: NodeJS.Timeout | undefined; private running = false;
+  private timer: NodeJS.Timeout | undefined; private running = false; private prepared = false;
   constructor(private readonly store: EmbeddingProjection, private readonly embedder: TextEmbedder, private readonly intervalMs = 15_000) {}
   start(): void { if (this.timer) return; void this.drain(); this.timer = setInterval(() => void this.drain(), this.intervalMs); this.timer.unref(); }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
   async drain(signal?: AbortSignal): Promise<number> {
     if (this.running) return 0; this.running = true; let completed = 0;
     try {
+      if (!this.prepared) { await this.store.prepareEmbeddingModel(this.embedder.model); this.prepared = true; }
       const now = new Date(); const stale = new Date(now.getTime() - 5 * 60_000).toISOString();
       const jobs = await this.store.claimEmbeddingJobs(20, now.toISOString(), stale);
       for (const job of jobs) {

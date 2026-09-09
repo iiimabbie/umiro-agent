@@ -545,6 +545,17 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     }
   }
 
+  async prepareEmbeddingModel(model: string): Promise<void> {
+    if (!model.trim()) throw new TypeError("embedding model is required");
+    this.database.transaction(() => {
+      const incompatible = this.database.prepare("SELECT 1 FROM conversation_embeddings WHERE model <> ? LIMIT 1").get(model);
+      if (!incompatible) return;
+      this.database.prepare("DELETE FROM conversation_embeddings").run();
+      this.database.prepare("DELETE FROM conversation_embedding_jobs").run();
+      this.seedEmbeddingJobs();
+    })();
+  }
+
   async claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("embedding claim limit must be between 1 and 100");
     return this.database.transaction(() => {
