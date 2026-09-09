@@ -969,6 +969,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       expectOne(update.changes, `approval ${id} changed concurrently`);
       const runId = this.runIdForOperation(row.operation_id);
       this.insertAudit(`approval.${state}`, "approval", id, runId, { operationId: row.operation_id, resolvedByPrincipalId: state === "expired" ? null : resolvedByPrincipalId }, resolvedAt);
+      const run = this.database.prepare("SELECT revision, state, waiting_reason, resume_eligibility FROM runs WHERE id=?").get(runId) as { revision: number; state: RunState; waiting_reason: string | null; resume_eligibility: Run["resumeEligibility"] };
+      if (run.state === "waiting" && run.waiting_reason === "approval_required" && run.resume_eligibility === "manual_review") {
+        expectOne(this.database.prepare("UPDATE runs SET revision=revision+1, resume_eligibility='eligible', updated_at=? WHERE id=? AND state='waiting' AND revision=? AND resume_eligibility='manual_review'").run(resolvedAt, runId, run.revision).changes, `run ${runId} changed concurrently`);
+        this.insertAudit("run.approval_resolved", "run", runId, runId, { approvalId: id, resolution: state, revision: run.revision + 1 }, resolvedAt);
+      }
       return approvalFromRow({ ...row, state, resolved_by_principal_id: state === "expired" ? null : resolvedByPrincipalId, resolved_at: resolvedAt });
     })();
   }

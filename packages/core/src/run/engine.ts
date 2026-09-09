@@ -36,11 +36,12 @@ export interface HeadlessResumeRequest {
 export type HeadlessRunResult =
   | { readonly status: "succeeded"; readonly runId: string; readonly deliveryId: string; readonly text: string; readonly usage: ModelUsage }
   | { readonly status: "waiting"; readonly runId: string; readonly reason: "outcome_unknown" }
+  | { readonly status: "waiting"; readonly runId: string; readonly reason: "approval_required"; readonly approvalId: string }
   | { readonly status: "failed" | "cancelled"; readonly runId: string; readonly error: string };
 
 export interface HeadlessRunEngineOptions {
   readonly now?: () => string;
-  readonly createId?: (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization") => string;
+  readonly createId?: (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization" | "approval") => string;
 }
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
@@ -446,7 +447,18 @@ export class HeadlessRunEngine {
       && persisted?.error?.code === "process_interrupted";
     const toolResult = persisted && !retryInterruptedPure && persisted.outcome !== "outcome_unknown"
       ? this.projectOperationResult(persisted)
-      : await this.invokeTool(call, claim.run.id, operationStep.id, claim.run.context, request.signal);
+      : existing?.state === "authorized"
+        ? await this.toolRuntime.resume(existing.id, { toolName: call.name, input: call.input, stepId: operationStep.id, context: claim.run.context, runId: claim.run.id, ...(request.signal ? { signal: request.signal } : {}) })
+        : await this.invokeTool(call, claim.run.id, operationStep.id, claim.run.context, request.signal);
+
+    if (toolResult.status === "approval_required") {
+      await this.store.updateExecutionProgress({
+        runId: claim.run.id, expectedRunRevision: claim.run.revision, expectedRunState: "running", runState: "waiting",
+        waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(),
+        checkpoint: { runId: claim.run.id, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination), updatedAt: this.now() },
+      });
+      return { status: "waiting", runId: claim.run.id, reason: "approval_required", approvalId: toolResult.approvalId };
+    }
 
     if (toolResult.status === "outcome_unknown") {
       await this.store.updateExecutionProgress({
@@ -731,6 +743,14 @@ export class HeadlessRunEngine {
                 ...(runSignal ? { signal: runSignal } : {}),
               });
           if (durationController?.signal.aborted) throw durationError;
+          if (toolResult.status === "approval_required") {
+            await this.store.updateExecutionProgress({
+              runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting",
+              waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(),
+              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+            });
+            return { status: "waiting", runId, reason: "approval_required", approvalId: toolResult.approvalId };
+          }
           const stepState = toolResult.status === "cancelled" ? "cancelled" : toolResult.status === "outcome_unknown" ? "failed" : "succeeded";
           const payload = toolResult.status === "succeeded"
             ? { ok: true, output: toolResult.output }

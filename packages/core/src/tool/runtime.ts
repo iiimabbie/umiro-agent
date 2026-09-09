@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { ApprovalRequest } from "../approval/entities.js";
+import { exactOperationFingerprint } from "../approval/fingerprint.js";
 import type { AuthorizationDecisionRecord } from "../audit/records.js";
 import { authorize } from "../authorization/authorize.js";
 import type { Operation, OperationError, OperationResult } from "../operation/index.js";
@@ -15,8 +17,9 @@ import { ToolRegistry } from "./registry.js";
 
 export interface ToolRuntimeOptions {
   readonly now?: () => string;
-  readonly createId?: (kind: "operation" | "authorization") => string;
+  readonly createId?: (kind: "operation" | "authorization" | "approval") => string;
   readonly defaultTimeoutMs?: number;
+  readonly approvalTtlMs?: number;
 }
 
 class ToolTimeoutError extends Error {
@@ -110,6 +113,7 @@ export class ToolRuntime {
   private readonly now: () => string;
   private readonly createId: NonNullable<ToolRuntimeOptions["createId"]>;
   private readonly defaultTimeoutMs: number;
+  private readonly approvalTtlMs: number;
 
   constructor(
     private readonly registry: ToolRegistry,
@@ -119,9 +123,11 @@ export class ToolRuntime {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? (() => randomUUID());
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000;
+    this.approvalTtlMs = options.approvalTtlMs ?? 5 * 60_000;
     if (!Number.isSafeInteger(this.defaultTimeoutMs) || this.defaultTimeoutMs <= 0) {
       throw new TypeError("default tool timeout must be a positive integer");
     }
+    if (!Number.isSafeInteger(this.approvalTtlMs) || this.approvalTtlMs <= 0) throw new TypeError("approval TTL must be a positive integer");
   }
 
   async execute(invocation: ToolInvocation): Promise<ToolInvocationResult> {
@@ -177,7 +183,7 @@ export class ToolRuntime {
         }
         const persisted = await this.store.getOperationResult(existing.id);
         if (existing.state === "authorized") {
-          return this.executeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
+          return this.resumeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
         }
         if (existing.state === "outcome_unknown" && !invocation.signal?.aborted) {
           return this.executeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
@@ -216,7 +222,16 @@ export class ToolRuntime {
       createdAt: proposedAt,
       updatedAt: decisionRecord.decidedAt,
     };
-    await this.store.recordOperationAuthorization(operation, decisionRecord);
+    const approval: ApprovalRequest | undefined = decision.allow && tool.policy.approvalRequirement === "required" ? {
+      id: this.createId("approval"),
+      operationId,
+      fingerprint: exactOperationFingerprint(operation, decisionRecord),
+      state: "pending",
+      requiredRole: "owner",
+      requestedAt: decisionRecord.decidedAt,
+      expiresAt: new Date(Date.parse(decisionRecord.decidedAt) + this.approvalTtlMs).toISOString(),
+    } : undefined;
+    await this.store.recordOperationAuthorization(operation, decisionRecord, approval);
     if (!decision.allow) {
       return {
         status: "denied",
@@ -224,8 +239,57 @@ export class ToolRuntime {
         error: operationError("permission_denied", decision.reason, false),
       };
     }
+    if (approval) return { status: "approval_required", operationId, approvalId: approval.id, expiresAt: approval.expiresAt };
 
     return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
+  }
+
+  async resume(operationId: string, invocation: ToolInvocation): Promise<ToolInvocationResult> {
+    const tool = this.registry.get(invocation.toolName);
+    if (!tool) return { status: "tool_not_found", error: operationError("tool_not_found", `unknown tool: ${invocation.toolName}`, false) };
+    const operation = await this.store.getOperation(operationId);
+    if (!operation || operation.stepId !== invocation.stepId || operation.kind !== `tool:${tool.name}` || canonicalJson(operation.input) !== canonicalJson(invocation.input as JsonObject)) {
+      return { status: "invalid_input", error: operationError("operation_mismatch", "stored operation does not match the pending tool call", false) };
+    }
+    const persisted = await this.store.getOperationResult(operation.id);
+    if (persisted) return projectResult(persisted);
+    if (operation.state !== "authorized") return { status: "outcome_unknown", operationId, error: operationError("operation_not_resumable", `operation is ${operation.state}`, false) };
+    return this.resumeAuthorizedTool(tool, operation, invocation, operation.input, operation.idempotencyKey);
+  }
+
+  private async resumeAuthorizedTool(tool: ToolDefinition, operation: Operation, invocation: ToolInvocation, input: JsonObject, idempotencyKey: string | undefined): Promise<ToolInvocationResult> {
+    const approval = await this.store.getApprovalByOperation(operation.id);
+    if (!approval) {
+      if (tool.policy.approvalRequirement === "required") {
+        const error = operationError("approval_missing", "exact-operation approval is missing", false);
+        await this.persistOutcome(operation, { operationId: operation.id, outcome: "failed", effectStatus: "not_applicable", error, completedAt: this.now() });
+        return { status: "failed", operationId: operation.id, error };
+      }
+      return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
+    }
+    if (approval.state === "pending") return { status: "approval_required", operationId: operation.id, approvalId: approval.id, expiresAt: approval.expiresAt };
+    if (approval.state === "denied" || approval.state === "expired") {
+      const error = operationError(approval.state === "denied" ? "approval_denied" : "approval_expired", `operation approval was ${approval.state}`, false);
+      await this.persistOutcome(operation, { operationId: operation.id, outcome: "failed", effectStatus: "not_applicable", error, completedAt: this.now() });
+      return { status: "failed", operationId: operation.id, error };
+    }
+    if (approval.state !== "approved") return { status: "outcome_unknown", operationId: operation.id, error: operationError("approval_already_consumed", "operation approval was already consumed", false) };
+    if (invocation.signal?.aborted) {
+      const error = operationError("tool_cancelled", "tool invocation was cancelled before approval consumption", false);
+      await this.persistOutcome(operation, { operationId: operation.id, outcome: "cancelled", effectStatus: "not_applicable", error, completedAt: this.now() });
+      return { status: "cancelled", operationId: operation.id, error };
+    }
+    const resource = tool.policy.resource?.(input);
+    const revalidated = authorize({ context: invocation.context, capability: tool.policy.capability, tier: tool.policy.tier, interactionRequirement: tool.policy.interactionRequirement, ...(resource ? { resource } : {}) });
+    if (!revalidated.allow) {
+      const error = operationError("approval_revalidation_failed", revalidated.reason, false);
+      await this.persistOutcome(operation, { operationId: operation.id, outcome: "failed", effectStatus: "not_applicable", error, completedAt: this.now() });
+      return { status: "failed", operationId: operation.id, error };
+    }
+    const revalidationRecord: AuthorizationDecisionRecord = { ...revalidated, id: operation.authorizationDecisionId!, operationId: operation.id, decidedAt: this.now() };
+    const fingerprint = exactOperationFingerprint(operation, revalidationRecord);
+    await this.store.consumeApprovalAndMarkExecuting(operation.id, fingerprint, this.now());
+    return this.executeMarkedTool(tool, operation, invocation, input, idempotencyKey);
   }
 
   private async executeAuthorizedTool(
@@ -249,6 +313,17 @@ export class ToolRuntime {
     }
 
     await this.store.markOperationExecuting(operationId, this.now());
+    return this.executeMarkedTool(tool, operation, invocation, input, idempotencyKey);
+  }
+
+  private async executeMarkedTool(
+    tool: ToolDefinition,
+    operation: Operation,
+    invocation: ToolInvocation,
+    input: JsonObject,
+    idempotencyKey: string | undefined,
+  ): Promise<ToolInvocationResult> {
+    const operationId = operation.id;
     const timeoutMs = tool.policy.timeoutMs ?? this.defaultTimeoutMs;
     let executionResult: ToolExecutionResult;
     try {

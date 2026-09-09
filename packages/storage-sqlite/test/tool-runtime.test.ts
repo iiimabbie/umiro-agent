@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  ApprovalService,
   capabilities,
   ToolRegistry,
   ToolRuntime,
@@ -74,9 +75,10 @@ function fixture(granted?: readonly string[], tool?: ToolDefinition, executionOv
   registry.register(tool ?? echoTool(async input => ({ ok: true, output: input, effectStatus: "not_applicable" })));
   let operationNumber = 0;
   let authorizationNumber = 0;
+  let approvalNumber = 0;
   const runtime = new ToolRuntime(registry, store, {
     now: () => at,
-    createId: kind => kind === "operation" ? `operation-${++operationNumber}` : `authorization-${++authorizationNumber}`,
+    createId: kind => kind === "operation" ? `operation-${++operationNumber}` : kind === "authorization" ? `authorization-${++authorizationNumber}` : `approval-${++approvalNumber}`,
   });
   return {
     store,
@@ -338,6 +340,29 @@ test("denies a scheduled tool that explicitly requires live interaction", async 
   } finally {
     database.cleanup();
   }
+});
+
+test("approved operations are reauthorized before atomic consumption", async () => {
+  let calls = 0;
+  const approvalTool: ToolDefinition = {
+    ...echoTool(async input => { calls += 1; return { ok: true, output: input, effectStatus: "not_applicable" }; }),
+    policy: { capability: "test.echo", tier: "common", interactionRequirement: "not_required", approvalRequirement: "required", sideEffect: "none" },
+  };
+  const database = fixture(undefined, approvalTool);
+  try {
+    await database.initialize();
+    const invocation = { toolName: "test.echo", input: { text: "approved" }, stepId: step.id, context: database.execution };
+    const waiting = await database.runtime.execute(invocation);
+    assert.deepEqual(waiting, { status: "approval_required", operationId: "operation-1", approvalId: "approval-1", expiresAt: "2026-09-08T12:05:00.000Z" });
+    await new ApprovalService(database.store, () => "2026-09-08T12:01:00.000Z").resolve("approval-1", "approve", database.execution);
+    const revoked = { ...database.execution, authority: { ...database.execution.authority, capabilities: [] } };
+    const result = await database.runtime.resume("operation-1", { ...invocation, context: revoked });
+    assert.equal(result.status, "failed");
+    if (result.status === "failed") assert.equal(result.error.code, "approval_revalidation_failed");
+    assert.equal(calls, 0);
+    assert.equal((await database.store.getApproval("approval-1"))?.state, "approved");
+    assert.equal((await database.store.getOperation("operation-1"))?.state, "failed");
+  } finally { database.cleanup(); }
 });
 
 test("persists pre-execution cancellation without calling the tool", async () => {

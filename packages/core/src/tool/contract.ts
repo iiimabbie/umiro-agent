@@ -9,6 +9,8 @@ export interface ToolPolicy {
   readonly tier: AuthorizationTier;
   /** Separate from privilege: only operations that truly need a live human set this. */
   readonly interactionRequirement: InteractionRequirement;
+  /** Exact-operation approval is independent from interactive-origin and privilege checks. */
+  readonly approvalRequirement?: "not_required" | "required";
   readonly sideEffect: SideEffectClass;
   readonly timeoutMs?: number;
   readonly resource?: (input: JsonObject) => ResourceRef | undefined;
@@ -48,6 +50,7 @@ export type ToolInvocationResult =
   | { readonly status: "tool_not_found"; readonly error: OperationError }
   | { readonly status: "invalid_input"; readonly error: OperationError }
   | { readonly status: "denied"; readonly operationId: string; readonly error: OperationError }
+  | { readonly status: "approval_required"; readonly operationId: string; readonly approvalId: string; readonly expiresAt: string }
   | { readonly status: "succeeded"; readonly operationId: string; readonly output: JsonValue }
   | {
       readonly status: "failed" | "cancelled" | "outcome_unknown";

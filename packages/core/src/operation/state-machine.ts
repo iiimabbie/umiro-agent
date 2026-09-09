@@ -2,7 +2,7 @@ import type { Operation, OperationState } from "./entities.js";
 
 const OPERATION_TRANSITIONS: Readonly<Record<OperationState, readonly OperationState[]>> = {
   proposed: ["authorized", "denied", "cancelled"],
-  authorized: ["executing", "cancelled"],
+  authorized: ["executing", "failed", "cancelled"],
   denied: [],
   executing: ["succeeded", "failed", "outcome_unknown", "cancelled"],
   succeeded: [],
