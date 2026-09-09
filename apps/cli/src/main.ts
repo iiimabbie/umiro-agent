@@ -61,6 +61,9 @@ async function plugin(action: string, source?: string, workspaceName?: string): 
       await rm(path, { recursive: true, force: true });
       throw new Error(`plugin dependency install/build failed: ${source}`, { cause: error });
     }
+  } else if (action !== "install" && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
+    const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, "");
+    path = join(home, "app", "plugins", workspaceName ? `${repo}-${workspaceName}` : repo);
   } else if (action === "install" && /^(?:https?|git):/.test(source)) {
     throw new Error("only public GitHub HTTPS plugin URLs are supported");
   }
