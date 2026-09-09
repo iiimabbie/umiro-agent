@@ -42,3 +42,18 @@ test("delivers pending Discord output and records confirmation", async () => {
   assert.deepEqual(sent, ["c:hello"]);
   assert.deepEqual(marked, ["d"]);
 });
+
+test("delivers durable artifacts before marking the intent delivered", async () => {
+  const events: string[] = [];
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "", artifactIds: ["a"] }, state: "pending" as const, createdAt: "now" }]; },
+    async markDeliveryDelivered(id) { events.push(`marked:${id}`); },
+  }, {
+    async sendText() { throw new Error("text path must not run"); },
+    async sendFiles(channelId, files) { events.push(`files:${channelId}:${files[0]?.name}`); return { messageId: "m" }; },
+  }, () => "later", {
+    async getArtifact() { return { id: "a", ownerPrincipalId: "owner", visibility: "shared", mediaType: "text/plain", filename: "report.txt", size: 1, sha256: "a".repeat(64), location: "/safe/report", state: "stored", createdAt: "now", updatedAt: "now" }; },
+  });
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.deepEqual(events, ["files:c:report.txt", "marked:d"]);
+});

@@ -36,6 +36,13 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     await channel.sendTyping();
   }
 
+  async sendFiles(channelId: string, files: readonly { readonly path: string; readonly name?: string }[]): Promise<{ messageId: string }> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
+    const sent = await channel.send({ files: files.map(file => ({ attachment: file.path, ...(file.name ? { name: file.name } : {}) })) });
+    return { messageId: sent.id };
+  }
+
   async editText(channelId: string, messageId: string, text: string): Promise<{ messageId: string; migrated: boolean }> {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${channelId}`);

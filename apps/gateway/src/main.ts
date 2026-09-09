@@ -61,7 +61,7 @@ if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
-const delivery = new DiscordDeliveryWorker(store, discord);
+const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler, childRuns, legacy: legacyServices });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());

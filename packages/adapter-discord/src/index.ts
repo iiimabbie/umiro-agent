@@ -2,6 +2,7 @@ import type { InputEvent } from "@umiro/core/input";
 import type { Authority } from "@umiro/core/authorization";
 import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, TransportIdentity } from "@umiro/core/identity";
 import type { ExecutionStore } from "@umiro/core/ports";
+import type { ArtifactStore } from "@umiro/core";
 export * from "./client.js";
 
 export interface DiscordMessageEnvelope {
@@ -68,6 +69,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
 export interface DiscordTextTransport {
   sendText(channelId: string, text: string, signal?: AbortSignal): Promise<{ readonly messageId: string }>;
   sendTyping?(channelId: string): Promise<void>;
+  sendFiles?(channelId: string, files: readonly { readonly path: string; readonly name?: string }[], signal?: AbortSignal): Promise<{ readonly messageId: string }>;
 }
 
 export class DiscordDeliveryWorker {
@@ -75,6 +77,7 @@ export class DiscordDeliveryWorker {
     private readonly store: Pick<ExecutionStore, "listPendingDeliveries" | "markDeliveryDelivered">,
     private readonly transport: DiscordTextTransport,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly artifacts?: Pick<ArtifactStore, "getArtifact">,
   ) {}
 
   async drain(signal?: AbortSignal): Promise<{ delivered: number; skipped: number }> {
@@ -87,7 +90,18 @@ export class DiscordDeliveryWorker {
       }
       const text = intent.payload.text;
       if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
-      await this.transport.sendText(intent.destination.channelId, text, signal);
+      const artifactIds = intent.payload.artifactIds;
+      if (Array.isArray(artifactIds) && artifactIds.length) {
+        if (!this.transport.sendFiles || !this.artifacts) throw new Error("Discord artifact delivery is unavailable");
+        const files: { path: string; name?: string }[] = [];
+        for (const id of artifactIds) {
+          if (typeof id !== "string") throw new TypeError(`Discord delivery ${intent.id} has an invalid artifact id`);
+          const artifact = await this.artifacts.getArtifact(id);
+          if (!artifact || artifact.state === "deleted") throw new Error(`artifact ${id} is unavailable`);
+          files.push({ path: artifact.location, ...(artifact.filename ? { name: artifact.filename } : {}) });
+        }
+        await this.transport.sendFiles(intent.destination.channelId, files, signal);
+      } else await this.transport.sendText(intent.destination.channelId, text, signal);
       await this.store.markDeliveryDelivered(intent.id, this.now());
       delivered++;
     }
