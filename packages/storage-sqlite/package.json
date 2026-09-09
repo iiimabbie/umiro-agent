@@ -6,7 +6,8 @@
   "exports": "./dist/src/index.js",
   "dependencies": {
     "@umiro/core": "workspace:*",
-    "better-sqlite3": "^12.9.0"
+    "better-sqlite3": "^12.9.0",
+    "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13"

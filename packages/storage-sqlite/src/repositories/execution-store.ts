@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import {
   assertOperationInvariants,
   assertOperationResult,
@@ -239,6 +240,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   constructor(filename: string) {
     if (filename !== ":memory:") mkdirSync(dirname(filename), { recursive: true });
     this.database = new Database(filename);
+    sqliteVec.load(this.database);
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
     if (filename !== ":memory:") this.database.pragma("journal_mode = WAL");
@@ -597,6 +599,26 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   private contentHash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 
+  private vectorBlob(vector: readonly number[]): Buffer {
+    return Buffer.from(new Float32Array(vector).buffer);
+  }
+
+  private ensureVectorIndex(model: string, dimensions: number): void {
+    const existing = this.database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='conversation_embeddings_vec'").get() as { sql: string } | undefined;
+    const configuredDimensions = existing?.sql.match(/embedding\s+float\[(\d+)\]/i)?.[1];
+    if (existing && Number(configuredDimensions) !== dimensions) {
+      this.database.exec("DROP TABLE conversation_embeddings_vec");
+      this.database.prepare("DELETE FROM conversation_embeddings").run();
+    }
+    if (!existing || Number(configuredDimensions) !== dimensions) {
+      if (!Number.isSafeInteger(dimensions) || dimensions < 1 || dimensions > 65_536) throw new TypeError("embedding dimensions are invalid");
+      this.database.exec(`CREATE VIRTUAL TABLE conversation_embeddings_vec USING vec0(turn_id TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
+      const rows = this.database.prepare("SELECT turn_id, vector_json FROM conversation_embeddings WHERE model=? AND dimensions=?").all(model, dimensions) as Array<{ turn_id: string; vector_json: string }>;
+      const insert = this.database.prepare("INSERT INTO conversation_embeddings_vec(turn_id, embedding) VALUES (?, ?)");
+      for (const row of rows) insert.run(row.turn_id, this.vectorBlob(parseJson<number[]>(row.vector_json)));
+    }
+  }
+
   private enqueueEmbedding(turnId: string, text: string): void {
     const hash = this.contentHash(text);
     const existing = this.database.prepare("SELECT content_hash FROM conversation_embeddings WHERE turn_id = ?").get(turnId) as { content_hash: string } | undefined;
@@ -633,6 +655,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const incompatible = this.database.prepare("SELECT 1 FROM conversation_embeddings WHERE model <> ? LIMIT 1").get(model);
       if (!incompatible) return;
       this.database.prepare("DELETE FROM conversation_embeddings").run();
+      if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_embeddings_vec'").get()) this.database.exec("DROP TABLE conversation_embeddings_vec");
       this.database.prepare("DELETE FROM conversation_embedding_jobs").run();
       this.seedEmbeddingJobs();
     })();
@@ -662,6 +685,9 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       this.database.prepare(`INSERT INTO conversation_embeddings(turn_id, content_hash, model, dimensions, vector_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(turn_id) DO UPDATE SET content_hash=excluded.content_hash, model=excluded.model, dimensions=excluded.dimensions, vector_json=excluded.vector_json, updated_at=excluded.updated_at`)
         .run(turnId, contentHash, model, vector.length, json([...vector]), now);
+      this.ensureVectorIndex(model, vector.length);
+      this.database.prepare("DELETE FROM conversation_embeddings_vec WHERE turn_id=?").run(turnId);
+      this.database.prepare("INSERT INTO conversation_embeddings_vec(turn_id, embedding) VALUES (?, ?)").run(turnId, this.vectorBlob(vector));
       this.database.prepare("DELETE FROM conversation_embedding_jobs WHERE turn_id=? AND content_hash=?").run(turnId, contentHash);
     })();
   }
@@ -674,19 +700,20 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   async semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope, options: { readonly excludeConversationId?: string; readonly beforeCreatedAt?: string; readonly minSimilarity?: number } = {}): Promise<readonly SearchHit[]> {
     if (!vector.length || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid semantic search input");
-    const rows = this.database.prepare(`SELECT e.turn_id, e.vector_json, e.dimensions, f.conversation_id, f.actor_principal_id, f.text, t.created_at
-      FROM conversation_embeddings e JOIN conversation_fts f ON f.turn_id=e.turn_id JOIN turns t ON t.id=e.turn_id WHERE e.model=? AND e.dimensions=?`).all(model, vector.length) as Array<{ turn_id: string; vector_json: string; dimensions: number; conversation_id: string; actor_principal_id: string; text: string; created_at: string }>;
-    const visible = rows.filter(row => (!options.excludeConversationId || row.conversation_id !== options.excludeConversationId) && (!options.beforeCreatedAt || row.created_at < options.beforeCreatedAt) && (visibility.kind === "all" || visibility.principalIds.includes(row.actor_principal_id) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === row.conversation_id)));
-    const norm = (values: readonly number[]) => Math.sqrt(values.reduce((sum, value) => sum + value * value, 0)); const queryNorm = norm(vector);
-    if (!queryNorm) return [];
-    return visible.map(row => {
-      const candidate = parseJson<number[]>(row.vector_json); const denominator = queryNorm * norm(candidate); const similarity = denominator ? candidate.reduce((sum, value, index) => sum + value * (vector[index] ?? 0), 0) / denominator : -1;
-      return { turnId: row.turn_id, conversationId: row.conversation_id, actorPrincipalId: row.actor_principal_id, text: row.text, rank: 1 - similarity, semanticScore: similarity };
-    }).filter(hit => hit.semanticScore >= (options.minSimilarity ?? -1)).sort((left, right) => left.rank - right.rank).slice(0, limit);
+    this.ensureVectorIndex(model, vector.length);
+    const candidateLimit = Math.min(1_000, Math.max(50, limit * 10));
+    const rows = this.database.prepare(`WITH nearest AS (
+      SELECT turn_id, distance FROM conversation_embeddings_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance
+    ) SELECT n.turn_id, n.distance, f.conversation_id, f.actor_principal_id, f.text, t.created_at
+      FROM nearest n JOIN conversation_embeddings e ON e.turn_id=n.turn_id JOIN conversation_fts f ON f.turn_id=n.turn_id JOIN turns t ON t.id=n.turn_id
+      WHERE e.model=? AND e.dimensions=? ORDER BY n.distance`).all(this.vectorBlob(vector), candidateLimit, model, vector.length) as Array<{ turn_id: string; distance: number; conversation_id: string; actor_principal_id: string; text: string; created_at: string }>;
+    return rows.filter(row => (!options.excludeConversationId || row.conversation_id !== options.excludeConversationId) && (!options.beforeCreatedAt || row.created_at < options.beforeCreatedAt) && (visibility.kind === "all" || visibility.principalIds.includes(row.actor_principal_id) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === row.conversation_id)))
+      .map(row => ({ turnId: row.turn_id, conversationId: row.conversation_id, actorPrincipalId: row.actor_principal_id, text: row.text, rank: row.distance, semanticScore: 1 - row.distance }))
+      .filter(hit => hit.semanticScore >= (options.minSimilarity ?? -1)).slice(0, limit);
   }
 
   async rebuildEmbeddingProjection(): Promise<void> {
-    this.database.transaction(() => { this.database.prepare("DELETE FROM conversation_embeddings").run(); this.database.prepare("DELETE FROM conversation_embedding_jobs").run(); this.seedEmbeddingJobs(); })();
+    this.database.transaction(() => { this.database.prepare("DELETE FROM conversation_embeddings").run(); if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_embeddings_vec'").get()) this.database.prepare("DELETE FROM conversation_embeddings_vec").run(); this.database.prepare("DELETE FROM conversation_embedding_jobs").run(); this.seedEmbeddingJobs(); })();
   }
 
   async search(query: string, limit: number, visibility: VisibilityScope): Promise<readonly SearchHit[]> {
