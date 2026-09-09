@@ -9,9 +9,10 @@ test("localhost control panel authenticates config and fixed workspace file oper
   const root = await mkdtemp(join(tmpdir(), "umiro-web-ui-")); const workspace = join(root, "workspace"); const configFile = join(root, "umiro.json");
   await mkdir(workspace); await writeFile(join(workspace, "AGENT.md"), "before\n"); await writeFile(configFile, `${JSON.stringify({ model: "gemma4", discord: {}, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] })}\n`);
   const schedules = [{ id: "schedule-1", name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 8 * * *" } }]; let created: unknown; let enabled: unknown; let removed: unknown;
+  let pluginAction: unknown;
   const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, schedules: {
     async list() { return schedules; }, async create(input) { created = input; return { id: "new", ...input }; }, async setEnabled(id, value) { enabled = [id, value]; return { id, enabled: value }; }, async remove(id) { removed = id; return true; },
-  } }); await server.start();
+  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } } }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
   try {
     assert.equal((await fetch(`${endpoint}/api/config`)).status, 401);
@@ -27,6 +28,9 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.deepEqual(created, { name: "later", kind: "once", at: "2026-09-10T00:00:00.000Z", timezone: "Asia/Taipei", prompt: "提醒我" });
     assert.equal((await fetch(`${endpoint}/api/schedules/schedule-1`, { method: "PATCH", headers, body: JSON.stringify({ enabled: false }) })).status, 200); assert.deepEqual(enabled, ["schedule-1", false]);
     assert.equal((await fetch(`${endpoint}/api/schedules/schedule-1`, { method: "DELETE", headers })).status, 200); assert.equal(removed, "schedule-1");
+    assert.deepEqual(await (await fetch(`${endpoint}/api/plugins`, { headers })).json(), [{ source: "builtin:memory", enabled: true }]);
+    assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "configure", source: "builtin:memory", config: { limit: 10 } }) })).status, 200);
+    assert.deepEqual(pluginAction, ["configure", "builtin:memory", undefined, { limit: 10 }]);
   } finally { await server.stop(); await rm(root, { recursive: true, force: true }); }
 });
 
