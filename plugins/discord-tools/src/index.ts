@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { relative, resolve } from "node:path";
 import type { JsonObject } from "@umiro/core/ports";
 import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
 import type { ToolDefinition, ToolExecutionContext, ToolExecutionResult } from "@umiro/core/tool";
@@ -15,6 +17,17 @@ const channelMessageSchema = { type: "object", additionalProperties: false, requ
 
 export function createPlugin(setup: PluginSetupContext): PluginInstance {
   const service = () => { const value = setup.services?.discord; if (!value) throw new Error("Discord operation service is unavailable"); return value; };
+  const workspacePath = typeof setup.config.workspacePath === "string" ? resolve(setup.config.workspacePath) : undefined;
+  const artifactService = () => { const value = setup.services?.artifacts; if (!value) throw new Error("Artifact service is unavailable"); return value; };
+  const workspaceFile = async (input: JsonObject): Promise<string> => {
+    if (!workspacePath) throw new Error("discord-tools workspacePath is not configured");
+    if (typeof input.file !== "string" || !input.file.trim()) throw new TypeError("file is required");
+    const file = await realpath(resolve(input.file));
+    const relativePath = relative(workspacePath, file);
+    const parentPrefix = process.platform === "win32" ? "..\\" : "../";
+    if (!relativePath || relativePath === ".." || relativePath.startsWith(parentPrefix)) throw new Error("file must be inside the configured workspace");
+    return file;
+  };
   const tools: ToolDefinition[] = [
     define({ name: "discord_send_message", description: "Send a message to an explicitly identified Discord channel.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "content"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, content: { type: "string", minLength: 1, maxLength: 2_000 } } }, policy: { capability: "discord.message.write", tier: "common", interactionRequirement: "not_required", sideEffect: "non_idempotent", resource }, async execute(input, context) { return service().sendMessage({ channelId: channel(input), content: String(input.content), signal: context.signal }); } }),
     define({ name: "discord_react", description: "Add a reaction to an explicitly identified Discord message.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "messageId", "emoji"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, messageId: { type: "string", pattern: "^[0-9]{2,32}$" }, emoji: { type: "string", minLength: 1, maxLength: 64 } } }, policy: { capability: "discord.message.react", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent", resource }, async execute(input, context) { await service().react({ channelId: channel(input), messageId: message(input), emoji: String(input.emoji), signal: context.signal }); return { reacted: true }; } }),
@@ -29,6 +42,7 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
     define({ name: "discord_delete_message", description: "Delete an explicitly identified Discord message.", inputSchema: channelMessageSchema, policy: { capability: "discord.message.delete", tier: "privileged", interactionRequirement: "not_required", sideEffect: "non_idempotent", resource }, async execute(input, context) { await service().deleteMessage({ channelId: channel(input), messageId: message(input), signal: context.signal }); return { deleted: true }; } }),
     define({ name: "discord_fetch_channel_messages", description: "Fetch a bounded set of messages from an explicitly identified Discord channel.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, limit: { type: "integer", minimum: 1, maximum: 100 } } }, policy: { capability: "discord.message.read", tier: "sensitive", interactionRequirement: "not_required", sideEffect: "none", resource }, async execute(input, context) { return service().fetchChannelMessages({ channelId: channel(input), limit: typeof input.limit === "number" ? input.limit : 50, signal: context.signal }); } }),
     define({ name: "discord_bot_mention_toggle", description: "Enable or disable responses to messages sent by other bots. Guild and channel allowlists still apply.", inputSchema: { type: "object", additionalProperties: false, required: ["enabled"], properties: { enabled: { type: "boolean" } } }, policy: { capability: "discord.policy.write", tier: "privileged", interactionRequirement: "not_required", sideEffect: "idempotent" }, async execute(input) { const enabled = input.enabled === true; await service().setRespondToBots(enabled); return { respondToBots: enabled }; } }),
+    define({ name: "discord_attach_to_reply", description: "Attach a workspace file to the current final Discord reply.", inputSchema: { type: "object", additionalProperties: false, required: ["file"], properties: { file: { type: "string", minLength: 1 }, filename: { type: "string", minLength: 1, maxLength: 120 }, mediaType: { type: "string", minLength: 1, maxLength: 200 } } }, policy: { capability: "discord.attachment.write", tier: "sensitive", interactionRequirement: "not_required", sideEffect: "non_idempotent", resource: input => ({ kind: "workspace", id: "default" }) }, async execute(input, context) { const file = await workspaceFile(input); const artifact = await artifactService().createFromFile({ sourcePath: file, ownerPrincipalId: context.execution.actor.id, ...(typeof input.filename === "string" ? { filename: input.filename } : {}), ...(typeof input.mediaType === "string" ? { mediaType: input.mediaType } : {}), parentSource: { kind: "operation", id: context.operationId } }); return { artifactId: artifact.id, filename: artifact.filename ?? file.split(/[\\/]/).pop() ?? "attachment" }; } }),
   ];
   return { contributions: { tools } };
 }
