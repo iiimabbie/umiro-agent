@@ -139,6 +139,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
 
+  packages/adapter-discord:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/core:
     dependencies:
       ajv:
