@@ -18,6 +18,7 @@ export interface RunOutput {
   readonly text: string;
   readonly usage: ModelUsage;
   readonly createdAt: string;
+  readonly artifactIds?: readonly string[];
 }
 
 export interface DeliveryIntent {

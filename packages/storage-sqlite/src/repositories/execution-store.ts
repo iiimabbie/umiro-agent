@@ -115,6 +115,7 @@ interface ResultRow {
   effect_status: OperationResult["effectStatus"];
   output_json: string | null;
   error_json: string | null;
+  artifact_ids_json: string | null;
   completed_at: string;
 }
 
@@ -1061,13 +1062,14 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const current = this.operationState(operationId);
       assertOperationTransition(current, result.outcome);
       this.database.prepare(`
-        INSERT INTO operation_results(operation_id, outcome, effect_status, output_json, error_json, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO operation_results(operation_id, outcome, effect_status, output_json, error_json, artifact_ids_json, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(operation_id) DO UPDATE SET
           outcome = excluded.outcome,
           effect_status = excluded.effect_status,
           output_json = excluded.output_json,
           error_json = excluded.error_json,
+          artifact_ids_json = excluded.artifact_ids_json,
           completed_at = excluded.completed_at
       `).run(
         operationId,
@@ -1075,6 +1077,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         result.effectStatus,
         result.output === undefined ? null : json(result.output),
         result.error ? json(result.error) : null,
+        result.artifactIds ? json(result.artifactIds) : null,
         result.completedAt,
       );
       const update = this.database.prepare("UPDATE operations SET state = ?, updated_at = ? WHERE id = ? AND state = ?")
@@ -1276,6 +1279,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       effectStatus: row.effect_status,
       ...(row.output_json !== null ? { output: parseJson<JsonValue>(row.output_json) } : {}),
       ...(row.error_json ? { error: parseJson<NonNullable<OperationResult["error"]>>(row.error_json) } : {}),
+      ...(row.artifact_ids_json ? { artifactIds: parseJson<NonNullable<OperationResult["artifactIds"]>>(row.artifact_ids_json) } : {}),
       completedAt: row.completed_at,
     } : undefined;
   }

@@ -29,12 +29,15 @@ export type ToolExecutionResult =
       readonly ok: true;
       readonly output: JsonValue;
       readonly effectStatus: "not_applicable" | "confirmed";
+      /** Artifacts created by this operation; delivery references their durable IDs. */
+      readonly artifactIds?: readonly string[];
     }
   | {
       readonly ok: false;
       readonly error: OperationError;
       readonly effectStatus: "not_applicable" | "confirmed" | "unknown";
       readonly output?: JsonValue;
+      readonly artifactIds?: readonly string[];
     };
 
 export interface ToolDefinition {
@@ -51,12 +54,13 @@ export type ToolInvocationResult =
   | { readonly status: "invalid_input"; readonly error: OperationError }
   | { readonly status: "denied"; readonly operationId: string; readonly error: OperationError }
   | { readonly status: "approval_required"; readonly operationId: string; readonly approvalId: string; readonly expiresAt: string }
-  | { readonly status: "succeeded"; readonly operationId: string; readonly output: JsonValue }
+  | { readonly status: "succeeded"; readonly operationId: string; readonly output: JsonValue; readonly artifactIds?: readonly string[] }
   | {
       readonly status: "failed" | "cancelled" | "outcome_unknown";
       readonly operationId: string;
       readonly error: OperationError;
       readonly output?: JsonValue;
+      readonly artifactIds?: readonly string[];
     };
 
 export interface ToolInvocation {

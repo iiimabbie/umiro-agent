@@ -65,3 +65,13 @@ test("approval resolution requires an interactive owner and expires fail-closed"
     await assert.rejects(store.consumeApprovalAndMarkExecuting(op.id, request.fingerprint, expiresAt), /not executable/);
   } finally { store.close(); }
 });
+
+test("operation results persist artifact references for outbound delivery", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await seed(store);
+  const op = operation(); const auth = decision();
+  await store.recordOperationAuthorization(op, auth);
+  await store.markOperationExecuting(op.id, "2026-09-09T00:01:00.000Z");
+  await store.recordOperationOutcome(op.id, { operationId: op.id, outcome: "succeeded", effectStatus: "confirmed", output: { created: true }, artifactIds: ["artifact-a", "artifact-b"], completedAt: "2026-09-09T00:01:01.000Z" }, "2026-09-09T00:01:01.000Z");
+  try { assert.deepEqual((await store.getOperationResult(op.id))?.artifactIds, ["artifact-a", "artifact-b"]); } finally { store.close(); }
+});

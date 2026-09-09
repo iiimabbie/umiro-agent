@@ -143,6 +143,15 @@ export class HeadlessRunEngine {
     this.toolRuntime = new ToolRuntime(tools, store, { now: this.now, createId: kind => this.createId(kind) });
   }
 
+  private async artifactIdsForRun(runId: string): Promise<readonly string[]> {
+    const ids = new Set<string>();
+    for (const operation of await this.store.listOperations(runId)) {
+      const result = await this.store.getOperationResult(operation.id);
+      for (const id of result?.artifactIds ?? []) if (typeof id === "string" && id) ids.add(id);
+    }
+    return [...ids];
+  }
+
   async run(request: HeadlessRunRequest): Promise<HeadlessRunResult> {
     return this.execute(request);
   }
@@ -292,6 +301,7 @@ export class HeadlessRunEngine {
       return this.appendRecoveryCursor(claim, checkpoint, request, "operation", step.sequence + 1);
     }
     const deliveryId = this.createId("delivery");
+    const artifactIds = await this.artifactIdsForRun(claim.run.id);
     await this.store.completeRunWithOutput({
       output: {
         id: this.createId("output"),
@@ -299,12 +309,13 @@ export class HeadlessRunEngine {
         text: call.response.text,
         usage: checkpoint.usage,
         createdAt: this.now(),
+        ...(artifactIds.length ? { artifactIds } : {}),
       },
       delivery: {
         id: deliveryId,
         runId: claim.run.id,
         destination: checkpoint.deliveryDestination,
-        payload: { text: call.response.text },
+        payload: { text: call.response.text, ...(artifactIds.length ? { artifactIds } : {}) },
         state: "pending",
         createdAt: this.now(),
       },
@@ -702,13 +713,14 @@ export class HeadlessRunEngine {
         if (response.toolCalls.length === 0) {
           const completedAt = this.now();
           const deliveryId = this.createId("delivery");
-          await this.store.completeRunWithOutput({
-            output: { id: this.createId("output"), runId, text: response.text, usage, createdAt: completedAt },
+      const artifactIds = await this.artifactIdsForRun(runId);
+      await this.store.completeRunWithOutput({
+        output: { id: this.createId("output"), runId, text: response.text, usage, createdAt: completedAt, ...(artifactIds.length ? { artifactIds } : {}) },
             delivery: {
               id: deliveryId,
               runId,
               destination: deliveryDestination,
-              payload: { text: response.text },
+              payload: { text: response.text, ...(artifactIds.length ? { artifactIds } : {}) },
               state: "pending",
               createdAt: completedAt,
             },

@@ -15,6 +15,7 @@ export interface OperationResult {
   readonly outcome: OperationOutcomeState;
   readonly effectStatus: ExternalEffectStatus;
   readonly output?: JsonValue;
+  readonly artifactIds?: readonly string[];
   readonly error?: OperationError;
   readonly completedAt: string;
 }

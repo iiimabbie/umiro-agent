@@ -55,7 +55,7 @@ function canonicalJson(value: JsonValue): string {
 
 function projectResult(result: OperationResult): ToolInvocationResult {
   if (result.outcome === "succeeded") {
-    return { status: "succeeded", operationId: result.operationId, output: result.output ?? null };
+    return { status: "succeeded", operationId: result.operationId, output: result.output ?? null, ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}) };
   }
   const error = result.error
     ?? operationError("operation_outcome_unknown", "the external effect could not be confirmed", true);
@@ -64,6 +64,7 @@ function projectResult(result: OperationResult): ToolInvocationResult {
     operationId: result.operationId,
     error,
     ...(result.output !== undefined ? { output: result.output } : {}),
+    ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}),
   };
 }
 
@@ -350,9 +351,10 @@ export class ToolRuntime {
         outcome: "succeeded",
         effectStatus: executionResult.effectStatus,
         output: executionResult.output,
+        ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}),
         completedAt: this.now(),
       });
-      return { status: "succeeded", operationId, output: executionResult.output };
+    return { status: "succeeded", operationId, output: executionResult.output, ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}) };
     }
 
     const outcome = executionResult.effectStatus === "unknown" ? "outcome_unknown" : "failed";
@@ -361,6 +363,7 @@ export class ToolRuntime {
       outcome,
       effectStatus: executionResult.effectStatus,
       ...(executionResult.output !== undefined ? { output: executionResult.output } : {}),
+      ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}),
       error: executionResult.error,
       completedAt: this.now(),
     });
@@ -369,6 +372,7 @@ export class ToolRuntime {
       operationId,
       error: executionResult.error,
       ...(executionResult.output !== undefined ? { output: executionResult.output } : {}),
+      ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}),
     };
   }
 
