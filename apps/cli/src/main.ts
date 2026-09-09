@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { access, chmod, cp, mkdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, cp, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { promisify } from "node:util";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { validatePluginManifest } from "@umiro/core";
 import { managedPluginPath } from "./plugin-path.js";
 
@@ -271,18 +272,28 @@ async function rollback(): Promise<void> {
 async function backup(destination?: string): Promise<void> {
   if (!destination) throw new Error("backup requires a destination directory");
   if (await systemdActive() || await fallbackProcess()) throw new Error("stop the daemon before creating a backup");
-  const target = resolve(destination); await mkdir(target, { recursive: true, mode: 0o700 });
+  const target = resolve(destination); if (await exists(target)) throw new Error(`backup destination already exists: ${target}`);
+  const parent = dirname(target); await mkdir(parent, { recursive: true, mode: 0o700 }); const temporaryTarget = join(parent, `.${target.split(sep).pop()}-${crypto.randomUUID()}.tmp`); await mkdir(temporaryTarget, { mode: 0o700 });
   await access(join(home, "data", "umiro.sqlite"));
-  await cp(join(home, "data", "umiro.sqlite"), join(target, "umiro.sqlite"));
-  if (await exists(join(home, "data", "artifacts"))) await cp(join(home, "data", "artifacts"), join(target, "artifacts"), { recursive: true });
-  await writeFile(join(target, "backup.json"), `${JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+  try {
+    await cp(join(home, "data", "umiro.sqlite"), join(temporaryTarget, "umiro.sqlite"));
+    if (await exists(join(home, "data", "artifacts"))) await cp(join(home, "data", "artifacts"), join(temporaryTarget, "artifacts"), { recursive: true });
+    const files = await backupFiles(temporaryTarget);
+    await writeFile(join(temporaryTarget, "backup.json"), `${JSON.stringify({ format: 2, createdAt: new Date().toISOString(), files }, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporaryTarget, target);
+  } finally { await rm(temporaryTarget, { recursive: true, force: true }); }
   console.log(target);
 }
 
 async function restore(source?: string): Promise<void> {
   if (!source) throw new Error("restore requires a backup directory");
   if (await systemdActive() || await fallbackProcess()) throw new Error("stop the daemon before restoring a backup");
-  const sourceRoot = resolve(source); await access(join(sourceRoot, "umiro.sqlite"));
+  const sourceRoot = await realpath(resolve(source)); const manifest = JSON.parse(await readFile(join(sourceRoot, "backup.json"), "utf8")) as { format?: unknown; files?: unknown };
+  if (manifest.format !== 2 || !Array.isArray(manifest.files)) throw new Error("unsupported or malformed backup manifest");
+  const expected = manifest.files as Array<{ path?: unknown; size?: unknown; sha256?: unknown }>;
+  if (expected.some(item => typeof item.path !== "string" || typeof item.size !== "number" || typeof item.sha256 !== "string")) throw new Error("malformed backup file record");
+  const actual = await backupFiles(sourceRoot); const normalized = expected.map(item => ({ path: item.path as string, size: item.size as number, sha256: item.sha256 as string })).sort((left, right) => left.path.localeCompare(right.path));
+  if (JSON.stringify(actual) !== JSON.stringify(normalized) || !actual.some(item => item.path === "umiro.sqlite")) throw new Error("backup integrity verification failed");
   const dataRoot = join(home, "data"); await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   const temporary = join(dataRoot, `.umiro-restore-${crypto.randomUUID()}.sqlite`);
   await cp(join(sourceRoot, "umiro.sqlite"), temporary); await chmod(temporary, 0o600);
@@ -293,6 +304,25 @@ async function restore(source?: string): Promise<void> {
     await cp(join(sourceRoot, "artifacts"), artifactTarget, { recursive: true });
   }
   console.log(sourceRoot);
+}
+
+async function sha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolveDone, reject) => { const stream = createReadStream(path); stream.on("data", chunk => hash.update(chunk)); stream.once("error", reject); stream.once("end", resolveDone); });
+  return hash.digest("hex");
+}
+
+async function backupFiles(root: string, directory = root): Promise<Array<{ path: string; size: number; sha256: string }>> {
+  const output: Array<{ path: string; size: number; sha256: string }> = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (directory === root && entry.name === "backup.json") continue;
+    const path = join(directory, entry.name); const metadata = await lstat(path);
+    if (metadata.isSymbolicLink()) throw new Error(`backup contains a symbolic link: ${relative(root, path)}`);
+    if (metadata.isDirectory()) output.push(...await backupFiles(root, path));
+    else if (metadata.isFile()) output.push({ path: relative(root, path).split(sep).join("/"), size: metadata.size, sha256: await sha256(path) });
+    else throw new Error(`backup contains an unsupported file type: ${relative(root, path)}`);
+  }
+  return output.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string): Promise<void> {

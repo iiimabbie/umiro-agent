@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -39,6 +39,9 @@ test("clean home completes install, configure, daemon, upgrade, backup, restore,
     await mkdir(join(home, "data", "artifacts"), { recursive: true }); await writeFile(join(home, "data", "umiro.sqlite"), "database-v1"); await writeFile(join(home, "data", "artifacts", "a.txt"), "artifact-v1");
     const backup = join(root, "backup"); await exec(process.execPath, [cli, "backup", backup], { env: environment("rev2") });
     await writeFile(join(home, "data", "umiro.sqlite"), "database-v2"); await writeFile(join(home, "data", "artifacts", "a.txt"), "artifact-v2");
+    const tampered = join(root, "tampered"); await cp(backup, tampered, { recursive: true }); await writeFile(join(tampered, "artifacts", "a.txt"), "tampered");
+    await assert.rejects(exec(process.execPath, [cli, "restore", tampered], { env: environment("rev2") }), /backup integrity verification failed/);
+    assert.equal(await readFile(join(home, "data", "umiro.sqlite"), "utf8"), "database-v2");
     await exec(process.execPath, [cli, "restore", backup], { env: environment("rev2") });
     assert.equal(await readFile(join(home, "data", "umiro.sqlite"), "utf8"), "database-v1"); assert.equal(await readFile(join(home, "data", "artifacts", "a.txt"), "utf8"), "artifact-v1");
 
