@@ -20,6 +20,10 @@ test("one Soul Guardian entry contributes tools, a job and a command", async () 
   const plugin = createPlugin({ pluginId: "soul-guardian", namespace: "soul-guardian", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: workspace, schedule: "0 8 * * *", targets: [{ path: "SOUL.md", mode: "alert" }] }, state: new MemoryState(), getSecret: () => undefined });
   await plugin.start?.();
   assert.equal(plugin.contributions.tools?.length, 5);
+  const policies = Object.fromEntries(plugin.contributions.tools!.map(tool => [tool.name, tool.policy]));
+  assert.equal(policies.soul_guardian_check?.sideEffect, "idempotent");
+  assert.equal(policies.soul_guardian_approve?.interactionRequirement, "interactive_required");
+  assert.equal(policies.soul_guardian_restore?.interactionRequirement, "interactive_required");
   assert.equal(plugin.contributions.jobs?.[0]?.id, "soul-guardian.check");
   assert.equal(plugin.contributions.commands?.[0]?.name, "soul-guardian");
 });
