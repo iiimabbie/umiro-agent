@@ -82,7 +82,15 @@ export interface PluginArtifactService {
   createFromBytes(input: { readonly bytes: Uint8Array; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
   createFromFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
 }
-export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly artifacts?: PluginArtifactService; readonly legacy?: LegacyPluginServices }
+/** Protocol-neutral Discord operations exposed to Plugins; adapter enforces transport details. */
+export interface DiscordPluginService {
+  sendMessage(input: { readonly channelId: string; readonly content: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string }>;
+  react(input: { readonly channelId: string; readonly messageId: string; readonly emoji: string; readonly signal?: AbortSignal }): Promise<void>;
+  pin(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void>;
+  unpin(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void>;
+  fetchMessage(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly content: string; readonly createdAt: string }>;
+}
+export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService; readonly legacy?: LegacyPluginServices }
 
 export interface PluginEnableOptions {
   readonly config?: JsonObject;

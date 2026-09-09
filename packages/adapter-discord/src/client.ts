@@ -1,5 +1,6 @@
 import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
+import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 
 export type DiscordApprovalAction = "approve" | "deny";
@@ -18,7 +19,7 @@ export function parseApprovalCustomId(value: string): { action: DiscordApprovalA
   return match ? { action: match[1] as DiscordApprovalAction, approvalId: match[2]! } : undefined;
 }
 
-export class DiscordJsAdapter implements DiscordTextTransport {
+export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginService {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
   private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
@@ -61,9 +62,11 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     try { this.errorHandler?.(error, context); } catch { /* Observability must not alter adapter behavior. */ }
   }
 
-  async sendText(channelId: string, text: string): Promise<{ messageId: string }> {
+  async sendText(channelId: string, text: string, signal?: AbortSignal): Promise<{ messageId: string }> {
+    if (signal?.aborted) throw signal.reason;
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
+    if (signal?.aborted) throw signal.reason;
     const sent = await channel.send({ content: text });
     return { messageId: sent.id };
   }
@@ -99,6 +102,47 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     const message = await channel.messages.fetch(messageId);
     const edited = await message.edit({ content: text });
     return { messageId: edited.id, migrated: false };
+  }
+
+  async sendMessage(input: { readonly channelId: string; readonly content: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string }> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    return this.sendText(input.channelId, input.content, input.signal);
+  }
+
+  async react(input: { readonly channelId: string; readonly messageId: string; readonly emoji: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
+    const message = await channel.messages.fetch(input.messageId);
+    if (input.signal?.aborted) throw input.signal.reason;
+    await message.react(input.emoji);
+  }
+
+  async pin(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
+    const message = await channel.messages.fetch(input.messageId);
+    if (input.signal?.aborted) throw input.signal.reason;
+    await message.pin();
+  }
+
+  async unpin(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
+    const message = await channel.messages.fetch(input.messageId);
+    if (input.signal?.aborted) throw input.signal.reason;
+    await message.unpin();
+  }
+
+  async fetchMessage(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly content: string; readonly createdAt: string }> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
+    const message = await channel.messages.fetch(input.messageId);
+    if (input.signal?.aborted) throw input.signal.reason;
+    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, content: message.content, createdAt: message.createdAt.toISOString() };
   }
 
   private async handle(message: Message): Promise<void> {
