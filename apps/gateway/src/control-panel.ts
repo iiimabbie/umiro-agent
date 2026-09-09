@@ -31,6 +31,7 @@ export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", restartRequired: true },
   modelCapabilities: { label: "模型能力", description: "模型明確支援的能力清單，例如 vision、function_tools、hosted_web_search；未宣告的 hosted 能力不會暴露為工具。", restartRequired: true },
   contextMaxTokens: { label: "Context token 上限", description: "固定文件、人物、記憶與對話歷史合計可使用的估算 token 上限。", restartRequired: true },
+  pricing: { label: "模型價格", description: "依 model ID 設定 inputUsdPerMillion／outputUsdPerMillion；未設定的模型不猜測成本。", restartRequired: true },
   "embedding.provider": { label: "Embedding provider", description: "disabled、gemini 或 openai-compatible；disabled 時只用 FTS。", restartRequired: true },
   "embedding.model": { label: "Embedding model", description: "啟用 embedding 時使用的模型 ID，不可寫死為內建模型。", restartRequired: true },
   "embedding.baseUrl": { label: "Embedding API URL", description: "OpenAI-compatible embedding endpoint 的基底 URL。", restartRequired: true },
@@ -64,10 +65,14 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export function validateControlConfig(value: unknown): Record<string, unknown> {
   assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
-  const config = value as Record<string, unknown>; const allowed = new Set(["model", "modelCapabilities", "contextMaxTokens", "embedding", "discord", "plugins", "webUi"]);
+  const config = value as Record<string, unknown>; const allowed = new Set(["model", "modelCapabilities", "contextMaxTokens", "pricing", "embedding", "discord", "plugins", "webUi"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
   if (typeof config.model !== "string" || !config.model.trim()) throw new TypeError("model must be a non-empty string");
   if (config.contextMaxTokens !== undefined && (!Number.isSafeInteger(config.contextMaxTokens) || Number(config.contextMaxTokens) < 256 || Number(config.contextMaxTokens) > 1_000_000)) throw new TypeError("contextMaxTokens must be between 256 and 1000000");
+  if (config.pricing !== undefined) {
+    if (!config.pricing || typeof config.pricing !== "object" || Array.isArray(config.pricing)) throw new TypeError("pricing must be an object keyed by model ID");
+    for (const [model, value] of Object.entries(config.pricing)) { const rate = value as Record<string, unknown>; if (!model.trim() || !rate || typeof rate !== "object" || Array.isArray(rate) || Object.keys(rate).some(key => key !== "inputUsdPerMillion" && key !== "outputUsdPerMillion") || typeof rate.inputUsdPerMillion !== "number" || !Number.isFinite(rate.inputUsdPerMillion) || rate.inputUsdPerMillion < 0 || typeof rate.outputUsdPerMillion !== "number" || !Number.isFinite(rate.outputUsdPerMillion) || rate.outputUsdPerMillion < 0) throw new TypeError(`invalid pricing for model ${model || "<empty>"}`); }
+  }
   const knownCapabilities = new Set(["vision", "function_tools", "hosted_web_search", "hosted_image_generation", "hosted_code_execution"]);
   if (config.modelCapabilities !== undefined && (!Array.isArray(config.modelCapabilities) || config.modelCapabilities.some(item => typeof item !== "string" || !knownCapabilities.has(item)) || new Set(config.modelCapabilities).size !== config.modelCapabilities.length)) throw new TypeError("modelCapabilities must contain unique supported capability names");
   parseDiscordTriggerPolicy(config.discord);

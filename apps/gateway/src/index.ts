@@ -8,6 +8,7 @@ export * from "./embedding-worker.js";
 export * from "./embedding-config.js";
 export * from "./structured-logger.js";
 export * from "./active-work.js";
+export * from "./usage-summary.js";
 export * from "./approval-presentation.js";
 export * from "./discord-streaming.js";
 export * from "./control-panel.js";

@@ -9,6 +9,8 @@ test("model capabilities are explicit and reject unknown values", () => {
   assert.deepEqual(validateControlConfig({ model: "gemma4", modelCapabilities: ["vision", "hosted_web_search"], contextMaxTokens: 24_000 }), { model: "gemma4", modelCapabilities: ["vision", "hosted_web_search"], contextMaxTokens: 24_000 });
   assert.throws(() => validateControlConfig({ model: "gemma4", modelCapabilities: ["web_search"] }), /modelCapabilities/);
   assert.throws(() => validateControlConfig({ model: "gemma4", contextMaxTokens: 0 }), /contextMaxTokens/);
+  assert.deepEqual(validateControlConfig({ model: "gemma4", pricing: { gemma4: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 } } }), { model: "gemma4", pricing: { gemma4: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 } } });
+  assert.throws(() => validateControlConfig({ model: "gemma4", pricing: { gemma4: { inputUsdPerMillion: -1, outputUsdPerMillion: 0 } } }), /pricing/);
   assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { apiKey: "must-not-live-here" } }), /must use SecretSource/);
   assert.throws(() => validateControlConfig({ model: "gemma4", plugins: [{ path: "/plugin", config: { token: "secret" } }] }), /must use SecretSource/);
 });

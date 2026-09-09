@@ -21,7 +21,7 @@ const currentRelease = join(app, "current");
 const previousRelease = join(app, "previous");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
-interface UmiroConfig { model: string; modelCapabilities?: string[]; contextMaxTokens?: number; embedding?: Record<string, unknown>; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
+interface UmiroConfig { model: string; modelCapabilities?: string[]; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
 async function loadPlugins(): Promise<ManagedPlugin[]> {
@@ -61,7 +61,7 @@ async function init(): Promise<void> {
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
-  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", contextMaxTokens: 24_000, embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
+  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
   if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
   console.log(home);
 }

@@ -21,6 +21,7 @@ import { DiscordStreamingDelivery } from "./discord-streaming.js";
 import { ControlPanelServer, validateControlConfig } from "./control-panel.js";
 import { artifactModelContent } from "./artifact-input.js";
 import { ActiveWorkTracker } from "./active-work.js";
+import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -28,7 +29,7 @@ const readiness = { storage: false, plugins: false, discord: false, scheduler: f
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; contextMaxTokens?: number; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const contextMaxTokens = config.contextMaxTokens ?? 24_000;
 const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
@@ -138,7 +139,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
 }, runs: {
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); return { id: run.id, state: run.state, origin: run.context.origin.kind, createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
-}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); let inputTokens = 0; let outputTokens = 0; let reasoningTokens = 0; let completedRuns = 0; for (const run of runs) { const output = await store.getRunOutput(run.id); if (!output) continue; completedRuns++; inputTokens += output.usage.inputTokens; outputTokens += output.usage.outputTokens; reasoningTokens += output.usage.reasoningTokens; } return { sampledRuns: runs.length, completedRuns, inputTokens, outputTokens, reasoningTokens }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: () => readiness, processId: process.pid });
+}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: () => readiness, processId: process.pid });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
   const approval = await store.getApproval(result.approvalId);
