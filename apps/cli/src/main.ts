@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, chmod, cp, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { promisify } from "node:util";
@@ -17,6 +17,7 @@ const configFile = join(home, "config", "umiro.json");
 const secretsFile = join(home, "config", "secrets.env");
 const app = join(home, "app");
 const currentRelease = join(app, "current");
+const previousRelease = join(app, "previous");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
 interface UmiroConfig { model: string; embedding?: Record<string, unknown>; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
@@ -75,7 +76,7 @@ async function locateSourceRoot(): Promise<string> {
 async function deployRelease(): Promise<string> {
   const sourceRoot = await locateSourceRoot(); await exec("pnpm", ["build"], { cwd: sourceRoot });
   const revision = await exec("git", ["rev-parse", "--short", "HEAD"], { cwd: sourceRoot }).then(result => result.stdout.trim()).catch(() => "source");
-  const releaseId = `${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${revision}`;
+  const releaseId = `${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 17)}-${revision}-${randomBytes(4).toString("hex")}`;
   const release = join(app, "releases", releaseId); await mkdir(release, { recursive: true, mode: 0o700 });
   const targets: Array<[string, string]> = [["@umiro/gateway", "gateway"], ["@umiro/cli", "cli"], ["@umiro/plugin-context-files", "plugins/context-files"], ["@umiro/plugin-memory", "plugins/memory"], ["@umiro/plugin-scheduler", "plugins/scheduler"], ["@umiro/plugin-subagent", "plugins/subagent"], ["@umiro/plugin-host-tools", "plugins/host-tools"]];
   try {
@@ -83,7 +84,9 @@ async function deployRelease(): Promise<string> {
     await cp(join(sourceRoot, "templates"), join(release, "templates"), { recursive: true });
     await writeFile(join(release, "install-manifest.json"), `${JSON.stringify({ releaseId, revision, sourceRoot, installedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
   } catch (error) { await rm(release, { recursive: true, force: true }); throw error; }
+  const former = await readlink(currentRelease).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
   const temporaryLink = join(app, `.current-${crypto.randomUUID()}`); await symlink(join("releases", releaseId), temporaryLink); await rename(temporaryLink, currentRelease);
+  if (former) { const temporaryPrevious = join(app, `.previous-${crypto.randomUUID()}`); await symlink(former, temporaryPrevious); await rename(temporaryPrevious, previousRelease); }
   return release;
 }
 
@@ -113,6 +116,13 @@ async function install(): Promise<void> {
   for (const name of ["bin", "app", "config", "workspace", "data", "state"]) await mkdir(join(home, name), { recursive: true, mode: 0o700 });
   await init(); const release = await deployRelease(); await registerBuiltins(); await writeLaunchers(); const systemd = await installService();
   console.log(`installed ${release}${systemd ? " (systemd user service enabled)" : " (daemon fallback available)"}`);
+}
+
+async function upgrade(): Promise<void> {
+  const wasRunning = await systemdActive() || Boolean(await fallbackProcess());
+  if (wasRunning) await stop();
+  await install();
+  if (wasRunning) await start();
 }
 
 async function configure(fromEnv?: string): Promise<void> {
@@ -247,8 +257,15 @@ async function uninstall(purge = false): Promise<void> {
   console.log(`uninstalled; preserved config, workspace, data, and logs in ${home}`);
 }
 async function rollback(): Promise<void> {
-  const current = await readlink(currentRelease); const releases = (await readdir(join(app, "releases"), { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name).sort().reverse(); const currentName = current.split("/").pop(); const previous = releases.find(name => name !== currentName); if (!previous) throw new Error("no previous release available");
-  const temporaryLink = join(app, `.current-${crypto.randomUUID()}`); await symlink(join("releases", previous), temporaryLink); await rename(temporaryLink, currentRelease); await registerBuiltins(); await writeLaunchers(); console.log(`rolled back to ${previous}`);
+  const wasRunning = await systemdActive() || Boolean(await fallbackProcess());
+  if (wasRunning) await stop();
+  const current = await readlink(currentRelease); const previous = await readlink(previousRelease).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
+  if (!previous || !await exists(join(app, previous))) throw new Error("no previous release available");
+  const temporaryCurrent = join(app, `.current-${crypto.randomUUID()}`); await symlink(previous, temporaryCurrent); await rename(temporaryCurrent, currentRelease);
+  const temporaryPrevious = join(app, `.previous-${crypto.randomUUID()}`); await symlink(current, temporaryPrevious); await rename(temporaryPrevious, previousRelease);
+  await registerBuiltins(); await writeLaunchers();
+  if (wasRunning) await start();
+  console.log(`rolled back to ${previous.split("/").pop()}`);
 }
 
 async function backup(destination?: string): Promise<void> {
@@ -312,4 +329,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install" || command === "upgrade") await install(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
+if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
