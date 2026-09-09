@@ -15,7 +15,7 @@
     "additionalProperties": false,
     "required": ["workspacePath"],
     "properties": {
-      "workspacePath": { "type": "string", "minLength": 1 },
+      "workspacePath": { "type": "string", "minLength": 1 }
     }
   },
   "contributes": {
