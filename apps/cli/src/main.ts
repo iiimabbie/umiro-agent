@@ -22,7 +22,7 @@ async function loadPlugins(): Promise<ManagedPlugin[]> {
   const raw = JSON.parse(await readFile(pluginsFile, "utf8").catch(() => "[]")) as Array<string | ManagedPlugin>;
   return raw.map(item => typeof item === "string" ? { source: item, path: item, enabled: true } : item);
 }
-async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> { await writeFile(pluginsFile, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 }); }
+async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> { await mkdir(dirname(pluginsFile), { recursive: true, mode: 0o700 }); await writeFile(pluginsFile, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 }); }
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });

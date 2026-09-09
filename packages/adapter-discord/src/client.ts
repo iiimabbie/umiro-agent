@@ -1,20 +1,21 @@
-import { Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ApplicationCommandOptionType, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
 
 export class DiscordJsAdapter implements DiscordTextTransport {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
-  private commands: readonly { name: string; description: string; ownerOnly?: boolean }[] = [];
-  private commandHandler?: (name: string, input: Record<string, string>, userId: string) => Promise<Record<string, unknown>>;
+  private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
+  private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
-  onCommand(commands: readonly { name: string; description: string; ownerOnly?: boolean }[], handler: (name: string, input: Record<string, string>, userId: string) => Promise<Record<string, unknown>>): void { this.commands = commands; this.commandHandler = handler; }
+  onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
 
   async start(token: string): Promise<void> {
     this.client.on("messageCreate", message => void this.handle(message));
     this.client.on("interactionCreate", interaction => { if (interaction.isChatInputCommand()) void this.handleCommand(interaction); });
     await this.client.login(token);
-    await this.client.application?.commands.set(this.commands.map(command => ({ name: command.name, description: command.description, options: [{ type: 3, name: "input", description: "JSON input", required: false }] })) as ApplicationCommandDataResolvable[]);
+    const types = { string: ApplicationCommandOptionType.String, integer: ApplicationCommandOptionType.Integer, boolean: ApplicationCommandOptionType.Boolean, channel: ApplicationCommandOptionType.Channel } as const;
+    await this.client.application?.commands.set(this.commands.map(command => ({ name: command.name, description: command.description, options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [] })) as ApplicationCommandDataResolvable[]);
   }
 
   async stop(): Promise<void> { this.client.destroy(); }
@@ -24,6 +25,14 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
     const sent = await channel.send({ content: text });
     return { messageId: sent.id };
+  }
+
+  async editText(channelId: string, messageId: string, text: string): Promise<{ messageId: string; migrated: boolean }> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${channelId}`);
+    const message = await channel.messages.fetch(messageId);
+    const edited = await message.edit({ content: text });
+    return { messageId: edited.id, migrated: false };
   }
 
   private async handle(message: Message): Promise<void> {
@@ -49,11 +58,11 @@ export class DiscordJsAdapter implements DiscordTextTransport {
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!this.commandHandler) return;
-    await interaction.deferReply({ ephemeral: true });
+    const definition = this.commands.find(command => command.name === interaction.commandName);
+    await interaction.deferReply({ ephemeral: definition?.ephemeral ?? true });
     try {
-      const raw = interaction.options.getString("input") ?? "{}";
-      const input = JSON.parse(raw) as Record<string, string>;
-      const result = await this.commandHandler(interaction.commandName, input, interaction.user.id);
+      const input = Object.fromEntries(interaction.options.data.flatMap(option => option.value === undefined ? [] : [[option.name, option.value]])) as Record<string, string | number | boolean>;
+      const result = await this.commandHandler(interaction.commandName, input, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
       await interaction.editReply({ content: JSON.stringify(result).slice(0, 1900) });
     } catch (error) { await interaction.editReply({ content: `Command failed: ${error instanceof Error ? error.message : String(error)}` }); }
   }

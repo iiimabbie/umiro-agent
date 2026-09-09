@@ -22,7 +22,9 @@ export interface PluginCommandDefinition {
   readonly name: string;
   readonly description: string;
   readonly ownerOnly?: boolean;
-  readonly execute: (input: JsonObject, signal?: AbortSignal) => Promise<JsonObject>;
+  readonly ephemeral?: boolean;
+  readonly options?: readonly { readonly name: string; readonly description: string; readonly type: "string" | "integer" | "boolean" | "channel"; readonly required?: boolean; readonly choices?: readonly { readonly name: string; readonly value: string | number }[] }[];
+  readonly execute: (input: JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) => Promise<JsonObject>;
 }
 
 export const PLUGIN_API_VERSION = "0";
@@ -56,7 +58,13 @@ export interface PluginSetupContext {
   getSecret(name: string): string | undefined;
 }
 
-export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl }
+export interface LegacyPluginServices {
+  readonly configDirectory: string;
+  ask(prompt: string, options?: { readonly systemPrompt?: string; readonly maxTurns?: number; readonly model?: string }): Promise<{ readonly text: string }>;
+  sendText(input: { readonly channelId: string; readonly content: string }): Promise<{ readonly messageId: string }>;
+  editText(input: { readonly channelId: string; readonly messageId: string; readonly content: string }): Promise<{ readonly messageId: string; readonly migrated: boolean }>;
+}
+export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl; readonly legacy?: LegacyPluginServices }
 
 export interface PluginEnableOptions {
   readonly config?: JsonObject;

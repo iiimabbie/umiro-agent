@@ -17,5 +17,5 @@ export class PluginJobRegistry extends ContributionRegistry<PluginJobDefinition>
 
 export class PluginCommandRegistry extends ContributionRegistry<PluginCommandDefinition> {
   constructor() { super(value => value.name, "command"); }
-  async execute(name: string, input: JsonObject, signal?: AbortSignal): Promise<JsonObject> { const command = this.get(name); if (!command) throw new Error(`plugin command not found: ${name}`); return command.execute(input, signal); }
+  async execute(name: string, input: JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }): Promise<JsonObject> { const command = this.get(name); if (!command) throw new Error(`plugin command not found: ${name}`); return command.execute(input, context); }
 }

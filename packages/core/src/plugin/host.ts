@@ -183,7 +183,7 @@ export class PluginHost {
   listJobs() { return this.jobs.list(); }
   runJob(id: string, signal?: AbortSignal) { return this.jobs.run(id, signal); }
   listCommands() { return this.commands.list(); }
-  executeCommand(name: string, input: import("../ports/json.js").JsonObject, signal?: AbortSignal) { return this.commands.execute(name, input, signal); }
+  executeCommand(name: string, input: import("../ports/json.js").JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) { return this.commands.execute(name, input, context); }
 
   private snapshot(active: ActivePlugin): LoadedPlugin {
     return {

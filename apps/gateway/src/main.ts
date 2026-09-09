@@ -30,7 +30,19 @@ const embedder = googleApiKey ? new GeminiEmbedder(process.env.UMIRO_EMBEDDING_M
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefined;
 const search = new HybridConversationSearch(store, embedder);
 const scheduler = new DurableScheduler(store);
-const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler });
+const legacyServices = {
+  configDirectory: `${paths.config}/plugin-config`,
+  async ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }) {
+    const execution = { origin: { kind: "event" as const, pluginId: "legacy" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority };
+    const fullPrompt = options?.systemPrompt ? `${options.systemPrompt}\n\n${prompt}` : prompt;
+    const runId = crypto.randomUUID(); const assembledContext = await contextEngine.assemble({ runId, execution, prompt: fullPrompt, maxCharacters: 100_000 });
+    const result = await engine.run({ runId, context: execution, model: options?.model ?? config.model, prompt: fullPrompt, assembledContext, ...(options?.maxTurns ? { maxModelTurns: options.maxTurns } : {}) });
+    if (result.status !== "succeeded") throw new Error(`legacy plugin agent Run ended ${result.status}`); return { text: result.text };
+  },
+  sendText: (input: { channelId: string; content: string }) => discord.sendText(input.channelId, input.content),
+  editText: (input: { channelId: string; messageId: string; content: string }) => discord.editText(input.channelId, input.messageId, input.content),
+};
+const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler, legacy: legacyServices });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());
 embeddingWorker?.start();
@@ -59,11 +71,11 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   if (result.status !== "succeeded") throw new Error(`scheduled Run ${result.runId} ended ${result.status}`);
   await delivery.drain(signal);
 });
-discord.onCommand(host.listCommands(), async (name, input, userId) => {
+discord.onCommand(host.listCommands(), async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);
-  if (command.ownerOnly !== false && userId !== ownerDiscordId) throw new Error("Owner only");
-  return host.executeCommand(name, input);
+  if (command.ownerOnly !== false && commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
+  return host.executeCommand(name, input, commandContext);
 });
 discord.onMessage(async message => {
   await ingress.handle({ event: toInputEvent(message), model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId } });
