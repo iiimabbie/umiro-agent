@@ -43,13 +43,19 @@ async function plugin(action: string, source?: string, workspaceName?: string): 
     }
     try {
       await readFile(join(path, "umiro.plugin.json"), "utf8");
-    } catch (error) {
-      await rm(path, { recursive: true, force: true });
-      throw new Error(`cloned repository is not a Umiro Plugin: ${source}`, { cause: error });
+    } catch {
+      try {
+        const packageJson = JSON.parse(await readFile(join(path, "package.json"), "utf8")) as { umiro?: { plugin?: string } };
+        if (!packageJson.umiro?.plugin) throw new Error("missing umiro plugin entry");
+      } catch (error) {
+        await rm(path, { recursive: true, force: true });
+        throw new Error(`cloned repository is not a Umiro Plugin: ${source}`, { cause: error });
+      }
     }
     try {
       await readFile(join(path, "package.json"), "utf8");
-      await exec("pnpm", ["install", "--frozen-lockfile"], { cwd: path });
+      const lock = await readFile(join(path, "pnpm-lock.yaml"), "utf8").then(() => "pnpm").catch(() => "npm");
+      await exec(lock, lock === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], { cwd: path });
       await exec("pnpm", ["run", "build"], { cwd: path });
     } catch (error) {
       await rm(path, { recursive: true, force: true });
@@ -60,7 +66,10 @@ async function plugin(action: string, source?: string, workspaceName?: string): 
   }
   if (action === "install") {
     try { await readFile(join(path, "umiro.plugin.json"), "utf8"); }
-    catch (error) { throw new Error(`plugin manifest not found: ${path}`, { cause: error }); }
+    catch {
+      const pkg = JSON.parse(await readFile(join(path, "package.json"), "utf8")) as { umiro?: { plugin?: string } };
+      if (!pkg.umiro?.plugin) throw new Error(`plugin manifest not found: ${path}`);
+    }
   }
   const next = action === "install" ? [...new Set([...entries, path])] : entries.filter(item => item !== path);
   await writeFile(plugins, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
