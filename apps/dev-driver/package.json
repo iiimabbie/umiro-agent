@@ -7,6 +7,7 @@
     "@umiro/core": "workspace:*",
     "@umiro/model-openai": "workspace:*",
     "@umiro/storage-sqlite": "workspace:*"
+    ,"@umiro/gateway": "workspace:*"
   },
   "scripts": {
     "build": "tsc -b",

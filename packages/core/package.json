@@ -10,12 +10,19 @@
     ".": "./dist/src/index.js",
     "./audit": "./dist/src/audit/index.js",
     "./authorization": "./dist/src/authorization/index.js",
+    "./context": { "types": "./dist/src/context/index.d.ts", "default": "./dist/src/context/index.js" },
+    "./conversation": "./dist/src/conversation/index.js",
+    "./config": "./dist/src/config/index.js",
+    "./delegation": "./dist/src/delegation/index.js",
     "./identity": "./dist/src/identity/index.js",
+    "./input": "./dist/src/input/index.js",
     "./model": "./dist/src/model/index.js",
     "./operation": "./dist/src/operation/index.js",
-    "./ports": "./dist/src/ports/index.js",
+    "./observability": "./dist/src/observability/index.js",
+    "./ports": { "types": "./dist/src/ports/index.d.ts", "default": "./dist/src/ports/index.js" },
+    "./plugin": { "types": "./dist/src/plugin/index.d.ts", "default": "./dist/src/plugin/index.js" },
     "./run": "./dist/src/run/index.js",
-    "./tool": "./dist/src/tool/index.js"
+    "./tool": { "types": "./dist/src/tool/index.d.ts", "default": "./dist/src/tool/index.js" }
   },
   "scripts": {
     "build": "tsc -b",

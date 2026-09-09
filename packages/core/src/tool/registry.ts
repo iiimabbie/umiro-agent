@@ -42,6 +42,10 @@ export class ToolRegistry {
     return this.tools.get(name)?.definition;
   }
 
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   validateInput(name: string, input: Record<string, unknown>): ToolInputValidation {
     const registered = this.tools.get(name);
     if (!registered) return { valid: false, errors: [`unknown tool: ${name}`] };

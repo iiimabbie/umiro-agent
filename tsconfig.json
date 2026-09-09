@@ -4,6 +4,9 @@
     { "path": "./packages/core" },
     { "path": "./packages/model-openai" },
     { "path": "./packages/storage-sqlite" },
+    { "path": "./apps/gateway" },
+    { "path": "./plugins/context-files" },
+    { "path": "./plugins/soul-guardian" },
     { "path": "./apps/dev-driver" }
   ]
 }

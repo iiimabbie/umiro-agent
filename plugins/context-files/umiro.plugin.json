@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 0,
+  "id": "context-files",
+  "version": "0.0.0",
+  "coreApi": "0",
+  "entry": "./dist/src/index.js",
+  "permissions": {
+    "capabilities": ["context.files.read"],
+    "visibility": { "kind": "all" },
+    "instructionAuthority": "full"
+  },
+  "namespace": "context-files",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["workspacePath"],
+    "properties": {
+      "workspacePath": { "type": "string", "minLength": 1 },
+    }
+  },
+  "contributes": {
+    "contextProviders": ["context.soul", "context.agent", "context.memory"]
+  }
+}

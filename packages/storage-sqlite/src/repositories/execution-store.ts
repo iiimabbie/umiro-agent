@@ -11,7 +11,12 @@ import {
   type AuditEvent,
   type AuthorizationDecisionRecord,
   type CompleteRunWithOutput,
+  type Conversation,
+  type ConversationStore,
+  type ConversationIngressStore,
   type DeliveryIntent,
+  type DelegationRecord,
+  type DelegationStore,
   type ExecutionContext,
   type ExecutionProgressUpdate,
   type ExecutionStore,
@@ -26,6 +31,11 @@ import {
   type RunState,
   type Step,
   type StepState,
+  type Turn,
+  type AppendTurnRequest,
+  type UpdateConversationStateRequest,
+  type IngestInputEventRequest,
+  type IngestInputEventResult,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -110,6 +120,37 @@ interface AuditRow {
   occurred_at: string;
 }
 
+interface ConversationRow {
+  id: string;
+  revision: number;
+  state: Conversation["state"];
+  created_at: string;
+  updated_at: string;
+}
+
+interface TurnRow {
+  id: string;
+  conversation_id: string;
+  sequence: number;
+  actor_principal_id: string;
+  input_event_id: string;
+  primary_run_id: string | null;
+  content_json: string;
+  reply_to_turn_id: string | null;
+  created_at: string;
+}
+
+interface DelegationRow {
+  id: string;
+  parent_run_id: string;
+  child_run_id: string;
+  idempotency_key: string;
+  task_json: string;
+  budget_ceiling_json: string | null;
+  agent_profile_ref: string | null;
+  created_at: string;
+}
+
 function json(value: JsonValue | object): string {
   const serialized = JSON.stringify(value);
   if (serialized === undefined) throw new TypeError("value is not JSON serializable");
@@ -124,7 +165,7 @@ function expectOne(changes: number, message: string): void {
   if (changes !== 1) throw new ExecutionStoreConflictError(message);
 }
 
-export class SQLiteExecutionStore implements ExecutionStore {
+export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, DelegationStore {
   private readonly database: Database.Database;
 
   constructor(filename: string) {
@@ -137,7 +178,266 @@ export class SQLiteExecutionStore implements ExecutionStore {
     migrate(this.database);
   }
 
+  async createConversationWithTurn(conversation: Conversation, firstTurn: Turn): Promise<void> {
+    if (conversation.revision !== 0 || conversation.state !== "active") {
+      throw new TypeError("new conversations must begin active at revision zero");
+    }
+    if (firstTurn.conversationId !== conversation.id || firstTurn.sequence !== 0) {
+      throw new TypeError("first Turn must belong to the Conversation at sequence zero");
+    }
+    this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO conversations(id, revision, state, created_at, updated_at)
+        VALUES (?, 0, 'active', ?, ?)
+      `).run(conversation.id, conversation.createdAt, conversation.updatedAt);
+      this.insertTurn(firstTurn);
+    })();
+  }
+
+  async ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult> {
+    return this.database.transaction(() => {
+      const duplicate = this.database.prepare("SELECT * FROM turns WHERE input_event_id = ?")
+        .get(request.event.id) as TurnRow | undefined;
+      if (duplicate) {
+        const conversation = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
+          .get(duplicate.conversation_id) as ConversationRow | undefined;
+        if (!conversation) throw new Error(`Turn ${duplicate.id} references a missing Conversation`);
+        return {
+          conversation: this.conversationFromRow(conversation),
+          turn: this.turnFromRow(duplicate),
+          duplicate: true,
+          conversationCreated: false,
+        };
+      }
+
+      const binding = this.database.prepare(`
+        SELECT conversation_id FROM conversation_bindings WHERE transport = ? AND external_id = ?
+      `).get(request.event.conversation.transport, request.event.conversation.externalId) as { conversation_id: string } | undefined;
+
+      if (!binding) {
+        const conversation: Conversation = {
+          id: request.newConversationId,
+          revision: 0,
+          state: "active",
+          createdAt: request.createdAt,
+          updatedAt: request.createdAt,
+        };
+        const turn: Turn = {
+          id: request.newTurnId,
+          conversationId: conversation.id,
+          sequence: 0,
+          actorPrincipalId: request.actorPrincipalId,
+          inputEventId: request.event.id,
+          primaryRunId: request.newRunId,
+          content: structuredClone(request.event.content),
+          createdAt: request.createdAt,
+        };
+        this.database.prepare(`
+          INSERT INTO conversations(id, revision, state, created_at, updated_at) VALUES (?, 0, 'active', ?, ?)
+        `).run(conversation.id, conversation.createdAt, conversation.updatedAt);
+        this.database.prepare(`
+          INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          request.event.conversation.transport,
+          request.event.conversation.externalId,
+          request.event.conversation.kind,
+          conversation.id,
+          request.createdAt,
+        );
+        this.insertTurn(turn);
+        return { conversation, turn, duplicate: false, conversationCreated: true };
+      }
+
+      const row = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
+        .get(binding.conversation_id) as ConversationRow | undefined;
+      if (!row || row.state !== "active") throw new Error(`bound Conversation is missing or archived: ${binding.conversation_id}`);
+      const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
+        .get(row.id) as { sequence: number };
+      const turn: Turn = {
+        id: request.newTurnId,
+        conversationId: row.id,
+        sequence: next.sequence,
+        actorPrincipalId: request.actorPrincipalId,
+        inputEventId: request.event.id,
+        primaryRunId: request.newRunId,
+        content: structuredClone(request.event.content),
+        createdAt: request.createdAt,
+      };
+      this.insertTurn(turn);
+      const update = this.database.prepare(`
+        UPDATE conversations SET revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ? AND state = 'active'
+      `).run(request.createdAt, row.id, row.revision);
+      expectOne(update.changes, `conversation ${row.id} changed concurrently`);
+      return {
+        conversation: { ...this.conversationFromRow(row), revision: row.revision + 1, updatedAt: request.createdAt },
+        turn,
+        duplicate: false,
+        conversationCreated: false,
+      };
+    })();
+  }
+
+  async appendTurn(request: AppendTurnRequest): Promise<void> {
+    this.database.transaction(() => {
+      const current = this.database.prepare("SELECT revision, state FROM conversations WHERE id = ?")
+        .get(request.turn.conversationId) as { revision: number; state: Conversation["state"] } | undefined;
+      if (!current || current.revision !== request.expectedConversationRevision || current.state !== "active") {
+        throw new ExecutionStoreConflictError(`conversation ${request.turn.conversationId} changed concurrently or is not active`);
+      }
+      const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
+        .get(request.turn.conversationId) as { sequence: number };
+      if (request.turn.sequence !== next.sequence) {
+        throw new ExecutionStoreConflictError(`Turn sequence must be ${next.sequence}`);
+      }
+      this.insertTurn(request.turn);
+      const update = this.database.prepare(`
+        UPDATE conversations SET revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ? AND state = 'active'
+      `).run(request.conversationUpdatedAt, request.turn.conversationId, request.expectedConversationRevision);
+      expectOne(update.changes, `conversation ${request.turn.conversationId} changed concurrently`);
+    })();
+  }
+
+  async updateConversationState(request: UpdateConversationStateRequest): Promise<void> {
+    if (request.expectedState === request.state) throw new TypeError("conversation state update must change state");
+    if (request.expectedState !== "active" || request.state !== "archived") {
+      throw new TypeError(`invalid conversation transition: ${request.expectedState} -> ${request.state}`);
+    }
+    const update = this.database.prepare(`
+      UPDATE conversations SET revision = revision + 1, state = ?, updated_at = ?
+      WHERE id = ? AND revision = ? AND state = ?
+    `).run(request.state, request.updatedAt, request.conversationId, request.expectedRevision, request.expectedState);
+    expectOne(update.changes, `conversation ${request.conversationId} changed concurrently`);
+  }
+
+  async getConversation(conversationId: string): Promise<Conversation | undefined> {
+    const row = this.database.prepare("SELECT * FROM conversations WHERE id = ?").get(conversationId) as ConversationRow | undefined;
+    return row ? this.conversationFromRow(row) : undefined;
+  }
+
+  async getTurn(turnId: string): Promise<Turn | undefined> {
+    const row = this.database.prepare("SELECT * FROM turns WHERE id = ?").get(turnId) as TurnRow | undefined;
+    return row ? this.turnFromRow(row) : undefined;
+  }
+
+  async getTurnByInputEventId(inputEventId: string): Promise<Turn | undefined> {
+    const row = this.database.prepare("SELECT * FROM turns WHERE input_event_id = ?").get(inputEventId) as TurnRow | undefined;
+    return row ? this.turnFromRow(row) : undefined;
+  }
+
+  async listTurns(conversationId: string): Promise<readonly Turn[]> {
+    const rows = this.database.prepare("SELECT * FROM turns WHERE conversation_id = ? ORDER BY sequence")
+      .all(conversationId) as TurnRow[];
+    return rows.map(row => this.turnFromRow(row));
+  }
+
+  private insertTurn(turn: Turn): void {
+    this.database.prepare(`
+      INSERT INTO turns(id, conversation_id, sequence, actor_principal_id, input_event_id, primary_run_id, content_json, reply_to_turn_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      turn.id,
+      turn.conversationId,
+      turn.sequence,
+      turn.actorPrincipalId,
+      turn.inputEventId,
+      turn.primaryRunId ?? null,
+      json(turn.content),
+      turn.replyToTurnId ?? null,
+      turn.createdAt,
+    );
+  }
+
+  private conversationFromRow(row: ConversationRow): Conversation {
+    return {
+      id: row.id,
+      revision: row.revision,
+      state: row.state,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private turnFromRow(row: TurnRow): Turn {
+    return {
+      id: row.id,
+      conversationId: row.conversation_id,
+      sequence: row.sequence,
+      actorPrincipalId: row.actor_principal_id,
+      inputEventId: row.input_event_id,
+      ...(row.primary_run_id ? { primaryRunId: row.primary_run_id } : {}),
+      content: parseJson<Turn["content"]>(row.content_json),
+      ...(row.reply_to_turn_id ? { replyToTurnId: row.reply_to_turn_id } : {}),
+      createdAt: row.created_at,
+    };
+  }
+
+  async createChildRunWithStep(delegation: DelegationRecord, run: Run, firstStep: Step): Promise<void> {
+    if (run.parentRunId !== delegation.parentRunId || run.id !== delegation.childRunId) {
+      throw new TypeError("delegation lineage must match the Child Run");
+    }
+    if (run.context.origin.kind !== "delegation" || run.context.origin.parentRunId !== delegation.parentRunId) {
+      throw new TypeError("Child Run execution origin must reference its Parent Run");
+    }
+    this.database.transaction(() => {
+      this.insertRunWithStep(run, firstStep);
+      this.database.prepare(`
+        INSERT INTO delegations(
+          id, parent_run_id, child_run_id, idempotency_key, task_json,
+          budget_ceiling_json, agent_profile_ref, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        delegation.id,
+        delegation.parentRunId,
+        delegation.childRunId,
+        delegation.idempotencyKey,
+        json(delegation.task),
+        delegation.budgetCeiling ? json(delegation.budgetCeiling) : null,
+        delegation.agentProfileRef ?? null,
+        delegation.createdAt,
+      );
+    })();
+  }
+
+  async getDelegation(delegationId: string): Promise<DelegationRecord | undefined> {
+    const row = this.database.prepare("SELECT * FROM delegations WHERE id = ?").get(delegationId) as DelegationRow | undefined;
+    return row ? this.delegationFromRow(row) : undefined;
+  }
+
+  async getDelegationByKey(parentRunId: string, idempotencyKey: string): Promise<DelegationRecord | undefined> {
+    const row = this.database.prepare("SELECT * FROM delegations WHERE parent_run_id = ? AND idempotency_key = ?")
+      .get(parentRunId, idempotencyKey) as DelegationRow | undefined;
+    return row ? this.delegationFromRow(row) : undefined;
+  }
+
+  async listChildDelegations(parentRunId: string): Promise<readonly DelegationRecord[]> {
+    const rows = this.database.prepare("SELECT * FROM delegations WHERE parent_run_id = ? ORDER BY created_at, id")
+      .all(parentRunId) as DelegationRow[];
+    return rows.map(row => this.delegationFromRow(row));
+  }
+
+  private delegationFromRow(row: DelegationRow): DelegationRecord {
+    return {
+      id: row.id,
+      parentRunId: row.parent_run_id,
+      childRunId: row.child_run_id,
+      idempotencyKey: row.idempotency_key,
+      task: parseJson<DelegationRecord["task"]>(row.task_json),
+      ...(row.budget_ceiling_json
+        ? { budgetCeiling: parseJson<NonNullable<DelegationRecord["budgetCeiling"]>>(row.budget_ceiling_json) }
+        : {}),
+      ...(row.agent_profile_ref ? { agentProfileRef: row.agent_profile_ref } : {}),
+      createdAt: row.created_at,
+    };
+  }
+
   async createRunWithStep(run: Run, firstStep: Step): Promise<void> {
+    this.database.transaction(() => this.insertRunWithStep(run, firstStep))();
+  }
+
+  private insertRunWithStep(run: Run, firstStep: Step): void {
     if (firstStep.runId !== run.id) throw new TypeError("first step must belong to the new run");
     if (run.revision !== 0 || firstStep.revision !== 0) throw new TypeError("new runs and steps must begin at revision zero");
     if (firstStep.sequence !== 0) throw new TypeError("first step sequence must be zero");
@@ -145,33 +445,31 @@ export class SQLiteExecutionStore implements ExecutionStore {
       throw new TypeError("new execution must begin with a queued run and pending step");
     }
 
-    this.database.transaction(() => {
-      this.database.prepare(`
-        INSERT INTO runs(
-          id, revision, state, context_json, conversation_id, turn_id, parent_run_id,
-          waiting_reason, interruption_json, resume_eligibility, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        run.id,
-        run.revision,
-        run.state,
-        json(run.context),
-        run.conversationId ?? null,
-        run.turnId ?? null,
-        run.parentRunId ?? null,
-        run.waitingReason ?? null,
-        run.interruption ? json(run.interruption) : null,
-        run.resumeEligibility,
-        run.createdAt,
-        run.updatedAt,
-      );
-      this.database.prepare(`
-        INSERT INTO steps(id, run_id, revision, sequence, kind, state, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(firstStep.id, firstStep.runId, firstStep.revision, firstStep.sequence, firstStep.kind, firstStep.state, firstStep.createdAt, firstStep.updatedAt);
-      this.insertAudit("run.created", "run", run.id, run.id, { state: run.state }, run.createdAt);
-      this.insertAudit("step.created", "step", firstStep.id, run.id, { kind: firstStep.kind, sequence: firstStep.sequence }, firstStep.createdAt);
-    })();
+    this.database.prepare(`
+      INSERT INTO runs(
+        id, revision, state, context_json, conversation_id, turn_id, parent_run_id,
+        waiting_reason, interruption_json, resume_eligibility, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      run.id,
+      run.revision,
+      run.state,
+      json(run.context),
+      run.conversationId ?? null,
+      run.turnId ?? null,
+      run.parentRunId ?? null,
+      run.waitingReason ?? null,
+      run.interruption ? json(run.interruption) : null,
+      run.resumeEligibility,
+      run.createdAt,
+      run.updatedAt,
+    );
+    this.database.prepare(`
+      INSERT INTO steps(id, run_id, revision, sequence, kind, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(firstStep.id, firstStep.runId, firstStep.revision, firstStep.sequence, firstStep.kind, firstStep.state, firstStep.createdAt, firstStep.updatedAt);
+    this.insertAudit("run.created", "run", run.id, run.id, { state: run.state }, run.createdAt);
+    this.insertAudit("step.created", "step", firstStep.id, run.id, { kind: firstStep.kind, sequence: firstStep.sequence }, firstStep.createdAt);
   }
 
   async appendStep(step: Step): Promise<void> {

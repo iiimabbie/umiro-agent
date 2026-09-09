@@ -1,4 +1,4 @@
-import { capabilities, HeadlessRunEngine, ToolRegistry, type ExecutionContext, type ExecutionStore, type ModelPort } from "@umiro/core";
+import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, ToolRegistry, type ExecutionContext, type ExecutionStore, type ModelPort } from "@umiro/core";
 import {
   OpenAIChatCompletionsModel,
   type OpenAIConnectionConfig,
@@ -6,6 +6,8 @@ import {
   OpenAIResponsesModel,
 } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
+import { loadPluginModule, FilePluginStateStore } from "@umiro/gateway";
+import { PluginHost } from "@umiro/core";
 
 export type ModelProtocol = "openai_responses" | "openai_chat_completions";
 
@@ -137,8 +139,17 @@ export async function runCli(args: readonly string[], runtime: CliRuntime): Prom
     },
   };
   try {
-    const engine = new HeadlessRunEngine(createModel(protocol, config), new ToolRegistry(), store);
-    const result = await engine.run({ context, model, prompt, deliveryDestination: { kind: "dev_stdout" } });
+    const tools = new ToolRegistry();
+    const providers = new ContextProviderRegistry();
+    const host = new PluginHost(tools, providers, context.authority, namespace => new FilePluginStateStore(`${database}.plugins/${namespace}`));
+    for (const path of (runtime.env.UMIRO_PLUGIN_PATHS ?? "").split(",").map(value => value.trim()).filter(Boolean)) {
+      const module = await loadPluginModule(path);
+      await host.enable(module, { config: module.manifest.id === "context-files" ? { workspacePath: runtime.env.UMIRO_WORKSPACE_PATH?.trim() || process.cwd() } : {} });
+    }
+    const contextEngine = new ContextEngine(providers);
+    const assembledContext = await contextEngine.assemble({ runId: crypto.randomUUID(), execution: context, prompt, maxCharacters: 32_000 });
+    const engine = new HeadlessRunEngine(createModel(protocol, config), tools, store);
+    const result = await engine.run({ context, model, prompt, assembledContext, deliveryDestination: { kind: "dev_stdout" } });
     runtime.writeStderr(`run: ${result.runId}\ndatabase: ${database}\n`);
     if (result.status !== "succeeded") {
       throw new Error(result.status === "waiting" ? result.reason : result.error);

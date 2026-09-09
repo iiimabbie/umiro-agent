@@ -34,6 +34,13 @@ const INSTRUCTION_RANK: Readonly<Record<InstructionAuthority, number>> = {
   full: 2,
 };
 
+export function isInstructionAuthorityAtMost(
+  candidate: InstructionAuthority,
+  ceiling: InstructionAuthority,
+): boolean {
+  return INSTRUCTION_RANK[candidate] <= INSTRUCTION_RANK[ceiling];
+}
+
 function resourceKey(resource: ExactResourceScope): string {
   return `${resource.kind}\u0000${resource.id}`;
 }
@@ -53,6 +60,17 @@ export function intersectVisibility(left: VisibilityScope, right: VisibilityScop
     labels: intersectValues(left.labels, right.labels),
     resources: left.resources.filter(resource => rightResources.has(resourceKey(resource))),
   };
+}
+
+export function isVisibilitySubset(candidate: VisibilityScope, ceiling: VisibilityScope): boolean {
+  if (ceiling.kind === "all") return true;
+  if (candidate.kind === "all") return false;
+  const ceilingPrincipals = new Set(ceiling.principalIds);
+  const ceilingLabels = new Set(ceiling.labels);
+  const ceilingResources = new Set(ceiling.resources.map(resourceKey));
+  return candidate.principalIds.every(value => ceilingPrincipals.has(value))
+    && candidate.labels.every(value => ceilingLabels.has(value))
+    && candidate.resources.every(value => ceilingResources.has(resourceKey(value)));
 }
 
 /** Intersection is the only composition operation: authority can never grow. */
@@ -83,14 +101,6 @@ export function deriveAuthority(parent: Authority, request: AuthorityScopeReques
 export function isAuthoritySubset(candidate: Authority, ceiling: Authority): boolean {
   const ceilingCapabilities = new Set(ceiling.capabilities);
   if (candidate.capabilities.some(capability => !ceilingCapabilities.has(capability))) return false;
-  if (INSTRUCTION_RANK[candidate.instructionAuthority] > INSTRUCTION_RANK[ceiling.instructionAuthority]) return false;
-  if (ceiling.visibility.kind === "all") return true;
-  if (candidate.visibility.kind === "all") return false;
-
-  const ceilingPrincipals = new Set(ceiling.visibility.principalIds);
-  const ceilingLabels = new Set(ceiling.visibility.labels);
-  const ceilingResources = new Set(ceiling.visibility.resources.map(resourceKey));
-  return candidate.visibility.principalIds.every(value => ceilingPrincipals.has(value))
-    && candidate.visibility.labels.every(value => ceilingLabels.has(value))
-    && candidate.visibility.resources.every(value => ceilingResources.has(resourceKey(value)));
+  if (!isInstructionAuthorityAtMost(candidate.instructionAuthority, ceiling.instructionAuthority)) return false;
+  return isVisibilitySubset(candidate.visibility, ceiling.visibility);
 }

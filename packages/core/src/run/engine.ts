@@ -4,6 +4,7 @@ import { ExecutionStoreConflictError, type ExecutionStore } from "../ports/execu
 import type { JsonObject, JsonValue } from "../ports/json.js";
 import { ToolRegistry, ToolRuntime } from "../tool/index.js";
 import type { ExecutionContext } from "../identity/execution-context.js";
+import { renderContextAssembly, type ContextAssembly } from "../context/index.js";
 import type { Run, Step } from "./entities.js";
 import { RunNotRecoverableError, type RecoveryClaim } from "./recovery.js";
 
@@ -14,7 +15,14 @@ export interface HeadlessRunRequest {
   readonly signal?: AbortSignal;
   readonly maxModelTurns?: number;
   readonly deliveryDestination?: JsonObject;
+  readonly conversationId?: string;
+  readonly turnId?: string;
+  readonly assembledContext?: ContextAssembly;
+  /** Used by durable ingress to reserve a stable Run ID before execution starts. */
+  readonly runId?: string;
 }
+
+export type HeadlessPreparedRunRequest = Omit<HeadlessRunRequest, "context" | "conversationId" | "turnId" | "runId">;
 
 export interface HeadlessResumeRequest {
   readonly signal?: AbortSignal;
@@ -32,6 +40,15 @@ export interface HeadlessRunEngineOptions {
 }
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+
+function initialMessages(request: Pick<HeadlessRunRequest, "prompt" | "assembledContext">): ModelMessage[] {
+  return [
+    ...(request.assembledContext?.blocks.length
+      ? [{ role: "system" as const, content: renderContextAssembly(request.assembledContext) }]
+      : []),
+    { role: "user" as const, content: request.prompt },
+  ];
+}
 
 function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
   return {
@@ -108,6 +125,51 @@ export class HeadlessRunEngine {
 
   async run(request: HeadlessRunRequest): Promise<HeadlessRunResult> {
     return this.execute(request);
+  }
+
+  /** Starts a Run whose row and first Step were already created in another atomic transaction. */
+  async runPrepared(runId: string, request: HeadlessPreparedRunRequest): Promise<HeadlessRunResult> {
+    const run = await this.store.getRun(runId);
+    const steps = await this.store.listSteps(runId);
+    const modelStep = steps[0];
+    if (!run || run.state !== "queued" || run.revision !== 0) {
+      throw new ExecutionStoreConflictError(`prepared Run ${runId} is not queued at revision zero`);
+    }
+    if (!modelStep || steps.length !== 1 || modelStep.sequence !== 0 || modelStep.kind !== "model_call"
+      || modelStep.state !== "pending" || modelStep.revision !== 0) {
+      throw new ExecutionStoreConflictError(`prepared Run ${runId} does not have one pending model Step`);
+    }
+    const deliveryDestination = request.deliveryDestination ?? { kind: "caller" };
+    const messages = initialMessages(request);
+    await this.store.updateExecutionProgress({
+      runId,
+      expectedRunRevision: 0,
+      expectedRunState: "queued",
+      runState: "running",
+      resumeEligibility: "eligible",
+      runUpdatedAt: this.now(),
+      step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
+      checkpoint: {
+        runId,
+        version: 1,
+        data: checkpointData(request.model, messages, ZERO_USAGE, deliveryDestination),
+        updatedAt: this.now(),
+      },
+    });
+    return this.execute({
+      context: run.context,
+      ...request,
+      deliveryDestination,
+    }, {
+      runId,
+      runRevision: 1,
+      sequence: 1,
+      checkpointVersion: 1,
+      usage: ZERO_USAGE,
+      messages,
+      modelStep: { ...modelStep, revision: 1, state: "running" },
+      deliveryDestination,
+    });
   }
 
   async resume(claim: RecoveryClaim, request: HeadlessResumeRequest = {}): Promise<HeadlessRunResult> {
@@ -521,13 +583,13 @@ export class HeadlessRunEngine {
   }
 
   private async execute(request: HeadlessRunRequest, restored?: RestoredExecution): Promise<HeadlessRunResult> {
-    const runId = restored?.runId ?? this.createId("run");
+    const runId = restored?.runId ?? request.runId ?? this.createId("run");
     let runRevision = restored?.runRevision ?? 0;
     let sequence = restored?.sequence ?? 0;
     let checkpointVersion = restored?.checkpointVersion ?? 0;
     let usage = restored?.usage ?? ZERO_USAGE;
     const deliveryDestination = restored?.deliveryDestination ?? request.deliveryDestination ?? { kind: "caller" };
-    const messages: ModelMessage[] = restored?.messages ?? [{ role: "user", content: request.prompt }];
+    const messages: ModelMessage[] = restored?.messages ?? initialMessages(request);
     let modelStep = restored?.modelStep ?? this.newStep(runId, sequence++, "model_call");
     if (!restored) {
       const startedAt = this.now();
@@ -536,6 +598,8 @@ export class HeadlessRunEngine {
         revision: 0,
         state: "queued",
         context: request.context,
+        ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+        ...(request.turnId ? { turnId: request.turnId } : {}),
         resumeEligibility: "eligible",
         createdAt: startedAt,
         updatedAt: startedAt,
