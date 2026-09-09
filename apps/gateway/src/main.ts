@@ -7,6 +7,7 @@ import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
 import { pluginStateDirectory } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
+import { PluginJobScheduler } from "./plugin-jobs.js";
 
 const paths = umiroPaths();
 const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
@@ -19,6 +20,8 @@ const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
 const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)));
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
+const pluginJobs = new PluginJobScheduler(host);
+pluginJobs.start();
 
 const store = new SQLiteExecutionStore(paths.sqlite);
 const baseUrl = process.env.LLM_BASE_URL?.trim();
@@ -40,6 +43,6 @@ const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await discord.start(token);
 await delivery.drain();
-const shutdown = async () => { await discord.stop(); store.close(); process.exit(0); };
+const shutdown = async () => { pluginJobs.stop(); await discord.stop(); store.close(); process.exit(0); };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

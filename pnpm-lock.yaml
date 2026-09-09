@@ -147,6 +147,9 @@ importers:
       '@umiro/storage-sqlite':
         specifier: workspace:*
         version: link:../../packages/storage-sqlite
+      croner:
+        specifier: ^9.1.0
+        version: 9.1.0
 
   packages/adapter-discord:
     dependencies:
@@ -276,6 +279,10 @@ packages:
 
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
+
+  croner@9.1.0:
+    resolution: {integrity: sha512-p9nwwR4qyT5W996vBZhdvBCnMhicY5ytZkR4D1Xj0wuTDEiMnjwR57Q3RXYY/s0EpX6Ay3vgIcfaR+ewGHsi+g==}
+    engines: {node: '>=18.0'}
 
   decompress-response@6.0.0:
     resolution: {integrity: sha512-aW35yZM6Bb/4oJlZncMH2LCoZtJXTRxES17vE3hoRiowU2kWHaJKFkSBDnDR+cm9J+9QhXmREyIfv0pji9ejCQ==}
@@ -551,6 +558,8 @@ snapshots:
       ieee754: 1.2.1
 
   chownr@1.1.4: {}
+
+  croner@9.1.0: {}
 
   decompress-response@6.0.0:
     dependencies:

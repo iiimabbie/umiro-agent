@@ -1,5 +1,6 @@
 import { cp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { openSync } from "node:fs";
 import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -20,6 +21,42 @@ async function init(): Promise<void> {
   try { await readFile(plugins); } catch { await writeFile(plugins, "[]\n", { mode: 0o600 }); }
   try { await readFile(configFile); } catch { await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", plugins: [] }, null, 2)}\n`, { mode: 0o600 }); }
   console.log(home);
+}
+
+async function install(): Promise<void> {
+  for (const name of ["bin", "app", "config", "workspace", "data", "state"]) await mkdir(join(home, name), { recursive: true, mode: 0o700 });
+  await init();
+}
+
+const pidFile = join(home, "state", "gateway.pid");
+async function status(): Promise<boolean> {
+  try {
+    const pid = Number((await readFile(pidFile, "utf8")).trim());
+    process.kill(pid, 0);
+    console.log(`running ${pid}`);
+    return true;
+  } catch { console.log("stopped"); return false; }
+}
+
+async function start(): Promise<void> {
+  if (await status()) return;
+  await install();
+  const entry = resolve(process.env.UMIRO_GATEWAY_ENTRY?.trim() || new URL("../../../gateway/dist/src/main.js", import.meta.url).pathname);
+  const log = openSync(join(home, "state", "gateway.log"), "a", 0o600);
+  const child = spawn(process.execPath, [entry], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, UMIRO_HOME: home } });
+  child.unref();
+  if (!child.pid) throw new Error("gateway failed to start");
+  await writeFile(pidFile, `${child.pid}\n`, { mode: 0o600 });
+  console.log(`started ${child.pid}`);
+}
+
+async function stop(): Promise<void> {
+  try {
+    const pid = Number((await readFile(pidFile, "utf8")).trim());
+    process.kill(pid, "SIGTERM");
+    await rm(pidFile, { force: true });
+    console.log(`stopped ${pid}`);
+  } catch { await rm(pidFile, { force: true }); console.log("stopped"); }
 }
 
 async function plugin(action: string, source?: string, workspaceName?: string): Promise<void> {
@@ -88,6 +125,10 @@ const args = process.argv.slice(2);
 const [command, action, source] = args;
 const workspaceIndex = args.indexOf("--workspace");
 const workspaceName = workspaceIndex >= 0 ? args[workspaceIndex + 1] : undefined;
-if (command === "init") await init();
+if (command === "install") await install();
+else if (command === "init") await init();
+else if (command === "start") await start();
+else if (command === "stop") await stop();
+else if (command === "status") await status();
 else if (command === "plugin") await plugin(action ?? "list", source, workspaceName);
-else throw new Error("usage: umiro init | umiro plugin install <path> | umiro plugin list | umiro plugin remove <path>");
+else throw new Error("usage: umiro install|init|start|stop|status | umiro plugin install <source> [--workspace name] | list | remove <source>");

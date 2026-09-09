@@ -3,12 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": { "types": "./dist/src/index.d.ts", "default": "./dist/src/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
   "dependencies": {
-    "@umiro/core": "workspace:*",
     "@umiro/adapter-discord": "workspace:*",
+    "@umiro/core": "workspace:*",
     "@umiro/model-openai": "workspace:*",
-    "@umiro/storage-sqlite": "workspace:*"
+    "@umiro/storage-sqlite": "workspace:*",
+    "croner": "^9.1.0"
   },
   "scripts": {
     "build": "tsc -b",
