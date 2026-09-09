@@ -13,6 +13,7 @@ export interface InteractiveIngressRequest {
   readonly maxContextCharacters: number;
   readonly deliveryDestination: JsonObject;
   readonly signal?: AbortSignal;
+  readonly onRunCreated?: (runId: string) => void;
 }
 
 export type InteractiveIngressResult =
@@ -56,6 +57,7 @@ export class InteractiveIngress {
     if (!prompt) throw new TypeError("Input Event does not contain text");
     const resolved = await this.identities.resolve(request.event.identity);
     const runId = this.createId("run");
+    request.onRunCreated?.(runId);
     const ingested = await this.conversations.ingestInputEvent({
       event: request.event,
       actorPrincipalId: resolved.principal.id,

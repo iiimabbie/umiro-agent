@@ -45,6 +45,7 @@ const legacyServices = {
   editText: (input: { channelId: string; messageId: string; content: string }) => discord.editText(input.channelId, input.messageId, input.content),
 };
 let host: PluginHost;
+const activeRuns = new Map<string, { readonly controller: AbortController; readonly userId: string }>();
 
 const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
@@ -75,7 +76,18 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   if (result.status !== "succeeded") throw new Error(`scheduled Run ${result.runId} ended ${result.status}`);
   await delivery.drain(signal);
 });
-discord.onCommand(host.listCommands(), async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
+const builtinCommands = [
+  { name: "stop", description: "Cancel an active Run.", ownerOnly: false, ephemeral: true, options: [{ name: "run_id", description: "Run identifier", type: "string" as const, required: true }] },
+];
+discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
+  if (name === "stop") {
+    const runId = String(input.run_id ?? "");
+    const active = activeRuns.get(runId);
+    if (!active) return { stopped: false, runId, reason: "run_not_active" };
+    if (active.userId !== commandContext.userId && commandContext.userId !== ownerDiscordId) return { stopped: false, runId, reason: "not_run_owner" };
+    active.controller.abort(new Error("stopped by Discord user"));
+    return { stopped: true, runId };
+  }
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);
   if (command.ownerOnly !== false && commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
@@ -88,7 +100,13 @@ discord.onMessage(async message => {
     const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId);
     artifactIds.push(artifact.id);
   }
-  await ingress.handle({ event: toInputEvent(message, artifactIds), model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId } });
+  const controller = new AbortController();
+  const event = toInputEvent(message, artifactIds);
+  let runKey = event.id;
+  const active = { controller, userId: message.authorId };
+  const execution = ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
+  activeRuns.set(runKey, active);
+  try { await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); }
   await delivery.drain();
 });
 const token = process.env.DISCORD_TOKEN?.trim();
