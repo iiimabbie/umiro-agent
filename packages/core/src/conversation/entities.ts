@@ -26,3 +26,8 @@ export interface Turn {
   readonly replyToTurnId?: TurnId;
   readonly createdAt: string;
 }
+
+export interface ConversationHistoryItem {
+  readonly turn: Turn;
+  readonly assistantText?: string;
+}

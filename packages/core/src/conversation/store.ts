@@ -1,4 +1,4 @@
-import type { Conversation, ConversationState, Turn } from "./entities.js";
+import type { Conversation, ConversationHistoryItem, ConversationState, Turn } from "./entities.js";
 import type { PrincipalId } from "../identity/principal.js";
 import type { InputEvent } from "../input/event.js";
 
@@ -23,7 +23,8 @@ export interface ConversationStore {
   getConversation(conversationId: string): Promise<Conversation | undefined>;
   getTurn(turnId: string): Promise<Turn | undefined>;
   getTurnByInputEventId(inputEventId: string): Promise<Turn | undefined>;
-  listTurns(conversationId: string): Promise<readonly Turn[]>;
+  listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]>;
+  listRecentHistory(conversationId: string, beforeSequence: number, limit: number): Promise<readonly ConversationHistoryItem[]>;
   archiveBoundConversation(transport: string, externalId: string, archivedAt: string): Promise<Conversation | undefined>;
 }
 
@@ -43,6 +44,6 @@ export interface IngestInputEventResult {
   readonly conversationCreated: boolean;
 }
 
-export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns"> {
+export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns" | "listRecentHistory"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
 }

@@ -2,7 +2,7 @@ import type { InstructionAuthority } from "../authorization/authority.js";
 import type { Capability } from "../authorization/capability.js";
 import type { ExecutionContext } from "../identity/execution-context.js";
 import type { JsonObject } from "../ports/json.js";
-import type { Turn } from "../conversation/entities.js";
+import type { ConversationHistoryItem, Turn } from "../conversation/entities.js";
 import type { InputEvent } from "../input/event.js";
 
 export type ContextRole = "soul" | "agent" | "memory" | (string & {});
@@ -23,6 +23,8 @@ export interface ContextBlock {
   readonly influence: ContextInfluence;
   /** The authority level assigned to this block, never inherited from its text. */
   readonly instructionAuthority: InstructionAuthority;
+  /** Essential blocks must fit; the engine fails rather than silently dropping identity or policy. */
+  readonly retention?: "essential" | "normal";
   /** Context files are loaded for every model turn. Disclosure of private data is
    * an authorization concern and must not be encoded as context audience. */
   readonly parentSourceRef?: string;
@@ -36,6 +38,7 @@ export interface ContextRequest {
    * relevance only; they are not instruction or authorization sources. */
   readonly inputEvent?: InputEvent;
   readonly recentTurns?: readonly Turn[];
+  readonly recentHistory?: readonly ConversationHistoryItem[];
   readonly signal?: AbortSignal;
 }
 

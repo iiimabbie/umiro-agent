@@ -52,14 +52,17 @@ export class ContextEngine {
     const included: ContextBlock[] = [];
     const omittedBlockIds: string[] = [];
     let characterCount = 0;
-    for (const block of visible) {
+    const ordered = [...visible.filter(block => block.retention === "essential"), ...visible.filter(block => block.retention !== "essential")];
+    for (const block of ordered) {
       if (characterCount + block.content.length > request.maxCharacters) {
+        if (block.retention === "essential") throw new Error(`essential context block exceeds budget: ${block.id}`);
         omittedBlockIds.push(block.id);
         continue;
       }
       included.push(block);
       characterCount += block.content.length;
     }
+    included.sort((left, right) => visible.indexOf(left) - visible.indexOf(right));
     return { blocks: included, omittedBlockIds, characterCount };
   }
 }

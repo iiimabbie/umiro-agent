@@ -44,6 +44,7 @@ import {
   type CreateScheduledTrigger,
   type ScheduledOccurrence,
   type ScheduledTrigger,
+  type ConversationHistoryItem,
   type Artifact,
   type ArtifactStore,
   type CreateArtifactRequest,
@@ -430,10 +431,18 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return row ? this.turnFromRow(row) : undefined;
   }
 
-  async listTurns(conversationId: string): Promise<readonly Turn[]> {
-    const rows = this.database.prepare("SELECT * FROM turns WHERE conversation_id = ? ORDER BY sequence")
-      .all(conversationId) as TurnRow[];
+  async listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]> {
+    const rows = (limit === undefined
+      ? this.database.prepare("SELECT * FROM turns WHERE conversation_id = ? ORDER BY sequence").all(conversationId)
+      : this.database.prepare("SELECT * FROM (SELECT * FROM turns WHERE conversation_id = ? ORDER BY sequence DESC LIMIT ?) ORDER BY sequence").all(conversationId, limit)) as TurnRow[];
     return rows.map(row => this.turnFromRow(row));
+  }
+
+  async listRecentHistory(conversationId: string, beforeSequence: number, limit: number): Promise<readonly ConversationHistoryItem[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("history limit must be between 1 and 100");
+    const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id
+      WHERE t.conversation_id = ? AND t.sequence < ? ORDER BY t.sequence DESC LIMIT ?`).all(conversationId, beforeSequence, limit) as Array<TurnRow & { assistant_text: string | null }>;
+    return rows.reverse().map(row => ({ turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}) }));
   }
 
   private insertTurn(turn: Turn): void {

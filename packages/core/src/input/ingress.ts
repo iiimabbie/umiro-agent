@@ -95,7 +95,8 @@ export class InteractiveIngress {
       execution,
       prompt,
       inputEvent: request.event,
-      recentTurns: await this.conversations.listTurns(ingested.conversation.id),
+      recentTurns: await this.conversations.listTurns(ingested.conversation.id, 12),
+      recentHistory: await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, 24),
       maxCharacters: request.maxContextCharacters,
       ...(request.signal ? { signal: request.signal } : {}),
     });

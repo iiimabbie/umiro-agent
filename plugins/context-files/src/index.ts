@@ -50,8 +50,9 @@ function provider(
           role,
           content,
           source: { kind: "file", ref: path },
-          influence: "information",
-          instructionAuthority: "none",
+          influence: role === "soul" || role === "agent" ? "instruction" : "information",
+          instructionAuthority: role === "soul" || role === "agent" ? "full" : "none",
+          retention: role === "soul" || role === "agent" || role === "owner" ? "essential" : "normal",
         }];
       } catch (error) {
         if (isMissing(error)) return [];
@@ -74,6 +75,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
     tool("owner_profile_add", "Append one durable fact to OWNER.md. Owner only.", { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string", minLength: 1 } } }, async input => serial(async () => { const current = await readFile(ownerPath(), "utf8").catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? "# OWNER\n" : Promise.reject(error)); const content = String(input.content).trim(); if (current.includes(content)) return { added: false }; await ownerWrite(`${current.trim()}\n\n${content}`); return { added: true }; })),
     tool("owner_profile_replace", "Replace one exact occurrence in OWNER.md. Owner only.", { type: "object", additionalProperties: false, required: ["oldText", "newText"], properties: { oldText: { type: "string", minLength: 1 }, newText: { type: "string" } } }, async input => serial(async () => { const current = await readFile(ownerPath(), "utf8"); const oldText = String(input.oldText); if (current.split(oldText).length !== 2) throw new Error("oldText must match exactly once"); await ownerWrite(current.replace(oldText, String(input.newText))); return { replaced: true }; })),
   ];
+  const history: ContextProvider = { id: "context.conversation_history", role: "conversation-history", priority: 700, async load(request) { const items = request.recentHistory ?? []; if (!items.length) return []; const lines = items.flatMap(item => { const user = item.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n"); return [`User (${item.turn.actorPrincipalId}): ${user}`, ...(item.assistantText ? [`Assistant: ${item.assistantText}`] : [])]; }); return [{ id: "context.conversation_history:recent", providerId: "context.conversation_history", role: "conversation-history", content: `<conversation-history>\n${lines.join("\n")}\n</conversation-history>`, source: { kind: "conversation", ref: items[0]!.turn.conversationId }, influence: "information", instructionAuthority: "none" }]; } };
   return {
     contributions: {
       contextProviders: [
@@ -81,6 +83,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
         provider("agent", config, () => workspaceRoot),
         provider("owner", config, () => workspaceRoot),
         provider("memory", config, () => workspaceRoot),
+        history,
       ],
       tools,
     },

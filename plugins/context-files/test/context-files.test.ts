@@ -11,7 +11,7 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root }, getSecret: () => undefined });
   await plugin.start?.();
   const providers = plugin.contributions.contextProviders ?? [];
-  assert.deepEqual(providers.map(provider => provider.id), ["context.soul", "context.agent", "context.owner", "context.memory"]);
+  assert.deepEqual(providers.map(provider => provider.id), ["context.soul", "context.agent", "context.owner", "context.memory", "context.conversation_history"]);
   const request = { runId: "run", execution: {} as never, prompt: "hi" };
   const owner = await providers.find(provider => provider.id === "context.owner")!.load(request);
   assert.equal(owner[0]?.content, "owner");
@@ -21,5 +21,7 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.equal((await add.execute({ content: "稱呼：主人" }, {} as never) as { ok: boolean }).ok, true);
   assert.match(await (await import("node:fs/promises")).readFile(join(root, "OWNER.md"), "utf8"), /稱呼：主人/);
   assert.equal((await replace.execute({ oldText: "稱呼：主人", newText: "稱呼：Owner" }, {} as never) as { ok: boolean }).ok, true);
+  const history = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, recentHistory: [{ turn: { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "user", inputEventId: "e", content: [{ type: "text", text: "我叫小明" }], createdAt: "now" }, assistantText: "記住了" }] });
+  assert.match(history[0]?.content ?? "", /我叫小明[\s\S]*記住了/);
   await plugin.stop?.();
 });
