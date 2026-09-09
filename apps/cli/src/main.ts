@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 const home = resolve(process.env.UMIRO_HOME?.trim() || join(homedir(), ".umiro-v2"));
 const workspace = join(home, "workspace");
 const plugins = join(home, "config", "plugins.json");
+const configFile = join(home, "config", "umiro.json");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 const exec = promisify(execFile);
 
@@ -17,6 +18,7 @@ async function init(): Promise<void> {
   }
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   try { await readFile(plugins); } catch { await writeFile(plugins, "[]\n", { mode: 0o600 }); }
+  try { await readFile(configFile); } catch { await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", plugins: [] }, null, 2)}\n`, { mode: 0o600 }); }
   console.log(home);
 }
 

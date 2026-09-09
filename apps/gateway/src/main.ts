@@ -1,0 +1,45 @@
+import { readFile } from "node:fs/promises";
+import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, type JsonObject } from "@umiro/core";
+import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent } from "@umiro/adapter-discord";
+import { OpenAIResponsesModel } from "@umiro/model-openai";
+import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
+import { FilePluginStateStore } from "./file-plugin-state.js";
+import { loadPluginModule } from "./plugin-loader.js";
+import { pluginStateDirectory } from "./plugin-composition.js";
+import { umiroPaths } from "./paths.js";
+
+const paths = umiroPaths();
+const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
+const managed: string[] = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]"));
+const configured: Array<{ path: string; config?: JsonObject }> = [...(config.plugins ?? []), ...managed.map(path => ({ path }))];
+const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
+const granted = capabilities(...modules.flatMap(module => module.manifest.permissions.capabilities));
+const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
+const tools = new ToolRegistry();
+const providers = new ContextProviderRegistry();
+const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)));
+for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
+
+const store = new SQLiteExecutionStore(paths.sqlite);
+const baseUrl = process.env.LLM_BASE_URL?.trim();
+if (!baseUrl) throw new Error("LLM_BASE_URL is required");
+const apiKey = process.env.LLM_API_KEY?.trim();
+const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
+const engine = new HeadlessRunEngine(modelPort, tools, store);
+const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
+if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
+const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
+const ingress = new InteractiveIngress(identities, store, store, new ContextEngine(providers), engine);
+const discord = new DiscordJsAdapter();
+const delivery = new DiscordDeliveryWorker(store, discord);
+discord.onMessage(async message => {
+  await ingress.handle({ event: toInputEvent(message), model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId } });
+  await delivery.drain();
+});
+const token = process.env.DISCORD_TOKEN?.trim();
+if (!token) throw new Error("DISCORD_TOKEN is required");
+await discord.start(token);
+await delivery.drain();
+const shutdown = async () => { await discord.stop(); store.close(); process.exit(0); };
+process.once("SIGINT", () => void shutdown());
+process.once("SIGTERM", () => void shutdown());

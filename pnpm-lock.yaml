@@ -135,9 +135,18 @@ importers:
 
   apps/gateway:
     dependencies:
+      '@umiro/adapter-discord':
+        specifier: workspace:*
+        version: link:../../packages/adapter-discord
       '@umiro/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@umiro/model-openai':
+        specifier: workspace:*
+        version: link:../../packages/model-openai
+      '@umiro/storage-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/storage-sqlite
 
   packages/adapter-discord:
     dependencies:
