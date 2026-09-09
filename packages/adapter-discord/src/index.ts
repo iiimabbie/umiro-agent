@@ -54,7 +54,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
       principalId: owner ? "owner" : (identity.principalId ?? this.createPrincipalId()),
     }, this.now());
     return {
-      principal: { id: mapped.principalId, kind: "human", roles: owner ? ["owner"] : ["member"], ...(mapped.displayName ? { displayName: mapped.displayName } : {}) },
+      principal: { id: mapped.principalId, kind: "human", roles: owner ? ["owner"] : ["member"], identities: [{ transport: "discord", externalId: identity.externalId }], ...(mapped.displayName ? { displayName: mapped.displayName } : {}) },
       authority: owner ? this.options.ownerAuthority : this.options.memberAuthority,
     };
   }

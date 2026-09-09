@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 0,
+  "id": "people",
+  "version": "0.0.0",
+  "coreApi": "0",
+  "entry": "./dist/src/index.js",
+  "permissions": { "capabilities": [], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
+  "namespace": "people",
+  "configSchema": { "type": "object", "additionalProperties": false, "required": ["workspacePath"], "properties": { "workspacePath": { "type": "string", "minLength": 1 }, "maxEntries": { "type": "integer", "minimum": 1 }, "maxCharacters": { "type": "integer", "minimum": 1 } } },
+  "contributes": { "contextProviders": ["people.relevant"] }
+}

@@ -7,6 +7,8 @@ export interface Principal {
   readonly roles: readonly PrincipalRole[];
   /** Display-only metadata. Never use this field for authorization. */
   readonly displayName?: string;
+  /** Trusted adapter facts for context lookup; never inferred from prompt text. */
+  readonly identities?: readonly { readonly transport: string; readonly externalId: string }[];
 }
 
 export interface TransportIdentity {
