@@ -31,3 +31,14 @@ export interface ConversationHistoryItem {
   readonly turn: Turn;
   readonly assistantText?: string;
 }
+
+/** A rebuildable, lossy projection of canonical conversation turns that fell
+ * outside the recent-history window. Canonical Turns and Run outputs remain
+ * untouched. */
+export interface ConversationCompaction {
+  readonly conversationId: ConversationId;
+  readonly throughSequence: number;
+  readonly sourceHash: string;
+  readonly summary: string;
+  readonly updatedAt: string;
+}

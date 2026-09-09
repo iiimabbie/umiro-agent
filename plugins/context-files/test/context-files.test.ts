@@ -21,7 +21,9 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.equal((await add.execute({ content: "稱呼：主人" }, {} as never) as { ok: boolean }).ok, true);
   assert.match(await (await import("node:fs/promises")).readFile(join(root, "OWNER.md"), "utf8"), /稱呼：主人/);
   assert.equal((await replace.execute({ oldText: "稱呼：主人", newText: "稱呼：Owner" }, {} as never) as { ok: boolean }).ok, true);
-  const history = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, recentHistory: [{ turn: { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "user", inputEventId: "e", content: [{ type: "text", text: "我叫小明" }], createdAt: "now" }, assistantText: "記住了" }] });
-  assert.match(history[0]?.content ?? "", /我叫小明[\s\S]*記住了/);
+  const history = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, conversationCompaction: { conversationId: "c", throughSequence: 3, sourceHash: "abc", summary: "先前談過授權邊界", updatedAt: "now" }, recentHistory: [{ turn: { id: "t", conversationId: "c", sequence: 4, actorPrincipalId: "user", inputEventId: "e", content: [{ type: "text", text: "我叫小明" }], createdAt: "now" }, assistantText: "記住了" }] });
+  assert.deepEqual(history.map(block => block.id), ["context.conversation_history:compacted", "context.conversation_history:recent"]);
+  assert.match(history[0]?.content ?? "", /先前談過授權邊界/);
+  assert.match(history[1]?.content ?? "", /我叫小明[\s\S]*記住了/);
   await plugin.stop?.();
 });

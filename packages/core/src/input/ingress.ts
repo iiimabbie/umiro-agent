@@ -94,13 +94,22 @@ export class InteractiveIngress {
       actor: resolved.principal,
       authority,
     };
+    const historyLimit = 24;
+    const conversationCompaction = await this.conversations.refreshConversationCompaction({
+      conversationId: ingested.conversation.id,
+      beforeSequence: ingested.turn.sequence,
+      retainRecent: historyLimit,
+      maxCharacters: Math.min(12_000, Math.max(2_000, Math.floor(request.maxContextCharacters / 3))),
+      updatedAt: this.now(),
+    });
     const assembledContext = await this.contexts.assemble({
       runId: primaryRunId,
       execution,
       prompt,
       inputEvent: request.event,
       recentTurns: await this.conversations.listTurns(ingested.conversation.id, 12),
-      recentHistory: await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, 24),
+      recentHistory: await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, historyLimit),
+      ...(conversationCompaction ? { conversationCompaction } : {}),
       maxCharacters: request.maxContextCharacters,
       ...(request.signal ? { signal: request.signal } : {}),
       ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),

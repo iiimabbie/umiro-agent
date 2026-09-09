@@ -14,6 +14,7 @@ import {
   type AuthorizationDecisionRecord,
   type CompleteRunWithOutput,
   type Conversation,
+  type ConversationCompaction,
   type ConversationStore,
   type ConversationIngressStore,
   type DeliveryIntent,
@@ -172,6 +173,14 @@ interface TurnRow {
   created_at: string;
 }
 
+interface ConversationCompactionRow {
+  conversation_id: string;
+  through_sequence: number;
+  source_hash: string;
+  summary: string;
+  updated_at: string;
+}
+
 interface TriggerRow { id: string; revision: number; name: string; enabled: number; schedule_json: string; timezone: string; job_ref: string; input_json: string; creator_principal_id: string; creator_roles_json: string; authority_json: string; destination_json: string | null; misfire_policy: ScheduledTrigger["misfirePolicy"]; max_attempts: number; retry_backoff_ms: number; next_fire_at: string | null; created_at: string; updated_at: string }
 interface OccurrenceRow { id: string; trigger_id: string; scheduled_for: string; status: ScheduledOccurrence["status"]; attempts: number; run_id: string; next_retry_at: string | null; error: string | null; claimed_at: string; completed_at: string | null }
 interface ArtifactRow { id: string; owner_principal_id: string; visibility: Artifact["visibility"]; media_type: string; filename: string | null; size: number; sha256: string; location: string; parent_source_json: string | null; state: Artifact["state"]; created_at: string; updated_at: string }
@@ -195,6 +204,44 @@ function json(value: JsonValue | object): string {
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function normalizedExcerpt(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+function compactionSummary(
+  rows: ReadonlyArray<TurnRow & { assistant_text: string | null }>,
+  maxCharacters: number,
+): string {
+  const maxEntries = Math.max(4, Math.floor(maxCharacters / 240));
+  let selected = [...rows];
+  if (selected.length > maxEntries) {
+    const indexes = new Set<number>([0, selected.length - 1]);
+    for (let slot = 1; indexes.size < maxEntries; slot++) {
+      indexes.add(Math.round((slot * (selected.length - 1)) / (maxEntries - 1)));
+    }
+    selected = [...indexes].sort((a, b) => a - b).map(index => rows[index]!);
+  }
+  const omitted = rows.length - selected.length;
+  const overhead = selected.length * 36 + (omitted ? 64 : 0);
+  const bodyBudget = Math.max(80, Math.floor((maxCharacters - overhead) / selected.length));
+  const lines = selected.map(row => {
+    const content = parseJson<Turn["content"]>(row.content_json);
+    const user = content.filter(block => block.type === "text").map(block => block.text).join(" ");
+    const userBudget = row.assistant_text ? Math.floor(bodyBudget / 2) : bodyBudget;
+    const assistantBudget = bodyBudget - userBudget;
+    return `[Turn ${row.sequence}] User (${row.actor_principal_id}): ${normalizedExcerpt(user || "[attachment-only message]", userBudget)}${row.assistant_text ? `\nAssistant: ${normalizedExcerpt(row.assistant_text, assistantBudget)}` : ""}`;
+  });
+  if (omitted) lines.splice(Math.floor(lines.length / 2), 0, `[${omitted} turns omitted by deterministic compaction; canonical history remains searchable]`);
+  const summary = lines.join("\n");
+  return summary.length <= maxCharacters ? summary : `${summary.slice(0, maxCharacters - 1).trimEnd()}…`;
+}
+
+function compactionFromRow(row: ConversationCompactionRow): ConversationCompaction {
+  return { conversationId: row.conversation_id, throughSequence: row.through_sequence, sourceHash: row.source_hash, summary: row.summary, updatedAt: row.updated_at };
 }
 
 function approvalFromRow(row: ApprovalRow): ApprovalRequest {
@@ -516,6 +563,27 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id
       WHERE t.conversation_id = ? AND t.sequence < ? ORDER BY t.sequence DESC LIMIT ?`).all(conversationId, beforeSequence, limit) as Array<TurnRow & { assistant_text: string | null }>;
     return rows.reverse().map(row => ({ turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}) }));
+  }
+
+  async refreshConversationCompaction(request: { readonly conversationId: string; readonly beforeSequence: number; readonly retainRecent: number; readonly maxCharacters: number; readonly updatedAt: string }): Promise<ConversationCompaction | undefined> {
+    if (!Number.isSafeInteger(request.beforeSequence) || request.beforeSequence < 0) throw new TypeError("beforeSequence must be a non-negative integer");
+    if (!Number.isSafeInteger(request.retainRecent) || request.retainRecent < 1 || request.retainRecent > 100) throw new TypeError("retainRecent must be between 1 and 100");
+    if (!Number.isSafeInteger(request.maxCharacters) || request.maxCharacters < 500 || request.maxCharacters > 100_000) throw new TypeError("compaction maxCharacters must be between 500 and 100000");
+    const throughSequence = request.beforeSequence - request.retainRecent - 1;
+    if (throughSequence < 0) return undefined;
+    const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id
+      WHERE t.conversation_id=? AND t.sequence<=? ORDER BY t.sequence`).all(request.conversationId, throughSequence) as Array<TurnRow & { assistant_text: string | null }>;
+    if (!rows.length) return undefined;
+    const sourceHash = createHash("sha256");
+    for (const row of rows) sourceHash.update(json([row.id, row.sequence, row.actor_principal_id, row.content_json, row.assistant_text]));
+    const digest = sourceHash.digest("hex");
+    const existing = this.database.prepare("SELECT * FROM conversation_compactions WHERE conversation_id=?").get(request.conversationId) as ConversationCompactionRow | undefined;
+    if (existing?.through_sequence === throughSequence && existing.source_hash === digest && existing.summary.length <= request.maxCharacters) return compactionFromRow(existing);
+    const summary = compactionSummary(rows, request.maxCharacters);
+    this.database.prepare(`INSERT INTO conversation_compactions(conversation_id, through_sequence, source_hash, summary, updated_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET through_sequence=excluded.through_sequence, source_hash=excluded.source_hash, summary=excluded.summary, updated_at=excluded.updated_at`)
+      .run(request.conversationId, throughSequence, digest, summary, request.updatedAt);
+    return { conversationId: request.conversationId, throughSequence, sourceHash: digest, summary, updatedAt: request.updatedAt };
   }
 
   private insertTurn(turn: Turn): void {

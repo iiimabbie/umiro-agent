@@ -410,6 +410,31 @@ test("completed assistant output joins the turn search and embedding projections
   } finally { database.cleanup(); }
 });
 
+test("builds a bounded rebuildable compaction without deleting canonical turns", async () => {
+  const database = fixture();
+  try {
+    await database.store.createConversationWithTurn(
+      { id: "conversation-1", revision: 0, state: "active", createdAt: at, updatedAt: at },
+      { id: "turn-0", conversationId: "conversation-1", sequence: 0, actorPrincipalId: "owner", inputEventId: "event-0", content: [{ type: "text", text: "最早的長期決策：外掛不能擴張權限" }], createdAt: at },
+    );
+    for (let sequence = 1; sequence < 30; sequence++) {
+      await database.store.appendTurn({
+        turn: { id: `turn-${sequence}`, conversationId: "conversation-1", sequence, actorPrincipalId: "owner", inputEventId: `event-${sequence}`, content: [{ type: "text", text: `第 ${sequence} 輪內容 ${"細節".repeat(80)}` }], createdAt: at },
+        expectedConversationRevision: sequence - 1,
+        conversationUpdatedAt: at,
+      });
+    }
+    assert.equal(await database.store.refreshConversationCompaction({ conversationId: "conversation-1", beforeSequence: 24, retainRecent: 24, maxCharacters: 1000, updatedAt: at }), undefined);
+    const compacted = await database.store.refreshConversationCompaction({ conversationId: "conversation-1", beforeSequence: 29, retainRecent: 24, maxCharacters: 1000, updatedAt: at });
+    assert.equal(compacted?.throughSequence, 4);
+    assert.ok((compacted?.summary.length ?? 1001) <= 1000);
+    assert.match(compacted?.summary ?? "", /外掛不能擴張權限/);
+    const unchanged = await database.store.refreshConversationCompaction({ conversationId: "conversation-1", beforeSequence: 29, retainRecent: 24, maxCharacters: 1000, updatedAt: "later" });
+    assert.equal(unchanged?.updatedAt, at);
+    assert.equal((await database.store.listTurns("conversation-1")).length, 30);
+  } finally { database.cleanup(); }
+});
+
 test("delivery retry state and external evidence survive reopen", async () => {
   const database = fixture();
   try {
