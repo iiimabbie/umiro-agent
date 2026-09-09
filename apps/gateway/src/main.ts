@@ -41,7 +41,7 @@ const configured = [...byPath.values()];
 const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
 const hostedWebSearch = config.modelCapabilities?.includes("hosted_web_search") === true;
 const hostedImageGeneration = config.modelCapabilities?.includes("hosted_image_generation") === true;
-const granted = capabilities(...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
+const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
@@ -74,6 +74,15 @@ const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
 const apiKey = process.env.LLM_API_KEY?.trim();
 const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
+tools.register({
+  name: "tool_catalog",
+  description: "List registered tools and whether the current Principal has their declared capability.",
+  inputSchema: { type: "object", additionalProperties: false },
+  policy: { capability: "tool.catalog", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+  async execute(_input, context) {
+    return { ok: true, effectStatus: "not_applicable", output: tools.list().map(tool => ({ name: tool.name, description: tool.description, capability: tool.policy.capability, tier: tool.policy.tier, sideEffect: tool.policy.sideEffect, available: context.execution.authority.capabilities.includes(tool.policy.capability) })) };
+  },
+});
 if (hostedWebSearch) tools.register({
   name: "web_search",
   description: "Search the public web through the active model's hosted web search capability.",
