@@ -9,3 +9,4 @@ export * from "./embedding-config.js";
 export * from "./structured-logger.js";
 export * from "./approval-presentation.js";
 export * from "./discord-streaming.js";
+export * from "./control-panel.js";

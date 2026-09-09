@@ -14,6 +14,8 @@ test("Discord trigger policy is configurable through the installed CLI path", as
   const env = { ...process.env, UMIRO_HOME: home };
   try {
     await exec(process.execPath, [cli, "init"], { env });
+    const token = (await exec(process.execPath, [cli, "web", "token"], { env })).stdout.trim();
+    assert.match(token, /^[a-f0-9]{64}$/);
     await exec(process.execPath, [cli, "discord", "configure", "--allowed-guilds", "g1,g2", "--allowed-channels", "c1", "--ambient-channels", "a1,a2", "--ignored-channels", "i1", "--respond-to-bots", "true"], { env });
     const config = JSON.parse(await readFile(join(home, "config", "umiro.json"), "utf8")) as { discord: Record<string, unknown> };
     assert.deepEqual(config.discord, { ignoredChannels: ["i1"], ambientChannels: ["a1", "a2"], allowedChannels: ["c1"], allowedGuilds: ["g1", "g2"], respondToBots: true });

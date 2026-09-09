@@ -5,6 +5,7 @@ import { openSync } from "node:fs";
 import { promisify } from "node:util";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { validatePluginManifest } from "@umiro/core";
 import { managedPluginPath } from "./plugin-path.js";
 
@@ -18,7 +19,7 @@ const app = join(home, "app");
 const currentRelease = join(app, "current");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
-interface UmiroConfig { model: string; embedding?: Record<string, unknown>; discord?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
+interface UmiroConfig { model: string; embedding?: Record<string, unknown>; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
 async function loadPlugins(): Promise<ManagedPlugin[]> {
@@ -58,8 +59,8 @@ async function init(): Promise<void> {
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "PEOPLE.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
-  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: false }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
-  if (!await exists(secretsFile)) await writeFile(secretsFile, "# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\n", { mode: 0o600 });
+  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: false }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
+  if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
   console.log(home);
 }
 
@@ -115,7 +116,7 @@ async function install(): Promise<void> {
 }
 
 async function configure(fromEnv?: string): Promise<void> {
-  if (!fromEnv) throw new Error("configure requires --from-env <path>"); const source = resolve(fromEnv); await access(source); await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 }); await cp(source, secretsFile); await chmod(secretsFile, 0o600); console.log(secretsFile);
+  if (!fromEnv) throw new Error("configure requires --from-env <path>"); const source = resolve(fromEnv); await access(source); await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 }); let content = await readFile(source, "utf8"); if (!/^UMIRO_WEB_UI_TOKEN=/m.test(content)) content = `${content.trimEnd()}\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`; await writeFile(secretsFile, content, { mode: 0o600 }); await chmod(secretsFile, 0o600); console.log(secretsFile);
 }
 
 async function embedding(action: string, provider?: string, model?: string, baseUrl?: string, apiKeyEnv?: string): Promise<void> {
@@ -153,6 +154,12 @@ async function discord(action: string, options: { ignoredChannels: string | unde
   };
   await saveConfig({ ...config, discord: next });
   console.log("discord trigger policy configured");
+}
+
+async function web(action: string): Promise<void> {
+  if (action === "status") { const config = await loadConfig(); console.log(JSON.stringify(config.webUi ?? { enabled: false }, null, 2)); return; }
+  if (action === "token") { const content = await readFile(secretsFile, "utf8"); const token = /^UMIRO_WEB_UI_TOKEN=(.+)$/m.exec(content)?.[1]?.trim(); if (!token) throw new Error("Web UI token is not configured"); console.log(token); return; }
+  throw new Error("usage: umiro web status|token");
 }
 
 const pidFile = join(home, "state", "gateway.pid.json");
@@ -241,4 +248,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots") }); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|start|stop|status|plugin ...");
+if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");

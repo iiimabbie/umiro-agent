@@ -16,11 +16,12 @@ import { SemanticRecallProvider } from "./semantic-recall.js";
 import { JsonLineLogger } from "./structured-logger.js";
 import { approvalDetails } from "./approval-presentation.js";
 import { DiscordStreamingDelivery } from "./discord-streaming.js";
+import { ControlPanelServer } from "./control-panel.js";
 
 const paths = umiroPaths();
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
@@ -73,6 +74,8 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
+const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
+const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
   const approval = await store.getApproval(result.approvalId);
@@ -188,10 +191,11 @@ discord.onMessage(async message => {
 });
 const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
+await controlPanel?.start();
 await discord.start(token);
 await delivery.drain();
 await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
 scheduler.start();
-const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(0); };
+const shutdown = async () => { scheduler.stop(); embeddingWorker?.stop(); await controlPanel?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(0); };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
