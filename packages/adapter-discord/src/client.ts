@@ -145,6 +145,50 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, content: message.content, createdAt: message.createdAt.toISOString() };
   }
 
+  async createThread(input: { readonly channelId: string; readonly name: string; readonly messageId?: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("threads" in channel)) throw new Error(`Discord channel cannot create threads: ${input.channelId}`);
+    const thread = await channel.threads.create({ name: input.name.slice(0, 100), ...(input.messageId ? { startMessage: input.messageId } : {}) });
+    return { threadId: thread.id };
+  }
+
+  async archiveThread(input: { readonly channelId: string; readonly threadId: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.threadId);
+    if (!channel?.isThread()) throw new Error(`Discord channel is not a thread: ${input.threadId}`);
+    await channel.setArchived(true);
+  }
+
+  async deleteThread(input: { readonly channelId: string; readonly threadId: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.threadId);
+    if (!channel?.isThread()) throw new Error(`Discord channel is not a thread: ${input.threadId}`);
+    await channel.delete();
+  }
+
+  async editMessage(input: { readonly channelId: string; readonly messageId: string; readonly content: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    await this.editText(input.channelId, input.messageId, input.content);
+  }
+
+  async deleteMessage(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
+    const message = await channel.messages.fetch(input.messageId);
+    if (input.signal?.aborted) throw input.signal.reason;
+    await message.delete();
+  }
+
+  async fetchChannelMessages(input: { readonly channelId: string; readonly limit?: number; readonly signal?: AbortSignal }): Promise<readonly { readonly messageId: string; readonly authorId: string; readonly content: string; readonly createdAt: string }[]> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
+    const messages = await channel.messages.fetch({ limit: Math.min(100, Math.max(1, input.limit ?? 50)) });
+    return [...messages.values()].map(item => ({ messageId: item.id, authorId: item.author.id, content: item.content, createdAt: item.createdAt.toISOString() }));
+  }
+
   private async handle(message: Message): Promise<void> {
     if (!this.listener) return;
     if (message.author.id === this.client.user?.id) return;
