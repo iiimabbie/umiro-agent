@@ -16,18 +16,19 @@ export interface DiscordMessageEnvelope {
   readonly mentionedUserIds?: readonly string[];
   readonly replyToMessageId?: string;
   readonly replyAuthorId?: string;
+  readonly attachments?: readonly { readonly id: string; readonly url: string; readonly filename: string; readonly size: number; readonly mediaType?: string }[];
 }
 
 /** Converts Discord wire data into the Core's transport-neutral Input Event. */
-export function toInputEvent(message: DiscordMessageEnvelope): InputEvent {
+export function toInputEvent(message: DiscordMessageEnvelope, artifactIds: readonly string[] = []): InputEvent {
   return {
     id: `discord:${message.messageId}`,
     occurredAt: message.createdAt,
     identity: { transport: "discord", externalId: message.authorId, principalId: null },
     conversation: { transport: "discord", externalId: message.threadId ?? message.channelId, kind: message.threadId ? "thread" : (message.guildId ? "channel" : "direct") },
-    content: [{ type: "text", text: message.content }],
+    content: [{ type: "text", text: message.content }, ...artifactIds.map(artifactId => ({ type: "artifact_reference" as const, artifactId }))],
     ...(message.replyToMessageId ? { replyToExternalId: message.replyToMessageId } : {}),
-    metadata: { messageId: message.messageId, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}), ...(message.mentionedUserIds ? { mentionedUserIds: [...message.mentionedUserIds] } : {}), ...(message.replyAuthorId ? { replyAuthorId: message.replyAuthorId } : {}) },
+    metadata: { messageId: message.messageId, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}), ...(message.mentionedUserIds ? { mentionedUserIds: [...message.mentionedUserIds] } : {}), ...(message.replyAuthorId ? { replyAuthorId: message.replyAuthorId } : {}), ...(message.attachments?.length ? { attachmentCount: message.attachments.length } : {}) },
   };
 }
 

@@ -16,6 +16,7 @@ export function umiroPaths(environment: NodeJS.ProcessEnv = process.env) {
     secrets: join(root, "config", "secrets.env"),
     workspace: join(root, "workspace"),
     data: join(root, "data"),
+    artifacts: join(root, "data", "artifacts"),
     state: join(root, "state"),
     configFile: join(root, "config", "umiro.json"),
     sqlite: join(root, "data", "umiro.sqlite"),

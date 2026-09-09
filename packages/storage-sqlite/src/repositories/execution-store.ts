@@ -44,6 +44,9 @@ import {
   type CreateScheduledTrigger,
   type ScheduledOccurrence,
   type ScheduledTrigger,
+  type Artifact,
+  type ArtifactStore,
+  type CreateArtifactRequest,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -152,6 +155,7 @@ interface TurnRow {
 
 interface TriggerRow { id: string; revision: number; name: string; enabled: number; schedule_json: string; timezone: string; job_ref: string; input_json: string; creator_principal_id: string; creator_roles_json: string; authority_json: string; destination_json: string | null; misfire_policy: ScheduledTrigger["misfirePolicy"]; max_attempts: number; retry_backoff_ms: number; next_fire_at: string | null; created_at: string; updated_at: string }
 interface OccurrenceRow { id: string; trigger_id: string; scheduled_for: string; status: ScheduledOccurrence["status"]; attempts: number; run_id: string; next_retry_at: string | null; error: string | null; claimed_at: string; completed_at: string | null }
+interface ArtifactRow { id: string; owner_principal_id: string; visibility: Artifact["visibility"]; media_type: string; filename: string | null; size: number; sha256: string; location: string; parent_source_json: string | null; state: Artifact["state"]; created_at: string; updated_at: string }
 
 interface DelegationRow {
   id: string;
@@ -178,7 +182,25 @@ function expectOne(changes: number, message: string): void {
   if (changes !== 1) throw new ExecutionStoreConflictError(message);
 }
 
-export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, DelegationStore {
+function artifactFromRow(row: ArtifactRow): Artifact {
+  const artifact: Artifact = {
+    id: row.id,
+    ownerPrincipalId: row.owner_principal_id,
+    visibility: row.visibility,
+    mediaType: row.media_type,
+    ...(row.filename ? { filename: row.filename } : {}),
+    size: row.size,
+    sha256: row.sha256,
+    location: row.location,
+    state: row.state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+  if (row.parent_source_json) return { ...artifact, parentSource: parseJson<NonNullable<Artifact["parentSource"]>>(row.parent_source_json) };
+  return artifact;
+}
+
+export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, DelegationStore, ArtifactStore {
   private readonly database: Database.Database;
 
   constructor(filename: string) {
@@ -196,6 +218,43 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const row = this.database.prepare("SELECT transport, external_id, principal_id, display_name FROM transport_identities WHERE transport = ? AND external_id = ?")
       .get(transport, externalId) as { transport: string; external_id: string; principal_id: string; display_name: string | null } | undefined;
     return row ? { transport: row.transport, externalId: row.external_id, principalId: row.principal_id, ...(row.display_name ? { displayName: row.display_name } : {}) } : undefined;
+  }
+
+  async createArtifact(request: CreateArtifactRequest): Promise<void> {
+    const a = request.artifact;
+    if (a.size < 0 || !/^[a-f0-9]{64}$/i.test(a.sha256)) throw new TypeError("invalid artifact metadata");
+    this.database.prepare(`INSERT INTO artifacts(id, owner_principal_id, visibility, media_type, filename, size, sha256, location, parent_source_json, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(a.id, a.ownerPrincipalId, a.visibility, a.mediaType, a.filename ?? null, a.size, a.sha256, a.location, a.parentSource ? json(a.parentSource) : null, a.state, a.createdAt, a.updatedAt);
+  }
+
+  async getArtifact(id: string): Promise<Artifact | undefined> {
+    const row = this.database.prepare("SELECT * FROM artifacts WHERE id = ?").get(id) as ArtifactRow | undefined;
+    return row ? artifactFromRow(row) : undefined;
+  }
+
+  async listArtifacts(ownerPrincipalId?: string): Promise<readonly Artifact[]> {
+    const rows = (ownerPrincipalId
+      ? this.database.prepare("SELECT * FROM artifacts WHERE owner_principal_id = ? AND state <> 'deleted' ORDER BY created_at, id").all(ownerPrincipalId)
+      : this.database.prepare("SELECT * FROM artifacts WHERE state <> 'deleted' ORDER BY created_at, id").all()) as ArtifactRow[];
+    return rows.map(artifactFromRow);
+  }
+
+  async updateArtifactState(id: string, state: Artifact["state"], updatedAt: string): Promise<void> {
+    const result = this.database.prepare("UPDATE artifacts SET state = ?, updated_at = ? WHERE id = ? AND state <> 'deleted'").run(state, updatedAt, id);
+    expectOne(result.changes, `artifact ${id} not found or deleted`);
+  }
+
+  async deleteArtifact(id: string, deletedAt: string): Promise<void> {
+    const result = this.database.prepare("UPDATE artifacts SET state = 'deleted', updated_at = ? WHERE id = ? AND state <> 'deleted'").run(deletedAt, id);
+    expectOne(result.changes, `artifact ${id} not found or already deleted`);
+  }
+
+  canAccessArtifact(artifact: Artifact, principalId: string, visibility: Artifact["visibility"]): boolean {
+    if (artifact.state === "deleted") return false;
+    if (visibility === "public" || artifact.visibility === "public") return true;
+    if (visibility === "shared" && artifact.visibility !== "private") return true;
+    return artifact.ownerPrincipalId === principalId;
   }
 
   async findOrCreate(identity: PersistedTransportIdentity, createdAt: string): Promise<PersistedTransportIdentity> {

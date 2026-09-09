@@ -9,6 +9,7 @@ import { pluginStateDirectory } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, GeminiEmbedder, HybridConversationSearch } from "./embedding-worker.js";
 import { DurableScheduler } from "./durable-scheduler.js";
+import { ArtifactFileService } from "./artifact-files.js";
 
 const paths = umiroPaths();
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -25,6 +26,7 @@ const authority = { capabilities: granted, visibility: { kind: "all" as const },
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
 const store = new SQLiteExecutionStore(paths.sqlite);
+const artifacts = new ArtifactFileService(paths.artifacts, store);
 const googleApiKey = process.env.GOOGLE_API_KEY?.trim();
 const embedder = googleApiKey ? new GeminiEmbedder(process.env.UMIRO_EMBEDDING_MODEL?.trim() || "gemini-embedding-2", googleApiKey) : undefined;
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefined;
@@ -80,7 +82,13 @@ discord.onCommand(host.listCommands(), async (name: string, input: Record<string
   return host.executeCommand(name, input, commandContext);
 });
 discord.onMessage(async message => {
-  await ingress.handle({ event: toInputEvent(message), model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId } });
+  const artifactIds: string[] = [];
+  for (const attachment of message.attachments ?? []) {
+    const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
+    const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId);
+    artifactIds.push(artifact.id);
+  }
+  await ingress.handle({ event: toInputEvent(message, artifactIds), model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId } });
   await delivery.drain();
 });
 const token = process.env.DISCORD_TOKEN?.trim();

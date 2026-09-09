@@ -53,6 +53,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
       mentionedUserIds: [...message.mentions.users.keys()],
       ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}),
       ...(replyAuthorId ? { replyAuthorId } : {}),
+      attachments: [...message.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) })),
     });
   }
 

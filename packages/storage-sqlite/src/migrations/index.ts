@@ -9,8 +9,9 @@ import { CONVERSATION_SEARCH_SCHEMA } from "./007-conversation-search.js";
 import { TURN_IDENTITIES_SCHEMA } from "./008-turn-identities.js";
 import { CONVERSATION_EMBEDDINGS_SCHEMA } from "./009-conversation-embeddings.js";
 import { SCHEDULER_SCHEMA } from "./010-scheduler.js";
+import { ARTIFACTS_SCHEMA } from "./011-artifacts.js";
 
-const LATEST_VERSION = 10;
+const LATEST_VERSION = 11;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -88,6 +89,12 @@ export function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(SCHEDULER_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(10, new Date().toISOString());
+    })();
+  }
+  if (current.version < 11) {
+    database.transaction(() => {
+      database.exec(ARTIFACTS_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(11, new Date().toISOString());
     })();
   }
 }
