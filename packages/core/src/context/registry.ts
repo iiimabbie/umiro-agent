@@ -25,7 +25,7 @@ export class ContextProviderRegistry {
 
   list(): readonly ContextProvider[] {
     return [...this.providers.values()].sort(
-      (left, right) => left.priority - right.priority || left.id.localeCompare(right.id),
+      (left, right) => left.priority - right.priority || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
     );
   }
 }

@@ -15,3 +15,19 @@ test("context budget reserves essential blocks and fails if they cannot fit", as
   assert.deepEqual(assembly.omittedBlockIds, ["large"]);
   await assert.rejects(engine.assemble({ runId: "r", execution, prompt: "", maxCharacters: 3 }), /essential context block exceeds budget/);
 });
+
+test("normal context providers receive a fair first-pass budget before unused space is reclaimed", async () => {
+  const registry = new ContextProviderRegistry();
+  registry.register({ id: "early", role: "memory", priority: 1, async load() { return [block("early", "12345678")]; } });
+  registry.register({ id: "later", role: "people", priority: 2, async load() { return [block("later", "abcd")]; } });
+  const assembly = await new ContextEngine(registry).assemble({ runId: "r", execution, prompt: "", maxCharacters: 8 });
+  assert.deepEqual(assembly.blocks.map(item => item.id), ["later"]);
+  assert.deepEqual(assembly.omittedBlockIds, ["early"]);
+});
+
+test("context provider tie ordering is locale-independent code-unit order", () => {
+  const registry = new ContextProviderRegistry();
+  registry.register({ id: "zeta", role: "test", priority: 1, async load() { return []; } });
+  registry.register({ id: "alpha", role: "test", priority: 1, async load() { return []; } });
+  assert.deepEqual(registry.list().map(provider => provider.id), ["alpha", "zeta"]);
+});

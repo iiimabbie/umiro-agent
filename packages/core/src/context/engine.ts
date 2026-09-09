@@ -50,19 +50,38 @@ export class ContextEngine {
     }
 
     const included: ContextBlock[] = [];
-    const omittedBlockIds: string[] = [];
     let characterCount = 0;
-    const ordered = [...visible.filter(block => block.retention === "essential"), ...visible.filter(block => block.retention !== "essential")];
-    for (const block of ordered) {
+    const essential = visible.filter(block => block.retention === "essential");
+    for (const block of essential) {
       if (characterCount + block.content.length > request.maxCharacters) {
-        if (block.retention === "essential") throw new Error(`essential context block exceeds budget: ${block.id}`);
-        omittedBlockIds.push(block.id);
-        continue;
+        throw new Error(`essential context block exceeds budget: ${block.id}`);
       }
       included.push(block);
       characterCount += block.content.length;
     }
+
+    const normal = visible.filter(block => block.retention !== "essential");
+    const providerIds = [...new Set(normal.map(block => block.providerId))];
+    const fairShare = providerIds.length ? Math.floor((request.maxCharacters - characterCount) / providerIds.length) : 0;
+    const deferred: ContextBlock[] = [];
+    for (const providerId of providerIds) {
+      let providerCharacters = 0;
+      for (const block of normal.filter(candidate => candidate.providerId === providerId)) {
+        if (providerCharacters + block.content.length <= fairShare) {
+          included.push(block);
+          providerCharacters += block.content.length;
+          characterCount += block.content.length;
+        } else deferred.push(block);
+      }
+    }
+    for (const block of deferred) {
+      if (characterCount + block.content.length > request.maxCharacters) continue;
+      included.push(block);
+      characterCount += block.content.length;
+    }
     included.sort((left, right) => visible.indexOf(left) - visible.indexOf(right));
+    const includedIds = new Set(included.map(block => block.id));
+    const omittedBlockIds = visible.filter(block => !includedIds.has(block.id)).map(block => block.id);
     return { blocks: included, omittedBlockIds, characterCount };
   }
 }
