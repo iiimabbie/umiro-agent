@@ -8,6 +8,7 @@ import { loadPluginModule } from "./plugin-loader.js";
 import { pluginStateDirectory } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { PluginJobScheduler } from "./plugin-jobs.js";
+import { EmbeddingWorker, GeminiEmbedder, HybridConversationSearch } from "./embedding-worker.js";
 
 const paths = umiroPaths();
 const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
@@ -22,12 +23,17 @@ const granted = capabilities(...modules.flatMap(module => module.manifest.permis
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
-const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)));
+const store = new SQLiteExecutionStore(paths.sqlite);
+const googleApiKey = process.env.GOOGLE_API_KEY?.trim();
+const embedder = googleApiKey ? new GeminiEmbedder(process.env.UMIRO_EMBEDDING_MODEL?.trim() || "gemini-embedding-2", googleApiKey) : undefined;
+const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefined;
+const search = new HybridConversationSearch(store, embedder);
+const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 const pluginJobs = new PluginJobScheduler(host);
 pluginJobs.start();
+embeddingWorker?.start();
 
-const store = new SQLiteExecutionStore(paths.sqlite);
 const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
 const apiKey = process.env.LLM_API_KEY?.trim();
@@ -53,6 +59,6 @@ const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await discord.start(token);
 await delivery.drain();
-const shutdown = async () => { pluginJobs.stop(); await discord.stop(); store.close(); process.exit(0); };
+const shutdown = async () => { pluginJobs.stop(); embeddingWorker?.stop(); await discord.stop(); store.close(); process.exit(0); };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

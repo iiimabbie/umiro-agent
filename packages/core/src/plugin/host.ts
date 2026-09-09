@@ -3,7 +3,7 @@ import { Ajv } from "ajv";
 import { ContextProviderRegistry } from "../context/registry.js";
 import type { ContextProvider } from "../context/contract.js";
 import { ToolRegistry } from "../tool/registry.js";
-import type { LoadedPlugin, PluginEnableOptions, PluginInstance, PluginManifestV0, PluginModule } from "./contract.js";
+import type { LoadedPlugin, PluginEnableOptions, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule } from "./contract.js";
 import { validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
@@ -54,6 +54,7 @@ export class PluginHost {
     private readonly hooks = new PluginHookRegistry(),
     private readonly jobs = new PluginJobRegistry(),
     private readonly commands = new PluginCommandRegistry(),
+    private readonly services: PluginHostServices = {},
   ) {}
 
   async enable(module: PluginModule, options: PluginEnableOptions = {}): Promise<void> {
@@ -82,6 +83,7 @@ export class PluginHost {
         permissionCeiling: manifest.permissions,
         config,
         ...(this.stateForNamespace ? { state: this.stateForNamespace(manifest.namespace) } : {}),
+        services: this.services,
         getSecret: name => allowedSecrets.has(name) ? options.secrets?.[name] : undefined,
       }),
       state: "starting",

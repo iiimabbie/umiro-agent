@@ -4,8 +4,12 @@
     { "path": "./packages/core" },
     { "path": "./packages/model-openai" },
     { "path": "./packages/storage-sqlite" },
+    { "path": "./packages/adapter-discord" },
+    { "path": "./apps/cli" },
     { "path": "./apps/gateway" },
     { "path": "./plugins/context-files" },
+    { "path": "./plugins/people" },
+    { "path": "./plugins/memory" },
     { "path": "./plugins/soul-guardian" },
     { "path": "./apps/dev-driver" }
   ]

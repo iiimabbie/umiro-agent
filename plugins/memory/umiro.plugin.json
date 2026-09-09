@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 0,
+  "id": "memory",
+  "version": "0.0.0",
+  "coreApi": "0",
+  "entry": "./dist/src/index.js",
+  "permissions": { "capabilities": ["memory.search", "memory.write", "memory.remove"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
+  "namespace": "memory",
+  "configSchema": { "type": "object", "additionalProperties": false, "required": ["workspacePath"], "properties": { "workspacePath": { "type": "string", "minLength": 1 }, "characterLimit": { "type": "integer", "minimum": 1000 } } },
+  "contributes": { "tools": ["memory_search", "memory_add", "memory_replace", "memory_remove"] }
+}

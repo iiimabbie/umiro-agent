@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import {
@@ -38,6 +39,8 @@ import {
   type IngestInputEventResult,
   type PersistedTransportIdentity,
   type SearchHit,
+  type VisibilityScope,
+  type EmbeddingJob,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -180,6 +183,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (filename !== ":memory:") this.database.pragma("journal_mode = WAL");
     this.database.pragma("synchronous = FULL");
     migrate(this.database);
+    this.seedEmbeddingJobs();
   }
 
   async find(transport: string, externalId: string): Promise<PersistedTransportIdentity | undefined> {
@@ -372,18 +376,103 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const text = turn.content.filter(block => block.type === "text").map(block => block.text).join("\n");
     if (text.trim()) this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)")
       .run(turn.id, turn.conversationId, turn.actorPrincipalId, text);
+    if (text.trim()) this.enqueueEmbedding(turn.id, text);
   }
 
-  async search(query: string, limit: number): Promise<readonly SearchHit[]> {
+  private contentHash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
+
+  private enqueueEmbedding(turnId: string, text: string): void {
+    const hash = this.contentHash(text);
+    const existing = this.database.prepare("SELECT content_hash FROM conversation_embeddings WHERE turn_id = ?").get(turnId) as { content_hash: string } | undefined;
+    if (existing?.content_hash === hash) return;
+    this.database.prepare(`INSERT INTO conversation_embedding_jobs(turn_id, content_hash, status, attempts, next_retry_at, last_error, updated_at)
+      VALUES (?, ?, 'pending', 0, NULL, NULL, ?)
+      ON CONFLICT(turn_id) DO UPDATE SET content_hash=excluded.content_hash, status='pending', attempts=0, next_retry_at=NULL, last_error=NULL, updated_at=excluded.updated_at`)
+      .run(turnId, hash, new Date().toISOString());
+  }
+
+  private seedEmbeddingJobs(): void {
+    const rows = this.database.prepare(`SELECT t.id, t.content_json FROM turns t LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string }>;
+    for (const row of rows) {
+      const content = parseJson<Turn["content"]>(row.content_json);
+      const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+      if (text.trim()) this.enqueueEmbedding(row.id, text);
+    }
+  }
+
+  async claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("embedding claim limit must be between 1 and 100");
+    return this.database.transaction(() => {
+      const rows = this.database.prepare(`SELECT j.turn_id, j.content_hash, j.attempts, t.content_json
+        FROM conversation_embedding_jobs j JOIN turns t ON t.id=j.turn_id
+        WHERE (j.status='pending' OR (j.status='failed' AND (j.next_retry_at IS NULL OR j.next_retry_at <= ?)) OR (j.status='processing' AND j.updated_at < ?))
+        ORDER BY j.updated_at, j.turn_id LIMIT ?`).all(now, staleBefore, limit) as Array<{ turn_id: string; content_hash: string; attempts: number; content_json: string }>;
+      const update = this.database.prepare("UPDATE conversation_embedding_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE turn_id=? AND content_hash=?");
+      return rows.flatMap(row => {
+        if (update.run(now, row.turn_id, row.content_hash).changes !== 1) return [];
+        const content = parseJson<Turn["content"]>(row.content_json); const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        return [{ turnId: row.turn_id, text, contentHash: row.content_hash, attempts: row.attempts + 1 }];
+      });
+    })();
+  }
+
+  async completeEmbeddingJob(turnId: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void> {
+    if (!vector.length || vector.some(value => !Number.isFinite(value))) throw new TypeError("embedding vector must contain finite values");
+    this.database.transaction(() => {
+      const job = this.database.prepare("SELECT content_hash FROM conversation_embedding_jobs WHERE turn_id=? AND status='processing'").get(turnId) as { content_hash: string } | undefined;
+      if (job?.content_hash !== contentHash) throw new ExecutionStoreConflictError(`embedding job changed: ${turnId}`);
+      this.database.prepare(`INSERT INTO conversation_embeddings(turn_id, content_hash, model, dimensions, vector_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(turn_id) DO UPDATE SET content_hash=excluded.content_hash, model=excluded.model, dimensions=excluded.dimensions, vector_json=excluded.vector_json, updated_at=excluded.updated_at`)
+        .run(turnId, contentHash, model, vector.length, json([...vector]), now);
+      this.database.prepare("DELETE FROM conversation_embedding_jobs WHERE turn_id=? AND content_hash=?").run(turnId, contentHash);
+    })();
+  }
+
+  async failEmbeddingJob(turnId: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void> {
+    const update = this.database.prepare(`UPDATE conversation_embedding_jobs SET status='failed', last_error=?, next_retry_at=?, updated_at=? WHERE turn_id=? AND content_hash=? AND status='processing'`)
+      .run(error.slice(0, 2000), nextRetryAt, now, turnId, contentHash);
+    expectOne(update.changes, `embedding job changed: ${turnId}`);
+  }
+
+  async semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope): Promise<readonly SearchHit[]> {
+    if (!vector.length || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid semantic search input");
+    const rows = this.database.prepare(`SELECT e.turn_id, e.vector_json, e.dimensions, f.conversation_id, f.actor_principal_id, f.text
+      FROM conversation_embeddings e JOIN conversation_fts f ON f.turn_id=e.turn_id WHERE e.model=? AND e.dimensions=?`).all(model, vector.length) as Array<{ turn_id: string; vector_json: string; dimensions: number; conversation_id: string; actor_principal_id: string; text: string }>;
+    const visible = rows.filter(row => visibility.kind === "all" || visibility.principalIds.includes(row.actor_principal_id) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === row.conversation_id));
+    const norm = (values: readonly number[]) => Math.sqrt(values.reduce((sum, value) => sum + value * value, 0)); const queryNorm = norm(vector);
+    if (!queryNorm) return [];
+    return visible.map(row => {
+      const candidate = parseJson<number[]>(row.vector_json); const denominator = queryNorm * norm(candidate); const similarity = denominator ? candidate.reduce((sum, value, index) => sum + value * (vector[index] ?? 0), 0) / denominator : -1;
+      return { turnId: row.turn_id, conversationId: row.conversation_id, actorPrincipalId: row.actor_principal_id, text: row.text, rank: 1 - similarity };
+    }).sort((left, right) => left.rank - right.rank).slice(0, limit);
+  }
+
+  async rebuildEmbeddingProjection(): Promise<void> {
+    this.database.transaction(() => { this.database.prepare("DELETE FROM conversation_embeddings").run(); this.database.prepare("DELETE FROM conversation_embedding_jobs").run(); this.seedEmbeddingJobs(); })();
+  }
+
+  async search(query: string, limit: number, visibility: VisibilityScope): Promise<readonly SearchHit[]> {
     const normalized = query.trim();
     if (!normalized) return [];
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("search limit must be between 1 and 100");
+    const allowed = visibility.kind === "all" ? undefined : {
+      principals: [...new Set(visibility.principalIds)],
+      conversations: [...new Set(visibility.resources.filter(resource => resource.kind === "conversation").map(resource => resource.id))],
+    };
+    if (allowed && allowed.principals.length === 0 && allowed.conversations.length === 0) return [];
+    const filters: string[] = []; const filterValues: string[] = [];
+    if (allowed) {
+      if (allowed.principals.length) { filters.push(`actor_principal_id IN (${allowed.principals.map(() => "?").join(",")})`); filterValues.push(...allowed.principals); }
+      if (allowed.conversations.length) { filters.push(`conversation_id IN (${allowed.conversations.map(() => "?").join(",")})`); filterValues.push(...allowed.conversations); }
+    }
+    const visibleSql = filters.length ? ` AND (${filters.join(" OR ")})` : "";
     if ([...normalized].length < 3) {
       return this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, 0 AS rank
-        FROM conversation_fts WHERE text LIKE ? LIMIT ?`).all(`%${normalized.replace(/[\\%_]/g, "\\$&")}%`, limit) as SearchHit[];
+        FROM conversation_fts WHERE text LIKE ? ESCAPE '\\'${visibleSql} LIMIT ?`).all(`%${normalized.replace(/[\\%_]/g, "\\$&")}%`, ...filterValues, limit) as SearchHit[];
     }
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`;
     const rows = this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, bm25(conversation_fts) AS rank
-      FROM conversation_fts WHERE conversation_fts MATCH ? ORDER BY rank LIMIT ?`).all(query, limit) as SearchHit[];
+      FROM conversation_fts WHERE conversation_fts MATCH ?${visibleSql} ORDER BY rank LIMIT ?`).all(ftsQuery, ...filterValues, limit) as SearchHit[];
     return rows;
   }
 

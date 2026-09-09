@@ -191,6 +191,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
 
+  plugins/memory:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
   plugins/people:
     dependencies:
       '@umiro/core':
