@@ -21,6 +21,7 @@ import { DiscordStreamingDelivery } from "./discord-streaming.js";
 import { ControlPanelServer } from "./control-panel.js";
 
 const paths = umiroPaths();
+const processStart = new Date().toISOString();
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -90,7 +91,14 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     const result = await exec(`${paths.root}/bin/umiro`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
     return { ok: true, output: result.stdout.trim(), restartRequired: true };
   },
-} });
+}, approvals: {
+  list: async () => Promise.all((await store.listPendingApprovals(100)).map(async approval => { const operation = await store.getOperation(approval.operationId); return { id: approval.id, operation: operation?.kind ?? "unknown", details: operation ? approvalDetails(operation) : "Operation missing", expiresAt: approval.expiresAt }; })),
+  resolve: async (id, action) => {
+    const outcome = await approvalRuns.resolveAndResume(id, action, { actor: { id: "owner", kind: "human", roles: ["owner"] }, authority, origin: { kind: "interactive", transport: "web-ui", conversationId: "control-panel" } });
+    if (outcome.status === "resumed") { await delivery.drain(); return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.result.status }; }
+    return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.runState };
+  },
+}, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }) });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
   const approval = await store.getApproval(result.approvalId);

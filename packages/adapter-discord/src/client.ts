@@ -39,6 +39,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   }
 
   async stop(): Promise<void> { this.client.destroy(); }
+  identity(): { readonly id: string; readonly tag: string } | undefined { return this.client.user ? { id: this.client.user.id, tag: this.client.user.tag } : undefined; }
 
   private enqueueMessage(message: Message): void {
     const previous = this.channelQueues.get(message.channelId) ?? Promise.resolve();
