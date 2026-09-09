@@ -5,6 +5,7 @@ import { openSync } from "node:fs";
 import { promisify } from "node:util";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { managedPluginPath } from "./plugin-path.js";
 
 const exec = promisify(execFile);
 const home = resolve(process.env.UMIRO_HOME?.trim() || join(homedir(), ".umiro-v2"));
@@ -146,7 +147,7 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
   let path = resolve(source); const installing = action === "install" || action === "update";
   if (/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
-    const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, ""); path = join(app, "plugins", workspaceName ? `${repo}-${workspaceName}` : repo);
+    const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, ""); path = managedPluginPath(join(app, "plugins"), repo, workspaceName);
     if (installing) {
       const checkout = `${path}.checkout`; await mkdir(join(app, "plugins"), { recursive: true, mode: 0o700 }); await rm(path, { recursive: true, force: true }); await rm(checkout, { recursive: true, force: true }); await exec("git", ["clone", "--depth", "1", source, checkout]);
       if (workspaceName) { const direct = join(checkout, workspaceName); const nested = join(checkout, "packages", workspaceName); const selected = await exists(join(direct, "package.json")) ? direct : nested; await access(join(selected, "package.json")); await cp(selected, path, { recursive: true }); await rm(checkout, { recursive: true, force: true }); } else await rename(checkout, path);

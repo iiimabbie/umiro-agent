@@ -5,5 +5,5 @@
   "type": "module",
   "bin": { "umiro": "dist/src/main.js" },
   "dependencies": {},
-  "scripts": { "build": "tsc -b", "typecheck": "tsc -b --pretty false", "test": "pnpm build", "start": "node dist/src/main.js" }
+  "scripts": { "build": "tsc -b", "typecheck": "tsc -b --pretty false", "test": "pnpm build && node --test dist/test/*.test.js", "start": "node dist/src/main.js" }
 }
