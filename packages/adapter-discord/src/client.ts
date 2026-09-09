@@ -153,6 +153,14 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     return { threadId: thread.id };
   }
 
+  async createForumPost(input: { readonly channelId: string; readonly title: string; readonly content: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel || !channel.isThreadOnly() || !("threads" in channel)) throw new Error(`Discord channel is not a forum: ${input.channelId}`);
+    const thread = await channel.threads.create({ name: input.title.slice(0, 100), message: { content: input.content.slice(0, 2_000) } });
+    return { threadId: thread.id };
+  }
+
   async archiveThread(input: { readonly channelId: string; readonly threadId: string; readonly signal?: AbortSignal }): Promise<void> {
     if (input.signal?.aborted) throw input.signal.reason;
     const channel = await this.client.channels.fetch(input.threadId);
