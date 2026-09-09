@@ -1,0 +1,8 @@
+{
+  "name": "@umiro/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {},
+  "scripts": { "build": "tsc -b", "typecheck": "tsc -b --pretty false", "start": "node dist/src/main.js" }
+}

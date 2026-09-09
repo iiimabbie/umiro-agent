@@ -121,12 +121,21 @@ importers:
       '@umiro/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@umiro/gateway':
+        specifier: workspace:*
+        version: link:../gateway
       '@umiro/model-openai':
         specifier: workspace:*
         version: link:../../packages/model-openai
       '@umiro/storage-sqlite':
         specifier: workspace:*
         version: link:../../packages/storage-sqlite
+
+  apps/gateway:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   packages/core:
     dependencies:
@@ -152,6 +161,18 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+
+  plugins/context-files:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
+  plugins/soul-guardian:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
 packages:
 
