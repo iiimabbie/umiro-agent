@@ -206,6 +206,31 @@ test("passes and persists the idempotency key for a mutating tool", async () => 
   }
 });
 
+test("bounded retry reuses the same operation and idempotency key for retryable idempotent failures", async () => {
+  let calls = 0;
+  let keys: string[] = [];
+  const mutation: ToolDefinition = {
+    ...echoTool(async (_input, execution) => {
+      calls += 1;
+      keys.push(execution.idempotencyKey ?? "");
+      if (calls < 3) return { ok: false, effectStatus: "not_applicable", error: { code: "busy", message: "try again", retryable: true } };
+      return { ok: true, output: { done: true }, effectStatus: "confirmed" };
+    }),
+    policy: { capability: "test.echo", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" },
+  };
+  const database = fixture(undefined, mutation);
+  try {
+    await database.initialize();
+    const result = await database.runtime.execute({ toolName: "test.echo", input: { text: "retry" }, stepId: step.id, context: database.execution, idempotencyKey: "retry-key" });
+    assert.equal(result.status, "succeeded");
+    assert.equal(calls, 3);
+    assert.deepEqual(keys, ["retry-key", "retry-key", "retry-key"]);
+    assert.equal((await database.store.getOperationResult("operation-1"))?.outcome, "succeeded");
+  } finally {
+    database.cleanup();
+  }
+});
+
 test("projects a completed operation when an idempotency key is repeated", async () => {
   let calls = 0;
   const mutation: ToolDefinition = {

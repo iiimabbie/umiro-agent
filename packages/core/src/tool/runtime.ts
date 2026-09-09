@@ -20,6 +20,10 @@ export interface ToolRuntimeOptions {
   readonly createId?: (kind: "operation" | "authorization" | "approval") => string;
   readonly defaultTimeoutMs?: number;
   readonly approvalTtlMs?: number;
+  /** Maximum automatic re-attempts for explicitly retryable idempotent results. */
+  readonly maxAutomaticRetries?: number;
+  /** Delay between automatic re-attempts. Kept bounded and deterministic. */
+  readonly retryBackoffMs?: number;
 }
 
 class ToolTimeoutError extends Error {
@@ -110,11 +114,23 @@ async function executeWithSignal(
   }
 }
 
+async function waitForRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, delayMs);
+    const abort = () => { clearTimeout(timer); reject(signal?.reason); };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export class ToolRuntime {
   private readonly now: () => string;
   private readonly createId: NonNullable<ToolRuntimeOptions["createId"]>;
   private readonly defaultTimeoutMs: number;
   private readonly approvalTtlMs: number;
+  private readonly maxAutomaticRetries: number;
+  private readonly retryBackoffMs: number;
 
   constructor(
     private readonly registry: ToolRegistry,
@@ -125,10 +141,14 @@ export class ToolRuntime {
     this.createId = options.createId ?? (() => randomUUID());
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000;
     this.approvalTtlMs = options.approvalTtlMs ?? 5 * 60_000;
+    this.maxAutomaticRetries = options.maxAutomaticRetries ?? 2;
+    this.retryBackoffMs = options.retryBackoffMs ?? 100;
     if (!Number.isSafeInteger(this.defaultTimeoutMs) || this.defaultTimeoutMs <= 0) {
       throw new TypeError("default tool timeout must be a positive integer");
     }
     if (!Number.isSafeInteger(this.approvalTtlMs) || this.approvalTtlMs <= 0) throw new TypeError("approval TTL must be a positive integer");
+    if (!Number.isSafeInteger(this.maxAutomaticRetries) || this.maxAutomaticRetries < 0) throw new TypeError("automatic retry limit must be a non-negative integer");
+    if (!Number.isSafeInteger(this.retryBackoffMs) || this.retryBackoffMs < 0) throw new TypeError("retry backoff must be a non-negative integer");
   }
 
   async execute(invocation: ToolInvocation): Promise<ToolInvocationResult> {
@@ -328,19 +348,25 @@ export class ToolRuntime {
     const timeoutMs = tool.policy.timeoutMs ?? this.defaultTimeoutMs;
     let executionResult: ToolExecutionResult;
     try {
-      executionResult = await executeWithSignal(
-        tool,
-        input,
-        {
-          execution: invocation.context,
-          ...(invocation.runId ? { runId: invocation.runId } : {}),
-          operationId,
-          ...(idempotencyKey ? { idempotencyKey } : {}),
-        },
-        timeoutMs,
-        invocation.signal,
-      );
-      validateReturnedResult(tool, executionResult);
+      const executionContext = {
+        execution: invocation.context,
+        ...(invocation.runId ? { runId: invocation.runId } : {}),
+        operationId,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      };
+      let retry = 0;
+      while (true) {
+        executionResult = await executeWithSignal(tool, input, executionContext, timeoutMs, invocation.signal);
+        validateReturnedResult(tool, executionResult);
+        const canRetry = tool.policy.sideEffect === "idempotent"
+          && !executionResult.ok
+          && executionResult.effectStatus !== "unknown"
+          && executionResult.error.retryable
+          && retry < this.maxAutomaticRetries;
+        if (!canRetry) break;
+        retry += 1;
+        await waitForRetry(this.retryBackoffMs * retry, invocation.signal);
+      }
     } catch (caught) {
       return this.persistExecutionFailure(operation, invocation, caught);
     }
