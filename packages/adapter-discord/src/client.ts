@@ -22,13 +22,14 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
   private readonly messageTimes = new Map<string, number[]>();
+  private readonly channelQueues = new Map<string, Promise<void>>();
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
   onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
 
   async start(token: string): Promise<void> {
-    this.client.on("messageCreate", message => void this.handle(message));
+    this.client.on("messageCreate", message => this.enqueueMessage(message));
     this.client.on("interactionCreate", interaction => { if (interaction.isChatInputCommand()) void this.handleCommand(interaction); else if (interaction.isButton()) void this.handleApproval(interaction); });
     await this.client.login(token);
     if (!this.client.user) throw new Error("Discord login returned without a bot user");
@@ -38,6 +39,13 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   }
 
   async stop(): Promise<void> { this.client.destroy(); }
+
+  private enqueueMessage(message: Message): void {
+    const previous = this.channelQueues.get(message.channelId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(() => this.handle(message));
+    this.channelQueues.set(message.channelId, current);
+    void current.finally(() => { if (this.channelQueues.get(message.channelId) === current) this.channelQueues.delete(message.channelId); }).catch(() => undefined);
+  }
 
   async sendText(channelId: string, text: string): Promise<{ messageId: string }> {
     const channel = await this.client.channels.fetch(channelId);
@@ -80,7 +88,8 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   }
 
   private async handle(message: Message): Promise<void> {
-    if (message.author.bot || !this.listener) return;
+    if (!this.listener) return;
+    if (message.author.id === this.client.user?.id) return;
     const now = Date.now();
     const recent = (this.messageTimes.get(message.author.id) ?? []).filter(timestamp => now - timestamp < 60_000);
     if (recent.length >= 30) return;
@@ -96,6 +105,9 @@ export class DiscordJsAdapter implements DiscordTextTransport {
       ...(message.guildId ? { guildId: message.guildId } : {}),
       ...(message.channel.isThread() ? { threadId: message.channel.id } : {}),
       authorId: message.author.id,
+      authorBot: message.author.bot,
+      botMentioned: this.client.user ? message.mentions.users.has(this.client.user.id) : false,
+      replyToBot: this.client.user ? replyAuthorId === this.client.user.id : false,
       authorName: message.author.globalName ?? message.author.username,
       content: message.content,
       createdAt: message.createdAt.toISOString(),

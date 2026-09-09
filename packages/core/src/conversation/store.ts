@@ -33,8 +33,8 @@ export interface IngestInputEventRequest {
   readonly actorPrincipalId: PrincipalId;
   readonly newConversationId: string;
   readonly newTurnId: string;
-  /** Required while ingress supports trigger only; becomes optional for future observe-only Turns. */
-  readonly newRunId: string;
+  /** Omitted for an observed Turn that intentionally has no Run. */
+  readonly newRunId?: string;
   readonly createdAt: string;
 }
 
@@ -47,4 +47,6 @@ export interface IngestInputEventResult {
 
 export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns" | "listRecentHistory"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
+  /** Records only when an active binding already exists; never creates a Conversation or Run. */
+  observeInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult | undefined>;
 }

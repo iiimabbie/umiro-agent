@@ -1,6 +1,6 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type HeadlessRunResult, type JsonObject } from "@umiro/core";
-import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent, type DiscordApprovalAction, type DiscordInteractionContext } from "@umiro/adapter-discord";
+import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordApprovalAction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
@@ -19,7 +19,8 @@ import { approvalDetails } from "./approval-presentation.js";
 const paths = umiroPaths();
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; embedding?: EmbeddingConfig; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; plugins?: Array<{ path: string; config?: JsonObject }> };
+const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
 const byPath = new Map<string, { path: string; config?: JsonObject }>();
@@ -145,6 +146,23 @@ discord.onApproval(async (approvalId: string, action: DiscordApprovalAction, int
   return { content: `Approval ${outcome.approval.state}; Run is already ${outcome.runState}.` };
 });
 discord.onMessage(async message => {
+  const decision = decideDiscordIngress({
+    channelId: message.channelId,
+    ...(message.guildId ? { guildId: message.guildId } : {}),
+    authorId: message.authorId,
+    authorBot: message.authorBot === true,
+    botMentioned: message.botMentioned === true,
+    replyToBot: message.replyToBot === true,
+  }, discordPolicy, ownerDiscordId);
+  if (decision.disposition === "ignore") {
+    logger.write({ level: "debug", event: "discord.ingress.ignored", message: "Discord event ignored by trigger policy", occurredAt: new Date().toISOString(), data: { reason: decision.reason, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
+    return;
+  }
+  if (decision.disposition === "observe") {
+    const observed = await ingress.observe(toInputEvent(message));
+    logger.write({ level: "debug", event: "discord.ingress.observed", message: "Discord event evaluated without a Run", occurredAt: new Date().toISOString(), data: { reason: decision.reason, recorded: observed !== undefined, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
+    return;
+  }
   await discord.sendTyping(message.channelId);
   const artifactIds: string[] = [];
   for (const attachment of message.attachments ?? []) {

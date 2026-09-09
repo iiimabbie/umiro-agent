@@ -313,6 +313,8 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   }
 
   async ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult> {
+    if (!request.newRunId) throw new TypeError("triggered Turns require a Run ID");
+    const newRunId = request.newRunId;
     return this.database.transaction(() => {
       const duplicate = this.database.prepare("SELECT * FROM turns WHERE input_event_id = ?")
         .get(request.event.id) as TurnRow | undefined;
@@ -347,7 +349,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           actorPrincipalId: request.actorPrincipalId,
           actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
           inputEventId: request.event.id,
-          primaryRunId: request.newRunId,
+          primaryRunId: newRunId,
           content: structuredClone(request.event.content),
           createdAt: request.createdAt,
         };
@@ -380,7 +382,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         actorPrincipalId: request.actorPrincipalId,
         actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
         inputEventId: request.event.id,
-        primaryRunId: request.newRunId,
+        primaryRunId: newRunId,
         content: structuredClone(request.event.content),
         createdAt: request.createdAt,
       };
@@ -396,6 +398,43 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         duplicate: false,
         conversationCreated: false,
       };
+    })();
+  }
+
+  async observeInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult | undefined> {
+    if (request.newRunId !== undefined) throw new TypeError("observed Turns cannot have a Run");
+    return this.database.transaction(() => {
+      const duplicate = this.database.prepare("SELECT * FROM turns WHERE input_event_id = ?")
+        .get(request.event.id) as TurnRow | undefined;
+      if (duplicate) {
+        const conversation = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
+          .get(duplicate.conversation_id) as ConversationRow | undefined;
+        if (!conversation) throw new Error(`Turn ${duplicate.id} references a missing Conversation`);
+        return { conversation: this.conversationFromRow(conversation), turn: this.turnFromRow(duplicate), duplicate: true, conversationCreated: false };
+      }
+      const binding = this.database.prepare("SELECT conversation_id FROM conversation_bindings WHERE transport = ? AND external_id = ?")
+        .get(request.event.conversation.transport, request.event.conversation.externalId) as { conversation_id: string } | undefined;
+      if (!binding) return undefined;
+      const row = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
+        .get(binding.conversation_id) as ConversationRow | undefined;
+      if (!row || row.state !== "active") return undefined;
+      const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
+        .get(row.id) as { sequence: number };
+      const turn: Turn = {
+        id: request.newTurnId,
+        conversationId: row.id,
+        sequence: next.sequence,
+        actorPrincipalId: request.actorPrincipalId,
+        actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
+        inputEventId: request.event.id,
+        content: structuredClone(request.event.content),
+        createdAt: request.createdAt,
+      };
+      this.insertTurn(turn);
+      const update = this.database.prepare("UPDATE conversations SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'")
+        .run(request.createdAt, row.id, row.revision);
+      expectOne(update.changes, `conversation ${row.id} changed concurrently`);
+      return { conversation: { ...this.conversationFromRow(row), revision: row.revision + 1, updatedAt: request.createdAt }, turn, duplicate: false, conversationCreated: false };
     })();
   }
 

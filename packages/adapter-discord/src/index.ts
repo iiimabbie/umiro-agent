@@ -4,6 +4,7 @@ import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, Transpor
 import type { ExecutionStore } from "@umiro/core/ports";
 import type { ArtifactStore } from "@umiro/core";
 export * from "./client.js";
+export * from "./trigger-policy.js";
 
 export interface DiscordMessageEnvelope {
   readonly messageId: string;
@@ -11,6 +12,9 @@ export interface DiscordMessageEnvelope {
   readonly guildId?: string;
   readonly threadId?: string;
   readonly authorId: string;
+  readonly authorBot?: boolean;
+  readonly botMentioned?: boolean;
+  readonly replyToBot?: boolean;
   readonly authorName?: string;
   readonly content: string;
   readonly createdAt: string;

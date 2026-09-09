@@ -1,6 +1,6 @@
 import type { Authority } from "../authorization/authority.js";
 import type { ContextEngine } from "../context/engine.js";
-import type { ConversationIngressStore } from "../conversation/store.js";
+import type { ConversationIngressStore, IngestInputEventResult } from "../conversation/store.js";
 import type { IdentityResolver } from "../identity/principal.js";
 import type { JsonObject } from "../ports/json.js";
 import { HeadlessRunEngine, type HeadlessRunResult } from "../run/engine.js";
@@ -117,5 +117,18 @@ export class InteractiveIngress {
       turnId: ingested.turn.id,
       result,
     };
+  }
+
+  async observe(event: InputEvent): Promise<IngestInputEventResult | undefined> {
+    const prompt = inputText(event).trim();
+    if (!prompt) return undefined;
+    const resolved = await this.identities.resolve(event.identity);
+    return this.conversations.observeInputEvent({
+      event,
+      actorPrincipalId: resolved.principal.id,
+      newConversationId: this.createId("conversation"),
+      newTurnId: this.createId("turn"),
+      createdAt: this.now(),
+    });
   }
 }
