@@ -15,7 +15,7 @@ import { parseToolCall } from "./tool-calls.js";
 
 interface Annotation { type?: string; url?: string; title?: string }
 interface ContentItem { type?: string; text?: string; annotations?: Annotation[] }
-interface OutputItem { type?: string; call_id?: unknown; name?: unknown; arguments?: unknown; content?: ContentItem[] }
+interface OutputItem { type?: string; call_id?: unknown; name?: unknown; arguments?: unknown; content?: ContentItem[]; result?: unknown }
 interface ResponsesPayload {
   id?: string;
   error?: unknown;
@@ -31,6 +31,7 @@ export interface ResponsesWebSearchResult {
   readonly sources: readonly { readonly title?: string; readonly url: string }[];
   readonly responseId?: string;
 }
+export interface ResponsesImageGenerationResult { readonly bytes: Uint8Array; readonly responseId?: string }
 
 function inputContent(content: ModelContent): Array<Record<string, unknown>> {
   if (typeof content === "string") return [{ type: "input_text", text: content }];
@@ -201,4 +202,17 @@ export async function callResponsesWebSearch(input: {
   const text = responsesOutputText(raw);
   if (!text) throw new OpenAIRequestError("OpenAI Responses web search returned no output text", "invalid_response", false);
   return { text, sources: responseSources(raw), ...(raw.id ? { responseId: raw.id } : {}) };
+}
+
+export async function callResponsesImageGeneration(input: {
+  readonly config: OpenAIConnectionConfig;
+  readonly model: string;
+  readonly prompt: string;
+  readonly signal?: AbortSignal;
+}): Promise<ResponsesImageGenerationResult> {
+  const raw = await postOpenAIJson<ResponsesPayload>({ config: input.config, path: "responses", label: "OpenAI Responses image generation", body: { model: input.model, input: input.prompt, tools: [{ type: "image_generation" }] }, ...(input.signal ? { signal: input.signal } : {}) });
+  assertResponsesPayload(raw, "OpenAI Responses image generation");
+  const encoded = raw.output?.find(item => item.type === "image_generation_call" && typeof item.result === "string")?.result;
+  if (typeof encoded !== "string" || !encoded) throw new OpenAIRequestError("OpenAI Responses image generation returned no image", "invalid_response", false);
+  return { bytes: Uint8Array.from(Buffer.from(encoded, "base64")), ...(raw.id ? { responseId: raw.id } : {}) };
 }

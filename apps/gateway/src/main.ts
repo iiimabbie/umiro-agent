@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type HeadlessRunResult, type JsonObject } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
-import { OpenAIResponsesModel, callResponsesWebSearch } from "@umiro/model-openai";
+import { OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
@@ -37,7 +37,8 @@ for (const item of config.plugins ?? []) byPath.set(item.path, item);
 const configured = [...byPath.values()];
 const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
 const hostedWebSearch = config.modelCapabilities?.includes("hosted_web_search") === true;
-const granted = capabilities(...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
+const hostedImageGeneration = config.modelCapabilities?.includes("hosted_image_generation") === true;
+const granted = capabilities(...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
@@ -81,6 +82,19 @@ if (hostedWebSearch) tools.register({
     } catch (error) {
       return { ok: false, effectStatus: "not_applicable", error: { code: "hosted_web_search_unavailable", message: error instanceof Error ? error.message : "hosted web search unavailable", retryable: false } };
     }
+  },
+});
+if (hostedImageGeneration) tools.register({
+  name: "image_gen",
+  description: "Generate a PNG image through the active model's hosted image generation capability and attach it to the reply.",
+  inputSchema: { type: "object", additionalProperties: false, required: ["prompt"], properties: { prompt: { type: "string", minLength: 2, maxLength: 4_000 }, filename: { type: "string", minLength: 1, maxLength: 120 } } },
+  policy: { capability: "model.hosted_image_generation", tier: "common", interactionRequirement: "not_required", sideEffect: "non_idempotent", timeoutMs: 120_000 },
+  async execute(input, context) {
+    try {
+      const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: config.model, prompt: String(input.prompt), signal: context.signal });
+      const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename: typeof input.filename === "string" ? input.filename : "generated-image.png", mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId } });
+      return { ok: true, output: { artifactId: artifact.id, filename: artifact.filename ?? "generated-image.png" }, artifactIds: [artifact.id], effectStatus: "confirmed" };
+    } catch (error) { return { ok: false, effectStatus: "unknown", error: { code: "hosted_image_generation_failed", message: error instanceof Error ? error.message : "hosted image generation failed", retryable: false } }; }
   },
 });
 const engine = new HeadlessRunEngine(modelPort, tools, store);

@@ -5,6 +5,7 @@ import {
   OpenAIRequestError,
   OpenAIResponsesModel,
   buildOpenAIResponsesBody,
+  callResponsesImageGeneration,
   normalizeResponsesFinishReason,
   normalizeResponsesToolCalls,
   responsesOutputText,
@@ -37,6 +38,16 @@ test("responses mapping preserves instructions, images, files, tool calls and re
     { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{\"query\":\"sample\"}" },
     { type: "function_call_output", call_id: "call_1", output: "result" },
   ]);
+});
+
+test("responses image generation returns decoded image bytes", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { tools?: unknown };
+    assert.deepEqual(body.tools, [{ type: "image_generation" }]);
+    return Response.json({ id: "resp_image", status: "completed", output: [{ type: "image_generation_call", result: "AQID" }] });
+  });
+  const result = await callResponsesImageGeneration({ config, model: "image-model", prompt: "draw" });
+  assert.deepEqual([...result.bytes], [1, 2, 3]); assert.equal(result.responseId, "resp_image");
 });
 
 test("responses normalizers parse text, calls, malformed arguments and finish reasons", () => {
