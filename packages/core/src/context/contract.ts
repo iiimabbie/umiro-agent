@@ -54,10 +54,14 @@ export interface ContextProvider {
 export interface ContextAssemblyRequest extends ContextRequest {
   /** Character ceiling for the first deterministic implementation. */
   readonly maxCharacters: number;
+  /** Optional rendered-context token ceiling. A model-specific estimator may
+   * be injected into ContextEngine; otherwise a conservative heuristic is used. */
+  readonly maxTokens?: number;
 }
 
 export interface ContextAssembly {
   readonly blocks: readonly ContextBlock[];
   readonly omittedBlockIds: readonly string[];
   readonly characterCount: number;
+  readonly estimatedTokenCount: number;
 }

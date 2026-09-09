@@ -28,7 +28,8 @@ const readiness = { storage: false, plugins: false, discord: false, scheduler: f
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; contextMaxTokens?: number; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const contextMaxTokens = config.contextMaxTokens ?? 24_000;
 const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
@@ -57,7 +58,7 @@ const legacyServices = {
   async ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }) {
     const execution = { origin: { kind: "event" as const, pluginId: "legacy" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority };
     const fullPrompt = options?.systemPrompt ? `${options.systemPrompt}\n\n${prompt}` : prompt;
-    const runId = crypto.randomUUID(); const assembledContext = await contextEngine.assemble({ runId, execution, prompt: fullPrompt, maxCharacters: 100_000 });
+    const runId = crypto.randomUUID(); const assembledContext = await contextEngine.assemble({ runId, execution, prompt: fullPrompt, maxCharacters: 100_000, maxTokens: contextMaxTokens });
     const result = await engine.run({ runId, context: execution, model: options?.model ?? config.model, prompt: fullPrompt, assembledContext, ...(options?.maxTurns ? { maxModelTurns: options.maxTurns } : {}) });
     if (result.status !== "succeeded") throw new Error(`legacy plugin agent Run ended ${result.status}`); return { text: result.text };
   },
@@ -156,7 +157,7 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   if (trigger.jobRef !== "agent.prompt" || typeof trigger.input.prompt !== "string") throw new Error(`unsupported scheduled job: ${trigger.jobRef}`);
   const execution = { origin: { kind: "schedule" as const, scheduleId: trigger.id }, actor: { id: trigger.creatorPrincipalId, kind: trigger.creatorRoles.includes("system") ? "system" as const : "human" as const, roles: trigger.creatorRoles }, authority: intersectAuthority(trigger.authority, authority) };
   const prompt = `[Authoritative current time: ${new Date().toISOString()}]\n[Scheduled task: ${trigger.name}; originally due ${occurrence.scheduledFor}]\n\n${trigger.input.prompt}`;
-  const assembledContext = await contextEngine.assemble({ runId: occurrence.runId, execution, prompt, maxCharacters: 100_000, ...(signal ? { signal } : {}) });
+  const assembledContext = await contextEngine.assemble({ runId: occurrence.runId, execution, prompt, maxCharacters: 100_000, maxTokens: contextMaxTokens, ...(signal ? { signal } : {}) });
   const result = await engine.run({ runId: occurrence.runId, context: execution, model: typeof trigger.input.model === "string" ? trigger.input.model : config.model, prompt, assembledContext, ...(trigger.destination ? { deliveryDestination: trigger.destination } : {}), ...(signal ? { signal } : {}) });
   if (result.status !== "succeeded") throw new Error(`scheduled Run ${result.runId} ended ${result.status}`);
   await delivery.drain(signal);
@@ -186,7 +187,7 @@ const handleCommand = async (name: string, input: Record<string, string | number
     const streaming = new DiscordStreamingDelivery(commandContext.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
     activeRuns.set(runId, active);
     try {
-      const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
+      const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
       if (result.status === "executed") await presentApproval(result.result, commandContext.channelId);
       if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
       await delivery.drain(controller.signal);
@@ -249,7 +250,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
-  const execution = ingress.handle({ event, model: config.model, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
+  const execution = ingress.handle({ event, model: config.model, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); }

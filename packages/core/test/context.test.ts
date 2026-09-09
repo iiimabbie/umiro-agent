@@ -31,3 +31,14 @@ test("context provider tie ordering is locale-independent code-unit order", () =
   registry.register({ id: "alpha", role: "test", priority: 1, async load() { return []; } });
   assert.deepEqual(registry.list().map(provider => provider.id), ["alpha", "zeta"]);
 });
+
+test("context assembly enforces a rendered token ceiling through an injectable estimator", async () => {
+  const registry = new ContextProviderRegistry();
+  registry.register({ id: "first", role: "test", priority: 1, async load() { return [block("first", "one")]; } });
+  registry.register({ id: "second", role: "test", priority: 2, async load() { return [block("second", "two")]; } });
+  const estimator = { estimate(text: string) { return text.match(/"content":/g)?.length ?? 0; } };
+  const assembly = await new ContextEngine(registry, estimator).assemble({ runId: "r", execution, prompt: "", maxCharacters: 100, maxTokens: 1 });
+  assert.deepEqual(assembly.blocks.map(item => item.id), ["first"]);
+  assert.equal(assembly.estimatedTokenCount, 1);
+  assert.deepEqual(assembly.omittedBlockIds, ["second"]);
+});

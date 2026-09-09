@@ -147,7 +147,7 @@ export async function runCli(args: readonly string[], runtime: CliRuntime): Prom
       await host.enable(module, { config: module.manifest.id === "context-files" ? { workspacePath: runtime.env.UMIRO_WORKSPACE_PATH?.trim() || process.cwd() } : {} });
     }
     const contextEngine = new ContextEngine(providers);
-    const assembledContext = await contextEngine.assemble({ runId: crypto.randomUUID(), execution: context, prompt, maxCharacters: 32_000 });
+    const assembledContext = await contextEngine.assemble({ runId: crypto.randomUUID(), execution: context, prompt, maxCharacters: 32_000, maxTokens: 8_000 });
     const engine = new HeadlessRunEngine(createModel(protocol, config), tools, store);
     const result = await engine.run({ context, model, prompt, assembledContext, deliveryDestination: { kind: "dev_stdout" } });
     runtime.writeStderr(`run: ${result.runId}\ndatabase: ${database}\n`);
