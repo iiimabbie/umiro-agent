@@ -77,7 +77,7 @@ async function deployRelease(): Promise<string> {
   const revision = await exec("git", ["rev-parse", "--short", "HEAD"], { cwd: sourceRoot }).then(result => result.stdout.trim()).catch(() => "source");
   const releaseId = `${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${revision}`;
   const release = join(app, "releases", releaseId); await mkdir(release, { recursive: true, mode: 0o700 });
-  const targets: Array<[string, string]> = [["@umiro/gateway", "gateway"], ["@umiro/cli", "cli"], ["@umiro/plugin-context-files", "plugins/context-files"], ["@umiro/plugin-people", "plugins/people"], ["@umiro/plugin-memory", "plugins/memory"], ["@umiro/plugin-scheduler", "plugins/scheduler"], ["@umiro/plugin-subagent", "plugins/subagent"]];
+  const targets: Array<[string, string]> = [["@umiro/gateway", "gateway"], ["@umiro/cli", "cli"], ["@umiro/plugin-context-files", "plugins/context-files"], ["@umiro/plugin-people", "plugins/people"], ["@umiro/plugin-memory", "plugins/memory"], ["@umiro/plugin-scheduler", "plugins/scheduler"], ["@umiro/plugin-subagent", "plugins/subagent"], ["@umiro/plugin-host-tools", "plugins/host-tools"]];
   try {
     for (const [filter, destination] of targets) await exec("pnpm", ["--filter", filter, "deploy", "--prod", join(release, destination)], { cwd: sourceRoot });
     await cp(join(sourceRoot, "templates"), join(release, "templates"), { recursive: true });
@@ -90,7 +90,7 @@ async function deployRelease(): Promise<string> {
 async function registerBuiltins(): Promise<void> {
   const entries = (await loadPlugins()).filter(entry => !entry.source.startsWith("builtin:"));
   const builtin = (id: string, config: Record<string, unknown> = {}): ManagedPlugin => ({ source: `builtin:${id}`, path: join(currentRelease, "plugins", id), enabled: true, config });
-  await savePlugins([...entries, builtin("context-files", { workspacePath: workspace }), builtin("people", { workspacePath: workspace, recentTurns: 8, inlineLimit: 12_000 }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: process.env.TZ || "Asia/Taipei" }), builtin("subagent")]);
+  await savePlugins([...entries, builtin("context-files", { workspacePath: workspace }), builtin("people", { workspacePath: workspace, recentTurns: 8, inlineLimit: 12_000 }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: process.env.TZ || "Asia/Taipei" }), builtin("subagent"), builtin("host-tools", { workspacePath: workspace })]);
 }
 
 async function writeLaunchers(): Promise<void> {

@@ -195,6 +195,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
 
+  plugins/host-tools:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
   plugins/memory:
     dependencies:
       '@umiro/core':
