@@ -6,6 +6,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
   private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
+  private readonly messageTimes = new Map<string, number[]>();
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
@@ -37,6 +38,11 @@ export class DiscordJsAdapter implements DiscordTextTransport {
 
   private async handle(message: Message): Promise<void> {
     if (message.author.bot || !this.listener) return;
+    const now = Date.now();
+    const recent = (this.messageTimes.get(message.author.id) ?? []).filter(timestamp => now - timestamp < 60_000);
+    if (recent.length >= 30) return;
+    recent.push(now);
+    this.messageTimes.set(message.author.id, recent);
     let replyAuthorId: string | undefined;
     if (message.reference?.messageId) {
       try { replyAuthorId = (await message.fetchReference()).author.id; } catch { /* deleted or inaccessible reference */ }
