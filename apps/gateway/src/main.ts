@@ -1,5 +1,5 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
+import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
 import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -13,6 +13,7 @@ import { DurableScheduler } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
+import { JsonLineLogger } from "./structured-logger.js";
 
 const paths = umiroPaths();
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
@@ -36,6 +37,8 @@ const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefi
 const search = new HybridConversationSearch(store, embedder);
 if (embedder) providers.register(new SemanticRecallProvider(store, embedder));
 const scheduler = new DurableScheduler(store);
+const logger = new JsonLineLogger();
+const pluginHooks = new PluginHookRegistry(logger);
 const legacyServices = {
   configDirectory: `${paths.config}/plugin-config`,
   async ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }) {
@@ -66,7 +69,7 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
-host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler, childRuns, legacy: legacyServices });
+host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, legacy: legacyServices });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());
 embeddingWorker?.start();

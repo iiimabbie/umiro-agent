@@ -1,4 +1,5 @@
 import type { JsonObject } from "../ports/json.js";
+import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 
 export interface PluginHookContext {
   readonly event: string;
@@ -20,6 +21,11 @@ interface RegisteredHook {
 /** In-process event fan-out. A failing hook is isolated from other hooks and the emitter. */
 export class PluginHookRegistry {
   private readonly hooks = new Map<string, RegisteredHook>();
+
+  constructor(
+    private readonly logger: StructuredLogger = NOOP_LOGGER,
+    private readonly now: () => string = () => new Date().toISOString(),
+  ) {}
 
   register(pluginId: string, hook: PluginHookDefinition): void {
     if (!/^[a-z][a-z0-9_.-]{0,127}$/.test(hook.id)) throw new TypeError(`invalid plugin hook id: ${hook.id}`);
@@ -44,8 +50,23 @@ export class PluginHookRegistry {
     await Promise.all(selected.map(async ({ pluginId, definition }) => {
       try {
         await definition.handle(payload, { event, pluginId, ...(signal ? { signal } : {}) });
-      } catch {
-        // Hook failure is deliberately isolated; observability belongs to composition.
+      } catch (error) {
+        try {
+          this.logger.write({
+            level: "error",
+            event: "plugin.hook.failed",
+            message: "Plugin hook failed",
+            occurredAt: this.now(),
+            pluginId,
+            data: {
+              hookId: definition.id,
+              hookEvent: event,
+              errorName: error instanceof Error ? error.name : "NonErrorThrown",
+            },
+          });
+        } catch {
+          // A broken observer must not break hook failure isolation.
+        }
       }
     }));
   }
