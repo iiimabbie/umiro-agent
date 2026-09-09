@@ -32,12 +32,12 @@ const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
 const store = new SQLiteExecutionStore(paths.sqlite);
 const artifacts = new ArtifactFileService(paths.artifacts, store);
-const embedder = createConfiguredEmbedder(config.embedding);
-const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder) : undefined;
-const search = new HybridConversationSearch(store, embedder);
-if (embedder) providers.register(new SemanticRecallProvider(store, embedder));
-const scheduler = new DurableScheduler(store);
 const logger = new JsonLineLogger();
+const embedder = createConfiguredEmbedder(config.embedding);
+const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder, 15_000, logger) : undefined;
+const search = new HybridConversationSearch(store, embedder, logger);
+if (embedder) providers.register(new SemanticRecallProvider(store, embedder, () => new Date(), logger));
+const scheduler = new DurableScheduler(store);
 const pluginHooks = new PluginHookRegistry(logger);
 const legacyServices = {
   configDirectory: `${paths.config}/plugin-config`,
