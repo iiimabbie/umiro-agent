@@ -75,7 +75,12 @@ const ingress = new InteractiveIngress(identities, store, store, contextEngine, 
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
-const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace });
+const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
+  list: () => scheduler.list(),
+  create: input => scheduler.create({ name: input.name, enabled: true, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, jobRef: "agent.prompt", input: { prompt: input.prompt }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
+  setEnabled: (id, enabled) => scheduler.setEnabled(id, enabled),
+  remove: id => scheduler.remove(id),
+} });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
   const approval = await store.getApproval(result.approvalId);
