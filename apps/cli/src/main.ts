@@ -31,12 +31,32 @@ async function plugin(action: string, source?: string): Promise<void> {
     await mkdir(join(home, "app", "plugins"), { recursive: true, mode: 0o700 });
     await rm(path, { recursive: true, force: true });
     await exec("git", ["clone", "--depth", "1", source, path]);
+    try {
+      await readFile(join(path, "umiro.plugin.json"), "utf8");
+    } catch (error) {
+      await rm(path, { recursive: true, force: true });
+      throw new Error(`cloned repository is not a Umiro Plugin: ${source}`, { cause: error });
+    }
+    try {
+      await readFile(join(path, "package.json"), "utf8");
+      await exec("pnpm", ["install", "--frozen-lockfile"], { cwd: path });
+      await exec("pnpm", ["run", "build"], { cwd: path });
+    } catch (error) {
+      await rm(path, { recursive: true, force: true });
+      throw new Error(`plugin dependency install/build failed: ${source}`, { cause: error });
+    }
   } else if (action === "install" && /^(?:https?|git):/.test(source)) {
     throw new Error("only public GitHub HTTPS plugin URLs are supported");
   }
+  if (action === "install") {
+    try { await readFile(join(path, "umiro.plugin.json"), "utf8"); }
+    catch (error) { throw new Error(`plugin manifest not found: ${path}`, { cause: error }); }
+  }
   const next = action === "install" ? [...new Set([...entries, path])] : entries.filter(item => item !== path);
   await writeFile(plugins, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  if (action === "remove") await rm(join(home, "data", "plugins", path), { recursive: true, force: true });
+  if (action === "remove" && path.startsWith(`${join(home, "app", "plugins")}/`)) {
+    await rm(path, { recursive: true, force: true });
+  }
   console.log(`${action}: ${path}`);
 }
 
