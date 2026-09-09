@@ -66,7 +66,9 @@ export function authorize(request: AuthorizationRequest): AuthorizationDecision 
   if (request.tier === "sensitive" && !request.resource) {
     return { ...base, allow: false, reason: "resource_required" };
   }
-  if (request.resource && request.tier !== "common" && !resourceVisible(request)) {
+  // Resource scopes constrain disclosure and mutation independently of risk
+  // tier. A common operation must not become an arbitrary-resource bypass.
+  if (request.resource && !resourceVisible(request)) {
     return { ...base, allow: false, reason: "resource_outside_visibility" };
   }
   if (request.tier === "privileged" && !isOwner(request.context.actor)) {

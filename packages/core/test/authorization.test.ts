@@ -49,6 +49,12 @@ test("authorization is fail-closed and sensitive resources require visibility", 
   }).reason, "resource_outside_visibility");
 });
 
+test("restricted visibility applies to resource-scoped common operations", () => {
+  const memberContext = context(member, { kind: "interactive", transport: "discord", conversationId: "c1" }, authority(["read.channel"]));
+  assert.equal(authorize({ context: memberContext, capability: "read.channel", tier: "common", resource: { kind: "channel", id: "other" } }).reason, "resource_outside_visibility");
+  assert.equal(authorize({ context: memberContext, capability: "read.channel", tier: "common", resource: { kind: "channel", id: "allowed", ownerPrincipalId: "member-1" } }).allow, true);
+});
+
 test("privileged operations require an owner but permit bounded automation", () => {
   const privileged = authority(["shell.execute"]);
   assert.equal(authorize({
