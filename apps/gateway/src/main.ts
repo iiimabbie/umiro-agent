@@ -78,6 +78,7 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
 });
 const builtinCommands = [
   { name: "stop", description: "Cancel an active Run.", ownerOnly: false, ephemeral: true, options: [{ name: "run_id", description: "Run identifier", type: "string" as const, required: true }] },
+  { name: "followup", description: "Send a follow-up turn to this conversation.", ownerOnly: false, ephemeral: true, options: [{ name: "prompt", description: "Follow-up message", type: "string" as const, required: true }] },
 ];
 discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
   if (name === "stop") {
@@ -87,6 +88,21 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
     if (active.userId !== commandContext.userId && commandContext.userId !== ownerDiscordId) return { stopped: false, runId, reason: "not_run_owner" };
     active.controller.abort(new Error("stopped by Discord user"));
     return { stopped: true, runId };
+  }
+  if (name === "followup") {
+    const prompt = String(input.prompt ?? "").trim();
+    if (!prompt) throw new Error("prompt is required");
+    const messageId = `command-${crypto.randomUUID()}`;
+    const event = toInputEvent({ messageId, channelId: commandContext.channelId, ...(commandContext.guildId ? { guildId: commandContext.guildId } : {}), authorId: commandContext.userId, content: prompt, createdAt: new Date().toISOString() });
+    const controller = new AbortController();
+    let runId = event.id;
+    const active = { controller, userId: commandContext.userId };
+    activeRuns.set(runId, active);
+    try {
+      const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
+      await delivery.drain(controller.signal);
+      return { conversationId: result.conversationId, turnId: result.turnId, runId: result.status === "duplicate" ? result.runId : result.result.runId, status: result.status };
+    } finally { activeRuns.delete(runId); activeRuns.delete(event.id); }
   }
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);
