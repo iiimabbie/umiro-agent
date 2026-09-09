@@ -1,6 +1,7 @@
 import type { InputEvent } from "@umiro/core/input";
 import type { Authority } from "@umiro/core/authorization";
 import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, TransportIdentity } from "@umiro/core/identity";
+import type { ExecutionStore } from "@umiro/core/ports";
 
 export interface DiscordMessageEnvelope {
   readonly messageId: string;
@@ -55,5 +56,34 @@ export class DiscordIdentityResolver implements IdentityResolver {
       principal: { id: mapped.principalId, kind: "human", roles: owner ? ["owner"] : ["member"], ...(mapped.displayName ? { displayName: mapped.displayName } : {}) },
       authority: owner ? this.options.ownerAuthority : this.options.memberAuthority,
     };
+  }
+}
+
+export interface DiscordTextTransport {
+  sendText(channelId: string, text: string, signal?: AbortSignal): Promise<{ readonly messageId: string }>;
+}
+
+export class DiscordDeliveryWorker {
+  constructor(
+    private readonly store: Pick<ExecutionStore, "listPendingDeliveries" | "markDeliveryDelivered">,
+    private readonly transport: DiscordTextTransport,
+    private readonly now: () => string = () => new Date().toISOString(),
+  ) {}
+
+  async drain(signal?: AbortSignal): Promise<{ delivered: number; skipped: number }> {
+    let delivered = 0;
+    let skipped = 0;
+    for (const intent of await this.store.listPendingDeliveries()) {
+      if (intent.destination.kind !== "discord" || typeof intent.destination.channelId !== "string") {
+        skipped++;
+        continue;
+      }
+      const text = intent.payload.text;
+      if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
+      await this.transport.sendText(intent.destination.channelId, text, signal);
+      await this.store.markDeliveryDelivered(intent.id, this.now());
+      delivered++;
+    }
+    return { delivered, skipped };
   }
 }

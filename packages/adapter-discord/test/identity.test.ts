@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IdentityMappingStore, PersistedTransportIdentity } from "@umiro/core/identity";
-import { DiscordIdentityResolver, toInputEvent } from "../src/index.js";
+import { DiscordDeliveryWorker, DiscordIdentityResolver, toInputEvent } from "../src/index.js";
 
 class MemoryMappings implements IdentityMappingStore {
   readonly rows = new Map<string, PersistedTransportIdentity>();
@@ -29,4 +29,16 @@ test("maps Discord messages and preserves stable principals", async () => {
   const event = toInputEvent({ messageId: "m", channelId: "c", guildId: "g", authorId: "2", content: "hi", createdAt: "2026-01-01T00:00:00Z" });
   assert.equal(event.conversation.kind, "channel");
   assert.equal(event.content[0]?.type, "text");
+});
+
+test("delivers pending Discord output and records confirmation", async () => {
+  const marked: string[] = [];
+  const sent: string[] = [];
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "hello" }, state: "pending", createdAt: "now" }]; },
+    async markDeliveryDelivered(id) { marked.push(id); },
+  }, { async sendText(channelId, text) { sent.push(`${channelId}:${text}`); return { messageId: "m" }; } });
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.deepEqual(sent, ["c:hello"]);
+  assert.deepEqual(marked, ["d"]);
 });
