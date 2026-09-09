@@ -560,6 +560,10 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const update = this.database.prepare("UPDATE scheduled_triggers SET enabled=?, next_fire_at=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?").run(enabled ? 1 : 0, nextFireAt, updatedAt, id, expectedRevision);
     expectOne(update.changes, `scheduled trigger changed: ${id}`); return (await this.getScheduledTrigger(id))!;
   }
+  async updateScheduledTrigger(id: string, patch: { readonly name: string; readonly schedule: ScheduledTrigger["schedule"]; readonly timezone: string; readonly input: JsonObject; readonly destination?: JsonObject; readonly misfirePolicy: ScheduledTrigger["misfirePolicy"]; readonly maxAttempts: number; readonly retryBackoffMs: number }, expectedRevision: number, nextFireAt: string | null, updatedAt: string): Promise<ScheduledTrigger> {
+    const result = this.database.prepare(`UPDATE scheduled_triggers SET name=?, schedule_json=?, timezone=?, input_json=?, destination_json=?, misfire_policy=?, max_attempts=?, retry_backoff_ms=?, next_fire_at=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`).run(patch.name, json(patch.schedule), patch.timezone, json(patch.input), patch.destination ? json(patch.destination) : null, patch.misfirePolicy, patch.maxAttempts, patch.retryBackoffMs, nextFireAt, updatedAt, id, expectedRevision);
+    expectOne(result.changes, `scheduled trigger changed: ${id}`); return (await this.getScheduledTrigger(id))!;
+  }
   async deleteScheduledTrigger(id: string): Promise<boolean> { return this.database.prepare("DELETE FROM scheduled_triggers WHERE id=?").run(id).changes === 1; }
   async listDueScheduledTriggers(now: string, limit: number): Promise<readonly ScheduledTrigger[]> {
     return (this.database.prepare("SELECT * FROM scheduled_triggers WHERE enabled=1 AND next_fire_at IS NOT NULL AND next_fire_at <= ? ORDER BY next_fire_at, id LIMIT ?").all(now, limit) as TriggerRow[]).map(row => this.triggerFromRow(row));

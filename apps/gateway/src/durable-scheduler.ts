@@ -22,6 +22,7 @@ export class DurableScheduler implements SchedulerControl {
   }
   list(): Promise<readonly ScheduledTrigger[]> { return this.store.listScheduledTriggers(); }
   async setEnabled(id: string, enabled: boolean): Promise<ScheduledTrigger> { const trigger = await this.store.getScheduledTrigger(id); if (!trigger) throw new Error(`scheduled trigger not found: ${id}`); return this.store.setScheduledTriggerEnabled(id, enabled, enabled ? nextFire(trigger.schedule, trigger.timezone, this.now()) : null, trigger.revision, this.now().toISOString()); }
+  async update(id: string, patch: Parameters<NonNullable<SchedulerControl["update"]>>[1]): Promise<ScheduledTrigger> { const trigger = await this.store.getScheduledTrigger(id); if (!trigger) throw new Error(`scheduled trigger not found: ${id}`); return this.store.updateScheduledTrigger(id, patch, trigger.revision, trigger.enabled ? nextFire(patch.schedule, patch.timezone, this.now()) : null, this.now().toISOString()); }
   remove(id: string): Promise<boolean> { return this.store.deleteScheduledTrigger(id); }
   async syncPluginJobs(jobs: readonly PluginJobDefinition[]): Promise<void> {
     const current = new Map((await this.store.listScheduledTriggers()).map(trigger => [trigger.id, trigger]));

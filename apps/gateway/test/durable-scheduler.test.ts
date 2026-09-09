@@ -27,3 +27,12 @@ test("cron schedules validate timezone and calculate the next durable fire", asy
   assert.equal(trigger.nextFireAt, "2026-01-01T01:00:00.000Z");
   store.close();
 });
+
+test("schedule update uses the same trigger identity and increments revision", async () => {
+  const store = new SQLiteExecutionStore(":memory:"); const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-01-01T00:00:00.000Z"));
+  const trigger = await scheduler.create({ name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Asia/Taipei", jobRef: "agent.prompt", input: { prompt: "old" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
+  const updated = await scheduler.update(trigger.id, { name: "updated", schedule: { kind: "cron", expression: "0 10 * * *" }, timezone: "Asia/Taipei", input: { prompt: "new" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
+  assert.equal(updated.id, trigger.id); assert.equal(updated.revision, 1); assert.equal(updated.name, "updated"); assert.deepEqual(updated.input, { prompt: "new" });
+  await assert.rejects(store.updateScheduledTrigger(trigger.id, { name: "stale", schedule: updated.schedule, timezone: updated.timezone, input: updated.input, misfirePolicy: updated.misfirePolicy, maxAttempts: updated.maxAttempts, retryBackoffMs: updated.retryBackoffMs }, 0, updated.nextFireAt, updated.updatedAt), /changed/);
+  store.close();
+});
