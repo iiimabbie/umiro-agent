@@ -22,6 +22,7 @@ import { ControlPanelServer } from "./control-panel.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
+const readiness = { storage: false, plugins: false, discord: false, scheduler: false, shuttingDown: false };
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -72,6 +73,7 @@ const childRuns = new ChildRunService(engine, store);
 const approvalRuns = new ApprovalRunCoordinator(store, engine);
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
+readiness.storage = true;
 const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
 if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
@@ -99,7 +101,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     if (outcome.status === "resumed") { await delivery.drain(); return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.result.status }; }
     return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.runState };
   },
-}, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }) });
+}, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: () => readiness, processId: process.pid });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
   const approval = await store.getApproval(result.approvalId);
@@ -111,6 +113,7 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
 host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, artifacts, legacy: legacyServices });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());
+readiness.plugins = true;
 embeddingWorker?.start();
 scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   if (trigger.jobRef.startsWith("plugin:")) { await host.runJob(trigger.jobRef.slice("plugin:".length), signal); return; }
@@ -217,13 +220,18 @@ const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await controlPanel?.start();
 await discord.start(token, discordPolicy.presence);
+readiness.discord = true;
 await delivery.drain();
-await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
 scheduler.start();
+readiness.scheduler = true;
+await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), checks: readiness })}\n`, { mode: 0o600 });
 let shuttingDown = false;
 const shutdown = async (exitCode = 0) => {
   if (shuttingDown) return;
   shuttingDown = true;
+  readiness.shuttingDown = true;
+  readiness.scheduler = false;
+  readiness.discord = false;
   scheduler.stop(); embeddingWorker?.stop(); await controlPanel?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(exitCode);
 };
 const fatal = (event: "unhandledRejection" | "uncaughtException", error: unknown) => {

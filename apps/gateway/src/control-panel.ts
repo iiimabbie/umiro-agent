@@ -15,7 +15,14 @@ export interface ControlPanelSchedules {
 }
 export interface ControlPanelPlugins { list(): Promise<unknown>; run(action: "install" | "configure" | "enable" | "disable" | "update" | "remove", source: string, workspace?: string, config?: Record<string, unknown>): Promise<unknown> }
 export interface ControlPanelApprovals { list(): Promise<unknown>; resolve(id: string, action: "approve" | "deny"): Promise<unknown> }
-export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly approvals?: ControlPanelApprovals; readonly runtime?: () => Promise<unknown> | unknown }
+export interface GatewayReadiness {
+  readonly storage: boolean;
+  readonly plugins: boolean;
+  readonly discord: boolean;
+  readonly scheduler: boolean;
+  readonly shuttingDown?: boolean;
+}
+export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly approvals?: ControlPanelApprovals; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
 
 export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", restartRequired: true },
@@ -105,6 +112,12 @@ export class ControlPanelServer {
       const url = new URL(request.url ?? "/", "http://localhost");
       if (request.method === "GET" && url.pathname === "/") return text(response, 200, HTML, "text/html; charset=utf-8");
       if (request.method === "GET" && url.pathname === "/app.js") return text(response, 200, JS, "text/javascript; charset=utf-8");
+      if (request.method === "GET" && url.pathname === "/healthz") return json(response, 200, { status: "alive" });
+      if (request.method === "GET" && url.pathname === "/readyz") {
+        const checks = this.options.readiness ? await this.options.readiness() : { storage: true, plugins: true, discord: true, scheduler: true };
+        const ready = checks.storage && checks.plugins && checks.discord && checks.scheduler && checks.shuttingDown !== true;
+        return json(response, ready ? 200 : 503, { status: ready ? "ready" : "not_ready", pid: this.options.processId ?? process.pid, checks });
+      }
       if (!this.authorized(request)) return json(response, 401, { error: "unauthorized" });
       if (request.method === "GET" && url.pathname === "/api/schema") return json(response, 200, CONFIG_EXPLANATIONS);
       if (request.method === "GET" && url.pathname === "/api/config") return json(response, 200, JSON.parse(await readFile(this.options.configFile, "utf8")));

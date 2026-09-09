@@ -40,3 +40,27 @@ test("localhost control panel authenticates config and fixed workspace file oper
 test("control panel refuses public bind addresses", () => {
   assert.throws(() => new ControlPanelServer({ host: "0.0.0.0", port: 3210, token: "token", configFile: "/tmp/no", workspace: "/tmp" }), /loopback/);
 });
+
+test("health and readiness probes are public and report component state", async () => {
+  const checks = { storage: true, plugins: true, discord: false, scheduler: false, shuttingDown: false };
+  const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "secret", configFile: "/tmp/no", workspace: "/tmp", readiness: () => checks });
+  await server.start();
+  const endpoint = `http://127.0.0.1:${server.port()}`;
+  try {
+    const health = await fetch(`${endpoint}/healthz`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: "alive" });
+
+    const unavailable = await fetch(`${endpoint}/readyz`);
+    assert.equal(unavailable.status, 503);
+    assert.deepEqual(await unavailable.json(), { status: "not_ready", pid: process.pid, checks });
+
+    checks.discord = true; checks.scheduler = true;
+    const ready = await fetch(`${endpoint}/readyz`);
+    assert.equal(ready.status, 200);
+    assert.deepEqual(await ready.json(), { status: "ready", pid: process.pid, checks });
+
+    checks.shuttingDown = true;
+    assert.equal((await fetch(`${endpoint}/readyz`)).status, 503);
+  } finally { await server.stop(); }
+});
