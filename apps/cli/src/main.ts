@@ -115,6 +115,33 @@ async function rollback(): Promise<void> {
   const temporaryLink = join(app, `.current-${crypto.randomUUID()}`); await symlink(join("releases", previous), temporaryLink); await rename(temporaryLink, currentRelease); await registerBuiltins(); await writeLaunchers(); console.log(`rolled back to ${previous}`);
 }
 
+async function backup(destination?: string): Promise<void> {
+  if (!destination) throw new Error("backup requires a destination directory");
+  if (await systemdActive() || await fallbackProcess()) throw new Error("stop the daemon before creating a backup");
+  const target = resolve(destination); await mkdir(target, { recursive: true, mode: 0o700 });
+  await access(join(home, "data", "umiro.sqlite"));
+  await cp(join(home, "data", "umiro.sqlite"), join(target, "umiro.sqlite"));
+  if (await exists(join(home, "data", "artifacts"))) await cp(join(home, "data", "artifacts"), join(target, "artifacts"), { recursive: true });
+  await writeFile(join(target, "backup.json"), `${JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+  console.log(target);
+}
+
+async function restore(source?: string): Promise<void> {
+  if (!source) throw new Error("restore requires a backup directory");
+  if (await systemdActive() || await fallbackProcess()) throw new Error("stop the daemon before restoring a backup");
+  const sourceRoot = resolve(source); await access(join(sourceRoot, "umiro.sqlite"));
+  const dataRoot = join(home, "data"); await mkdir(dataRoot, { recursive: true, mode: 0o700 });
+  const temporary = join(dataRoot, `.umiro-restore-${crypto.randomUUID()}.sqlite`);
+  await cp(join(sourceRoot, "umiro.sqlite"), temporary); await chmod(temporary, 0o600);
+  await rename(temporary, join(dataRoot, "umiro.sqlite"));
+  if (await exists(join(sourceRoot, "artifacts"))) {
+    const artifactTarget = join(dataRoot, "artifacts");
+    await rm(artifactTarget, { recursive: true, force: true });
+    await cp(join(sourceRoot, "artifacts"), artifactTarget, { recursive: true });
+  }
+  console.log(sourceRoot);
+}
+
 async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string): Promise<void> {
   const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
   let path = resolve(source); const installing = action === "install" || action === "update";
@@ -138,4 +165,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|init|configure --from-env .env|start|stop|status|plugin ...");
+if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|start|stop|status|plugin ...");
