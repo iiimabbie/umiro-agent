@@ -35,6 +35,13 @@ test("skill contributions are manifest-bound and cannot reference missing tools"
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
   await host.enable(module);
   assert.equal(host.listSkills()[0]?.id, "skill-plugin.workflow");
+  const request = { runId: "run", execution: { actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, origin: { kind: "interactive" as const, transport: "test", conversationId: "c" }, authority }, prompt: "hi", maxCharacters: 10_000 };
+  const provider = new ContextProviderRegistry();
+  const hostWithProviders = new PluginHost(new ToolRegistry(), provider, authority);
+  await hostWithProviders.enable(module);
+  assert.match((await new ContextEngine(provider).assemble(request)).blocks[0]!.content, /Use the declared tool/);
+  await hostWithProviders.disable("skill-plugin");
+  assert.deepEqual((await new ContextEngine(provider).assemble(request)).blocks, []);
   await host.disable("skill-plugin");
   assert.deepEqual(host.listSkills(), []);
 });

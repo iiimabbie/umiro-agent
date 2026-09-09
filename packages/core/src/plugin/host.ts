@@ -58,6 +58,12 @@ function manifestPolicyProvider(manifest: PluginManifestV0): ContextProvider | u
   };
 }
 
+function skillInstructionProvider(manifest: PluginManifestV0, skill: import("./contract.js").SkillDefinition): ContextProvider | undefined {
+  if (!skill.instructions.trim()) return undefined;
+  const id = `${manifest.id}.skill.${skill.id}`;
+  return { id, role: "skill-instructions", priority: 360, async load() { return [{ id: `${id}:instructions`, providerId: id, role: "skill-instructions", content: `[Skill instructions: ${skill.id}]\n${skill.instructions.trim()}`, source: { kind: "plugin-skill-instructions", ref: `${manifest.id}@${manifest.version}` }, influence: "instruction", instructionAuthority: "scoped", retention: "normal" }]; } };
+}
+
 function redact(value: import("../ports/json.js").JsonValue, secrets: readonly string[], key?: string): import("../ports/json.js").JsonValue {
   if (key && /(secret|token|password|authorization|api.?key)/i.test(key)) return "[REDACTED]";
   if (typeof value === "string") return secrets.reduce((result, secret) => secret ? result.split(secret).join("[REDACTED]") : result, value);
@@ -136,6 +142,7 @@ export class PluginHost {
     const registeredJobs: string[] = [];
     const registeredCommands: string[] = [];
     const registeredSkills: string[] = [];
+    const registeredSkillProviders: string[] = [];
     const policyProvider = manifestPolicyProvider(manifest);
     try {
       exactContributionSet(toolNames, manifest.contributes.tools, `plugin ${manifest.id} tools`);
@@ -159,6 +166,10 @@ export class PluginHost {
         registeredProviders.push(provider.id);
       }
       if (policyProvider) { this.contextProviders.register(policyProvider); registeredProviders.push(policyProvider.id); }
+      for (const skill of active.instance.contributions.skills ?? []) {
+        const provider = skillInstructionProvider(manifest, skill);
+        if (provider) { if (!isInstructionAuthorityAtMost("scoped", manifest.permissions.instructionAuthority)) throw new TypeError(`skill ${skill.id} instructions exceed the plugin instruction authority ceiling`); this.contextProviders.register(provider); registeredSkillProviders.push(provider.id); }
+      }
       for (const hook of active.instance.contributions.hooks ?? []) {
         this.hooks.register(manifest.id, hook);
         registeredHooks.push(hook.id);
@@ -172,6 +183,7 @@ export class PluginHost {
       active.state = "enabled";
     } catch (error) {
       for (const providerId of registeredProviders.reverse()) this.contextProviders.unregister(providerId);
+      for (const providerId of registeredSkillProviders.reverse()) this.contextProviders.unregister(providerId);
       for (const hookId of registeredHooks.reverse()) this.hooks.unregister(hookId);
       for (const jobId of registeredJobs.reverse()) this.jobs.unregister(jobId);
       for (const commandId of registeredCommands.reverse()) this.commands.unregister(commandId);
@@ -198,6 +210,7 @@ export class PluginHost {
       this.contextProviders.unregister(provider.id);
     }
     if (active.manifest.contributes.policy?.length) this.contextProviders.unregister(`${active.manifest.id}.policy`);
+    for (const skill of active.instance.contributions.skills ?? []) this.contextProviders.unregister(`${active.manifest.id}.skill.${skill.id}`);
     for (const hook of active.instance.contributions.hooks ?? []) this.hooks.unregister(hook.id);
     for (const job of active.instance.contributions.jobs ?? []) this.jobs.unregister(job.id);
     for (const command of active.instance.contributions.commands ?? []) this.commands.unregister(command.name);
