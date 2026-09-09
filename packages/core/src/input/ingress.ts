@@ -6,10 +6,12 @@ import type { JsonObject } from "../ports/json.js";
 import { HeadlessRunEngine, type HeadlessRunResult } from "../run/engine.js";
 import type { ExecutionStore } from "../ports/execution-store.js";
 import { inputText, type InputEvent } from "./event.js";
+import type { ModelContent } from "../model/contract.js";
 
 export interface InteractiveIngressRequest {
   readonly event: InputEvent;
   readonly model: string;
+  readonly userContent?: ModelContent;
   readonly maxContextCharacters: number;
   readonly deliveryDestination: JsonObject;
   readonly signal?: AbortSignal;
@@ -54,8 +56,9 @@ export class InteractiveIngress {
   }
 
   async handle(request: InteractiveIngressRequest): Promise<InteractiveIngressResult> {
-    const prompt = inputText(request.event).trim();
-    if (!prompt) throw new TypeError("Input Event does not contain text");
+    const text = inputText(request.event).trim();
+    const prompt = text || (request.event.content.some(block => block.type === "artifact_reference") ? "Please inspect the attached file(s) and respond." : "");
+    if (!prompt) throw new TypeError("Input Event does not contain text or attachments");
     const resolved = await this.identities.resolve(request.event.identity);
     const runId = this.createId("run");
     request.onRunCreated?.(runId);
@@ -109,6 +112,7 @@ export class InteractiveIngress {
       turnId: ingested.turn.id,
       model: request.model,
       prompt,
+      ...(request.userContent ? { userContent: request.userContent } : {}),
       assembledContext,
       deliveryDestination: request.deliveryDestination,
       ...(request.signal ? { signal: request.signal } : {}),

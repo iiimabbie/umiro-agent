@@ -1,4 +1,4 @@
-import type { ModelMessage, ModelPort, ModelToolCall, ModelUsage } from "../model/contract.js";
+import type { ModelContent, ModelMessage, ModelPort, ModelToolCall, ModelUsage } from "../model/contract.js";
 import type { OperationResult } from "../operation/result.js";
 import { ExecutionStoreConflictError, type ExecutionStore } from "../ports/execution-store.js";
 import type { JsonObject, JsonValue } from "../ports/json.js";
@@ -12,6 +12,8 @@ export interface HeadlessRunRequest {
   readonly context: ExecutionContext;
   readonly model: string;
   readonly prompt: string;
+  /** Optional multimodal user content; when absent, prompt is sent as text. */
+  readonly userContent?: ModelContent;
   readonly signal?: AbortSignal;
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
   readonly maxModelTurns?: number;
@@ -47,12 +49,12 @@ export interface HeadlessRunEngineOptions {
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 
-function initialMessages(request: Pick<HeadlessRunRequest, "prompt" | "assembledContext">): ModelMessage[] {
+function initialMessages(request: Pick<HeadlessRunRequest, "prompt" | "userContent" | "assembledContext">): ModelMessage[] {
   return [
     ...(request.assembledContext?.blocks.length
       ? [{ role: "system" as const, content: renderContextAssembly(request.assembledContext) }]
       : []),
-    { role: "user" as const, content: request.prompt },
+    { role: "user" as const, content: request.userContent ?? request.prompt },
   ];
 }
 
