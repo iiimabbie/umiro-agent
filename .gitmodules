@@ -1,0 +1,3 @@
+[submodule "plugins/umiro-plugins"]
+	path = plugins/umiro-plugins
+	url = https://github.com/iiimabbie/umiro-plugins.git

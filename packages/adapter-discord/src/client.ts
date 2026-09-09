@@ -1,5 +1,6 @@
-import { ActionRowBuilder, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
+import type { DiscordPresenceConfig } from "./trigger-policy.js";
 
 export type DiscordApprovalAction = "approve" | "deny";
 export interface DiscordApprovalPrompt { readonly approvalId: string; readonly operation: string; readonly details: string; readonly expiresAt: string }
@@ -32,7 +33,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
   onError(handler: DiscordAdapterErrorHandler): void { this.errorHandler = handler; }
 
-  async start(token: string): Promise<void> {
+  async start(token: string, presence?: DiscordPresenceConfig): Promise<void> {
     this.client.on("messageCreate", message => this.enqueueMessage(message));
     this.client.on("interactionCreate", interaction => {
       if (interaction.isChatInputCommand()) void this.handleCommand(interaction).catch(error => this.reportError(error, { event: "command", channelId: interaction.channelId }));
@@ -40,6 +41,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     });
     await this.client.login(token);
     if (!this.client.user) throw new Error("Discord login returned without a bot user");
+    if (presence?.status || presence?.activity) this.client.user.setPresence({ status: presence.status ?? "online", activities: presence.activity ? [{ name: presence.activity, type: ActivityType.Playing }] : [] });
     console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
     const types = { string: ApplicationCommandOptionType.String, integer: ApplicationCommandOptionType.Integer, boolean: ApplicationCommandOptionType.Boolean, channel: ApplicationCommandOptionType.Channel } as const;
     await this.client.application?.commands.set(this.commands.map(command => ({ name: command.name, description: command.description, options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [] })) as ApplicationCommandDataResolvable[]);

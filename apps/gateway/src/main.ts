@@ -216,7 +216,7 @@ discord.onMessage(async message => {
 const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await controlPanel?.start();
-await discord.start(token);
+await discord.start(token, discordPolicy.presence);
 await delivery.drain();
 await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
 scheduler.start();

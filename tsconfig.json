@@ -8,11 +8,9 @@
     { "path": "./apps/cli" },
     { "path": "./apps/gateway" },
     { "path": "./plugins/context-files" },
-    { "path": "./plugins/people" },
     { "path": "./plugins/memory" },
     { "path": "./plugins/scheduler" },
     { "path": "./plugins/subagent" },
-    { "path": "./plugins/soul-guardian" },
     { "path": "./plugins/host-tools" },
     { "path": "./apps/dev-driver" }
   ]

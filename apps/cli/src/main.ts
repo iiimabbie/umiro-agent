@@ -56,10 +56,10 @@ async function validatePluginDirectory(directory: string): Promise<void> {
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
-  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "PEOPLE.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
+  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
-  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: false }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
+  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
   if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
   console.log(home);
 }
@@ -77,7 +77,7 @@ async function deployRelease(): Promise<string> {
   const revision = await exec("git", ["rev-parse", "--short", "HEAD"], { cwd: sourceRoot }).then(result => result.stdout.trim()).catch(() => "source");
   const releaseId = `${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${revision}`;
   const release = join(app, "releases", releaseId); await mkdir(release, { recursive: true, mode: 0o700 });
-  const targets: Array<[string, string]> = [["@umiro/gateway", "gateway"], ["@umiro/cli", "cli"], ["@umiro/plugin-context-files", "plugins/context-files"], ["@umiro/plugin-people", "plugins/people"], ["@umiro/plugin-memory", "plugins/memory"], ["@umiro/plugin-scheduler", "plugins/scheduler"], ["@umiro/plugin-subagent", "plugins/subagent"], ["@umiro/plugin-host-tools", "plugins/host-tools"]];
+  const targets: Array<[string, string]> = [["@umiro/gateway", "gateway"], ["@umiro/cli", "cli"], ["@umiro/plugin-context-files", "plugins/context-files"], ["@umiro/plugin-memory", "plugins/memory"], ["@umiro/plugin-scheduler", "plugins/scheduler"], ["@umiro/plugin-subagent", "plugins/subagent"], ["@umiro/plugin-host-tools", "plugins/host-tools"]];
   try {
     for (const [filter, destination] of targets) await exec("pnpm", ["--filter", filter, "deploy", "--prod", join(release, destination)], { cwd: sourceRoot });
     await cp(join(sourceRoot, "templates"), join(release, "templates"), { recursive: true });
@@ -90,7 +90,7 @@ async function deployRelease(): Promise<string> {
 async function registerBuiltins(): Promise<void> {
   const entries = (await loadPlugins()).filter(entry => !entry.source.startsWith("builtin:"));
   const builtin = (id: string, config: Record<string, unknown> = {}): ManagedPlugin => ({ source: `builtin:${id}`, path: join(currentRelease, "plugins", id), enabled: true, config });
-  await savePlugins([...entries, builtin("context-files", { workspacePath: workspace }), builtin("people", { workspacePath: workspace, recentTurns: 8, inlineLimit: 12_000 }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: process.env.TZ || "Asia/Taipei" }), builtin("subagent"), builtin("host-tools", { workspacePath: workspace })]);
+  await savePlugins([...entries, builtin("context-files", { workspacePath: workspace }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: process.env.TZ || "Asia/Taipei" }), builtin("subagent"), builtin("host-tools", { workspacePath: workspace })]);
 }
 
 async function writeLaunchers(): Promise<void> {
@@ -139,18 +139,22 @@ function commaList(value: string | undefined, current: unknown): readonly string
   return [...new Set(value.split(",").map(item => item.trim()).filter(Boolean))];
 }
 
-async function discord(action: string, options: { ignoredChannels: string | undefined; ambientChannels: string | undefined; allowedChannels: string | undefined; allowedGuilds: string | undefined; respondToBots: string | undefined }): Promise<void> {
+async function discord(action: string, options: { ignoredChannels: string | undefined; ambientChannels: string | undefined; allowedChannels: string | undefined; allowedGuilds: string | undefined; respondToBots: string | undefined; status: string | undefined; activity: string | undefined }): Promise<void> {
   const config = await loadConfig();
   const current = config.discord ?? {};
   if (action === "status") { console.log(JSON.stringify(current, null, 2)); return; }
   if (action !== "configure") throw new Error("usage: umiro discord configure|status");
   if (options.respondToBots !== undefined && options.respondToBots !== "true" && options.respondToBots !== "false") throw new Error("--respond-to-bots must be true or false");
+  if (options.status !== undefined && !["online", "idle", "dnd", "invisible"].includes(options.status)) throw new Error("--status must be online, idle, dnd, or invisible");
+  if (options.activity !== undefined && !options.activity.trim()) throw new Error("--activity must be non-empty");
+  const currentPresence = current.presence && typeof current.presence === "object" && !Array.isArray(current.presence) ? current.presence as Record<string, unknown> : {};
   const next = {
     ignoredChannels: commaList(options.ignoredChannels, current.ignoredChannels),
     ambientChannels: commaList(options.ambientChannels, current.ambientChannels),
     allowedChannels: commaList(options.allowedChannels, current.allowedChannels),
     allowedGuilds: commaList(options.allowedGuilds, current.allowedGuilds),
-    respondToBots: options.respondToBots === undefined ? current.respondToBots === true : options.respondToBots === "true",
+    respondToBots: options.respondToBots === undefined ? current.respondToBots !== false : options.respondToBots === "true",
+    presence: { status: options.status ?? currentPresence.status ?? "online", activity: options.activity?.trim() ?? currentPresence.activity ?? "with ümiro" },
   };
   await saveConfig({ ...config, discord: next });
   console.log("discord trigger policy configured");
@@ -216,7 +220,8 @@ async function restore(source?: string): Promise<void> {
 }
 
 async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string): Promise<void> {
-  const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
+  const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.source.startsWith("builtin:") ? "built-in" : "external"}\t${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
+  if (action === "remove" && source.startsWith("builtin:")) throw new Error("built-in capabilities cannot be removed; disable them instead");
   let path = resolve(source); const installing = action === "install" || action === "update";
   if (/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
     const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, ""); path = managedPluginPath(join(app, "plugins"), repo, workspaceName);
@@ -248,4 +253,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
+if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");

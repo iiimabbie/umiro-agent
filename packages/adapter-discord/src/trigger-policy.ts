@@ -6,6 +6,12 @@ export interface DiscordTriggerPolicyConfig {
   readonly allowedChannels?: readonly string[];
   readonly allowedGuilds?: readonly string[];
   readonly respondToBots?: boolean;
+  readonly presence?: DiscordPresenceConfig;
+}
+
+export interface DiscordPresenceConfig {
+  readonly status?: "online" | "idle" | "dnd" | "invisible";
+  readonly activity?: string;
 }
 
 export interface DiscordTriggerFacts {
@@ -31,19 +37,31 @@ function stringList(value: unknown, name: string): readonly string[] {
 }
 
 export function parseDiscordTriggerPolicy(value: unknown): DiscordTriggerPolicyConfig {
-  if (value === undefined) return { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: false };
+  if (value === undefined) return { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("discord config must be an object");
   const raw = value as Record<string, unknown>;
-  const allowed = new Set(["ignoredChannels", "ambientChannels", "allowedChannels", "allowedGuilds", "respondToBots"]);
+  const allowed = new Set(["ignoredChannels", "ambientChannels", "allowedChannels", "allowedGuilds", "respondToBots", "presence"]);
   const unexpected = Object.keys(raw).find(key => !allowed.has(key));
   if (unexpected) throw new TypeError(`unsupported discord config field: ${unexpected}`);
   if (raw.respondToBots !== undefined && typeof raw.respondToBots !== "boolean") throw new TypeError("discord.respondToBots must be boolean");
+  if (raw.presence !== undefined && (!raw.presence || typeof raw.presence !== "object" || Array.isArray(raw.presence))) throw new TypeError("discord.presence must be an object");
+  const presence = raw.presence as Record<string, unknown> | undefined;
+  if (presence) {
+    const unexpectedPresence = Object.keys(presence).find(key => key !== "status" && key !== "activity");
+    if (unexpectedPresence) throw new TypeError(`unsupported discord.presence field: ${unexpectedPresence}`);
+    if (presence.status !== undefined && presence.status !== "online" && presence.status !== "idle" && presence.status !== "dnd" && presence.status !== "invisible") throw new TypeError("discord.presence.status must be online, idle, dnd, or invisible");
+    if (presence.activity !== undefined && (typeof presence.activity !== "string" || !presence.activity.trim())) throw new TypeError("discord.presence.activity must be a non-empty string");
+  }
+  const normalizedPresence: DiscordPresenceConfig | undefined = presence
+    ? { ...(presence.status !== undefined ? { status: presence.status as NonNullable<DiscordPresenceConfig["status"]> } : {}), ...(typeof presence.activity === "string" ? { activity: presence.activity.trim() } : {}) }
+    : undefined;
   return {
     ignoredChannels: stringList(raw.ignoredChannels, "ignoredChannels"),
     ambientChannels: stringList(raw.ambientChannels, "ambientChannels"),
     allowedChannels: stringList(raw.allowedChannels, "allowedChannels"),
     allowedGuilds: stringList(raw.allowedGuilds, "allowedGuilds"),
-    respondToBots: raw.respondToBots === true,
+    respondToBots: raw.respondToBots !== false,
+    ...(normalizedPresence ? { presence: normalizedPresence } : {}),
   };
 }
 
