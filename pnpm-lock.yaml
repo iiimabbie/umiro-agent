@@ -116,7 +116,11 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
-  apps/cli: {}
+  apps/cli:
+    dependencies:
+      '@umiro/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   apps/dev-driver:
     dependencies:

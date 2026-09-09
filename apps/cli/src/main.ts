@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { access, chmod, cp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { promisify } from "node:util";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { validatePluginManifest } from "@umiro/core";
 import { managedPluginPath } from "./plugin-path.js";
 
 const exec = promisify(execFile);
@@ -24,9 +25,33 @@ async function loadPlugins(): Promise<ManagedPlugin[]> {
   const raw = JSON.parse(await readFile(pluginsFile, "utf8").catch(() => "[]")) as Array<string | ManagedPlugin>;
   return raw.map(item => typeof item === "string" ? { source: item, path: item, enabled: true } : item);
 }
-async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> { await mkdir(dirname(pluginsFile), { recursive: true, mode: 0o700 }); await writeFile(pluginsFile, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 }); }
+async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> {
+  await mkdir(dirname(pluginsFile), { recursive: true, mode: 0o700 });
+  const temporary = join(dirname(pluginsFile), `.plugins-${crypto.randomUUID()}.json`);
+  try { await writeFile(temporary, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 }); await rename(temporary, pluginsFile); }
+  finally { await rm(temporary, { force: true }); }
+}
 async function loadConfig(): Promise<UmiroConfig> { return JSON.parse(await readFile(configFile, "utf8")) as UmiroConfig; }
 async function saveConfig(config: UmiroConfig): Promise<void> { await writeFile(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }); }
+
+function assertPluginEntryInside(root: string, entry: string): void {
+  const path = relative(root, entry);
+  if (!path || path === ".." || path.startsWith(`..${sep}`)) throw new Error(`plugin entry escapes its directory: ${entry}`);
+}
+
+async function validatePluginDirectory(directory: string): Promise<void> {
+  const root = await realpath(directory);
+  try {
+    const manifest = JSON.parse(await readFile(join(root, "umiro.plugin.json"), "utf8")) as unknown;
+    validatePluginManifest(manifest);
+    const entry = await realpath(join(root, manifest.entry)); assertPluginEntryInside(root, entry); return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { umiro?: { plugin?: string } };
+  if (!pkg.umiro?.plugin) throw new Error(`plugin manifest not found: ${root}`);
+  const entry = await realpath(join(root, pkg.umiro.plugin)); assertPluginEntryInside(root, entry);
+}
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -167,18 +192,28 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   if (/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
     const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, ""); path = managedPluginPath(join(app, "plugins"), repo, workspaceName);
     if (installing) {
-      const checkout = `${path}.checkout`; await mkdir(join(app, "plugins"), { recursive: true, mode: 0o700 }); await rm(path, { recursive: true, force: true }); await rm(checkout, { recursive: true, force: true }); await exec("git", ["clone", "--depth", "1", source, checkout]);
-      if (workspaceName) { const direct = join(checkout, workspaceName); const nested = join(checkout, "packages", workspaceName); const selected = await exists(join(direct, "package.json")) ? direct : nested; await access(join(selected, "package.json")); await cp(selected, path, { recursive: true }); await rm(checkout, { recursive: true, force: true }); } else await rename(checkout, path);
-      try { await access(join(path, "umiro.plugin.json")); } catch { const pkg = JSON.parse(await readFile(join(path, "package.json"), "utf8")) as { umiro?: { plugin?: string } }; if (!pkg.umiro?.plugin) { await rm(path, { recursive: true, force: true }); throw new Error(`cloned repository is not a Umiro Plugin: ${source}`); } }
-      const manager = await exists(join(path, "pnpm-lock.yaml")) ? "pnpm" : "npm"; await exec(manager, manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], { cwd: path }); await exec(manager, ["run", "build"], { cwd: path });
+      const pluginRoot = join(app, "plugins"); const nonce = crypto.randomUUID(); const checkout = join(pluginRoot, `.checkout-${nonce}`); const candidate = join(pluginRoot, `.candidate-${nonce}`); const previous = join(pluginRoot, `.previous-${nonce}`);
+      await mkdir(pluginRoot, { recursive: true, mode: 0o700 });
+      try {
+        await exec("git", ["clone", "--depth", "1", source, checkout]);
+        if (workspaceName) { const direct = join(checkout, workspaceName); const nested = join(checkout, "packages", workspaceName); const selected = await exists(join(direct, "package.json")) ? direct : nested; await access(join(selected, "package.json")); await cp(selected, candidate, { recursive: true }); }
+        else await rename(checkout, candidate);
+        const manager = await exists(join(candidate, "pnpm-lock.yaml")) ? "pnpm" : "npm"; await exec(manager, manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], { cwd: candidate }); await exec(manager, ["run", "build"], { cwd: candidate });
+        await validatePluginDirectory(candidate);
+        const replacing = await exists(path); if (replacing) await rename(path, previous);
+        try { await rename(candidate, path); } catch (error) { if (replacing) await rename(previous, path); throw error; }
+        await rm(previous, { recursive: true, force: true });
+      } finally { await rm(checkout, { recursive: true, force: true }); await rm(candidate, { recursive: true, force: true }); }
     }
   } else if (installing && /^(?:https?|git):/.test(source)) throw new Error("only public GitHub HTTPS plugin URLs are supported");
-  if (installing) { try { await access(join(path, "umiro.plugin.json")); } catch { const pkg = JSON.parse(await readFile(join(path, "package.json"), "utf8")) as { umiro?: { plugin?: string } }; if (!pkg.umiro?.plugin) throw new Error(`plugin manifest not found: ${path}`); } }
+  if (installing) await validatePluginDirectory(path);
+  const matches = (item: ManagedPlugin) => item.path === path || (item.source === source && item.workspace === workspaceName);
+  if (!installing && !entries.some(matches)) throw new Error(`plugin is not installed: ${source}${workspaceName ? `#${workspaceName}` : ""}`);
   let next = entries;
-  if (installing) { const previous = entries.find(item => item.path === path || (item.source === source && item.workspace === workspaceName)); next = [...entries.filter(item => item.path !== path), { source, path, ...(workspaceName ? { workspace: workspaceName } : {}), enabled: previous?.enabled ?? true, ...(previous?.config ? { config: previous.config } : {}) }]; }
-  else if (action === "remove") next = entries.filter(item => item.path !== path && item.source !== source);
-  else if (action === "enable" || action === "disable") next = entries.map(item => item.path === path || item.source === source ? { ...item, enabled: action === "enable" } : item);
-  else if (action === "configure") next = entries.map(item => item.path === path || item.source === source ? { ...item, config: JSON.parse(configJson ?? "{}") as Record<string, unknown> } : item);
+  if (installing) { const previousEntry = entries.find(matches); next = [...entries.filter(item => !matches(item)), { source, path, ...(workspaceName ? { workspace: workspaceName } : {}), enabled: previousEntry?.enabled ?? true, ...(previousEntry?.config ? { config: previousEntry.config } : {}) }]; }
+  else if (action === "remove") next = entries.filter(item => !matches(item));
+  else if (action === "enable" || action === "disable") next = entries.map(item => matches(item) ? { ...item, enabled: action === "enable" } : item);
+  else if (action === "configure") next = entries.map(item => matches(item) ? { ...item, config: JSON.parse(configJson ?? "{}") as Record<string, unknown> } : item);
   else throw new Error(`unsupported plugin action: ${action}`);
   await savePlugins(next); if (action === "remove" && path.startsWith(`${join(app, "plugins")}/`) && !source.startsWith("builtin:")) await rm(path, { recursive: true, force: true }); console.log(`${action}: ${path}`);
 }
