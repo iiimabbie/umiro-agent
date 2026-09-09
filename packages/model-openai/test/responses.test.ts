@@ -69,6 +69,23 @@ test("responses HTTP preserves endpoint, auth, output, usage and request ID", as
   assert.deepEqual(result.toolCalls, [{ id: "call_http", name: "lookup", input: { q: "sample" } }]);
 });
 
+test("responses streaming emits text deltas and returns the canonical completed response", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+    assert.equal((JSON.parse(String(init?.body)) as { stream?: boolean }).stream, true);
+    const events = [
+      { type: "response.output_text.delta", delta: "Hel" },
+      { type: "response.output_text.delta", delta: "lo" },
+      { type: "response.completed", response: { id: "resp_stream", status: "completed", output_text: "Hello", output: [], usage: { input_tokens: 2, output_tokens: 1 } } },
+    ];
+    return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  });
+  const deltas: string[] = [];
+  const result = await new OpenAIResponsesModel(config).generate(request({ onTextDelta: delta => { deltas.push(delta); } }));
+  assert.deepEqual(deltas, ["Hel", "lo"]);
+  assert.equal(result.text, "Hello");
+  assert.equal(result.providerRequestId, "resp_stream");
+});
+
 test("responses supports unauthenticated endpoints and caller cancellation", async (t) => {
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {

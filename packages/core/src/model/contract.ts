@@ -46,6 +46,8 @@ export interface ModelRequest {
   readonly maxOutputTokens?: number;
   readonly reasoningEffort?: ReasoningEffort;
   readonly signal?: AbortSignal;
+  /** Optional transient presentation callback; canonical completion remains ModelResponse. */
+  readonly onTextDelta?: (delta: string) => void | Promise<void>;
 }
 
 export interface ModelResponse {

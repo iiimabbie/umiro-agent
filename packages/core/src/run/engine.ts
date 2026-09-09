@@ -13,6 +13,7 @@ export interface HeadlessRunRequest {
   readonly model: string;
   readonly prompt: string;
   readonly signal?: AbortSignal;
+  readonly onTextDelta?: (delta: string) => void | Promise<void>;
   readonly maxModelTurns?: number;
   readonly maxToolCalls?: number;
   readonly maxInputTokens?: number;
@@ -676,6 +677,7 @@ export class HeadlessRunEngine {
           tools: this.tools.modelDefinitions(),
           ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: Math.max(1, request.maxOutputTokens - usage.outputTokens) } : {}),
           ...(runSignal ? { signal: runSignal } : {}),
+          ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),
         });
         usage = addUsage(usage, response.usage);
         await this.store.recordModelCall({

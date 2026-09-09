@@ -58,13 +58,13 @@ function notifyRetry(config: ReturnType<typeof connection>, event: OpenAIRetryEv
   config.onRetry?.(event);
 }
 
-export async function postOpenAIJson<T>(input: {
+export async function postOpenAIResponse(input: {
   readonly config: OpenAIConnectionConfig;
   readonly path: string;
   readonly body: unknown;
   readonly label: string;
   readonly signal?: AbortSignal;
-}): Promise<T> {
+}): Promise<Response> {
   const config = connection(input.config);
   const endpoint = `${config.baseUrl}/${input.path.replace(/^\/+/, "")}`;
   const headers = openAIHeaders(config);
@@ -94,13 +94,7 @@ export async function postOpenAIJson<T>(input: {
       continue;
     }
 
-    if (response.ok) {
-      try {
-        return await response.json() as T;
-      } catch (error) {
-        throw new OpenAIRequestError(`${input.label} returned invalid JSON`, "invalid_response", false, response.status, { cause: error });
-      }
-    }
+    if (response.ok) return response;
 
     const detail = (await response.text()).slice(0, 4_000);
     const retryable = RETRYABLE_STATUSES.has(response.status);
@@ -116,4 +110,13 @@ export async function postOpenAIJson<T>(input: {
   }
 
   throw new OpenAIRequestError(`${input.label} retry loop exited unexpectedly`, "upstream", false);
+}
+
+export async function postOpenAIJson<T>(input: Parameters<typeof postOpenAIResponse>[0]): Promise<T> {
+  const response = await postOpenAIResponse(input);
+  try {
+    return await response.json() as T;
+  } catch (error) {
+    throw new OpenAIRequestError(`${input.label} returned invalid JSON`, "invalid_response", false, response.status, { cause: error });
+  }
 }

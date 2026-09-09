@@ -10,7 +10,7 @@ import type {
 } from "@umiro/core/model";
 import type { OpenAIConnectionConfig } from "./config.js";
 import { OpenAIRequestError } from "./errors.js";
-import { postOpenAIJson } from "./http.js";
+import { postOpenAIJson, postOpenAIResponse } from "./http.js";
 import { parseToolCall } from "./tool-calls.js";
 
 interface Annotation { type?: string; url?: string; title?: string }
@@ -71,7 +71,39 @@ export function buildOpenAIResponsesBody(request: ModelRequest): Record<string, 
     ...(request.tools?.length ? {
       tools: request.tools.map(tool => ({ type: "function", name: tool.name, description: tool.description, parameters: tool.parameters })),
     } : {}),
+    ...(request.onTextDelta ? { stream: true } : {}),
   };
+}
+
+async function streamedResponses(request: ModelRequest, config: OpenAIConnectionConfig): Promise<ResponsesPayload> {
+  const response = await postOpenAIResponse({ config, path: "responses", body: buildOpenAIResponsesBody(request), label: "OpenAI Responses", ...(request.signal ? { signal: request.signal } : {}) });
+  if (!response.body) throw new OpenAIRequestError("OpenAI Responses stream has no body", "invalid_response", false, response.status);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let completed: ResponsesPayload | undefined;
+  const consume = async (block: string): Promise<void> => {
+    const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+    if (!data || data === "[DONE]") return;
+    let event: { type?: string; delta?: unknown; response?: ResponsesPayload; error?: unknown };
+    try { event = JSON.parse(data) as typeof event; } catch (error) { throw new OpenAIRequestError("OpenAI Responses stream returned invalid JSON", "invalid_response", false, response.status, { cause: error }); }
+    if (event.type === "response.output_text.delta" && typeof event.delta === "string") await request.onTextDelta?.(event.delta);
+    if (event.type === "response.completed" && event.response) completed = event.response;
+    if (event.type === "response.failed") throw new OpenAIRequestError(`OpenAI Responses stream failed: ${JSON.stringify(event.error ?? event.response?.error ?? {}).slice(0, 2_000)}`, "upstream", false);
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += value ?? "";
+    let boundary: number;
+    while ((boundary = buffer.search(/\r?\n\r?\n/)) >= 0) {
+      const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/)![0];
+      const block = buffer.slice(0, boundary); buffer = buffer.slice(boundary + separator.length);
+      await consume(block);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) await consume(buffer);
+  if (!completed) throw new OpenAIRequestError("OpenAI Responses stream ended without response.completed", "invalid_response", false, response.status);
+  return completed;
 }
 
 export function responsesOutputText(response: ResponsesPayload): string {
@@ -116,7 +148,7 @@ export class OpenAIResponsesModel implements ModelPort {
   constructor(private readonly config: OpenAIConnectionConfig) {}
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
-    const raw = await postOpenAIJson<ResponsesPayload>({
+    const raw = request.onTextDelta ? await streamedResponses(request, this.config) : await postOpenAIJson<ResponsesPayload>({
       config: this.config,
       path: "responses",
       body: buildOpenAIResponsesBody(request),

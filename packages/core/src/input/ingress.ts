@@ -13,6 +13,7 @@ export interface InteractiveIngressRequest {
   readonly maxContextCharacters: number;
   readonly deliveryDestination: JsonObject;
   readonly signal?: AbortSignal;
+  readonly onTextDelta?: (delta: string) => void | Promise<void>;
   readonly onRunCreated?: (runId: string) => void;
 }
 
@@ -99,6 +100,7 @@ export class InteractiveIngress {
       recentHistory: await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, 24),
       maxCharacters: request.maxContextCharacters,
       ...(request.signal ? { signal: request.signal } : {}),
+      ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),
     });
     const result = await this.engine.run({
       runId: primaryRunId,

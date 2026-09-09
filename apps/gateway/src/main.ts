@@ -15,6 +15,7 @@ import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
 import { JsonLineLogger } from "./structured-logger.js";
 import { approvalDetails } from "./approval-presentation.js";
+import { DiscordStreamingDelivery } from "./discord-streaming.js";
 
 const paths = umiroPaths();
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
@@ -116,10 +117,12 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
     const controller = new AbortController();
     let runId = event.id;
     const active = { controller, userId: commandContext.userId };
+    const streaming = new DiscordStreamingDelivery(commandContext.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
     activeRuns.set(runId, active);
     try {
-      const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
+      const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
       if (result.status === "executed") await presentApproval(result.result, commandContext.channelId);
+      if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
       await delivery.drain(controller.signal);
       return { conversationId: result.conversationId, turnId: result.turnId, runId: result.status === "duplicate" ? result.runId : result.result.runId, status: result.status };
     } finally { activeRuns.delete(runId); activeRuns.delete(event.id); }
@@ -174,11 +177,13 @@ discord.onMessage(async message => {
   const event = toInputEvent(message, artifactIds);
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
-  const execution = ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
+  const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
+  const execution = ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); }
   if (result.status === "executed") await presentApproval(result.result, message.channelId);
+  if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
   await delivery.drain();
 });
 const token = process.env.DISCORD_TOKEN?.trim();
