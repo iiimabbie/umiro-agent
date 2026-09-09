@@ -15,6 +15,8 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     this.client.on("messageCreate", message => void this.handle(message));
     this.client.on("interactionCreate", interaction => { if (interaction.isChatInputCommand()) void this.handleCommand(interaction); });
     await this.client.login(token);
+    if (!this.client.user) throw new Error("Discord login returned without a bot user");
+    console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
     const types = { string: ApplicationCommandOptionType.String, integer: ApplicationCommandOptionType.Integer, boolean: ApplicationCommandOptionType.Boolean, channel: ApplicationCommandOptionType.Channel } as const;
     await this.client.application?.commands.set(this.commands.map(command => ({ name: command.name, description: command.description, options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [] })) as ApplicationCommandDataResolvable[]);
   }
