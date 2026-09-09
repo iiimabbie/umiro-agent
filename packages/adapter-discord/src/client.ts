@@ -28,6 +28,10 @@ export class DiscordJsAdapter implements DiscordTextTransport {
 
   private async handle(message: Message): Promise<void> {
     if (message.author.bot || !this.listener) return;
+    let replyAuthorId: string | undefined;
+    if (message.reference?.messageId) {
+      try { replyAuthorId = (await message.fetchReference()).author.id; } catch { /* deleted or inaccessible reference */ }
+    }
     await this.listener({
       messageId: message.id,
       channelId: message.channelId,
@@ -37,6 +41,9 @@ export class DiscordJsAdapter implements DiscordTextTransport {
       authorName: message.author.globalName ?? message.author.username,
       content: message.content,
       createdAt: message.createdAt.toISOString(),
+      mentionedUserIds: [...message.mentions.users.keys()],
+      ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}),
+      ...(replyAuthorId ? { replyAuthorId } : {}),
     });
   }
 

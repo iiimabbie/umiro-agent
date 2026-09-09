@@ -17,6 +17,9 @@ export interface Turn {
   readonly conversationId: ConversationId;
   readonly sequence: number;
   readonly actorPrincipalId: PrincipalId;
+  /** Trusted transport identity captured at ingress for adapter-neutral context
+   * selection. It is display/context metadata and never grants authority. */
+  readonly actorIdentity?: { readonly transport: string; readonly externalId: string };
   readonly inputEventId: string;
   readonly primaryRunId?: string;
   readonly content: readonly InputContentBlock[];

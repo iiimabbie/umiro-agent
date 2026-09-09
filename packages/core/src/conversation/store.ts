@@ -42,6 +42,6 @@ export interface IngestInputEventResult {
   readonly conversationCreated: boolean;
 }
 
-export interface ConversationIngressStore {
+export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
 }

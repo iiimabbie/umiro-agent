@@ -13,6 +13,9 @@ export interface DiscordMessageEnvelope {
   readonly authorName?: string;
   readonly content: string;
   readonly createdAt: string;
+  readonly mentionedUserIds?: readonly string[];
+  readonly replyToMessageId?: string;
+  readonly replyAuthorId?: string;
 }
 
 /** Converts Discord wire data into the Core's transport-neutral Input Event. */
@@ -23,7 +26,8 @@ export function toInputEvent(message: DiscordMessageEnvelope): InputEvent {
     identity: { transport: "discord", externalId: message.authorId, principalId: null },
     conversation: { transport: "discord", externalId: message.threadId ?? message.channelId, kind: message.threadId ? "thread" : (message.guildId ? "channel" : "direct") },
     content: [{ type: "text", text: message.content }],
-    metadata: { messageId: message.messageId, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) },
+    ...(message.replyToMessageId ? { replyToExternalId: message.replyToMessageId } : {}),
+    metadata: { messageId: message.messageId, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}), ...(message.mentionedUserIds ? { mentionedUserIds: [...message.mentionedUserIds] } : {}), ...(message.replyAuthorId ? { replyAuthorId: message.replyAuthorId } : {}) },
   };
 }
 

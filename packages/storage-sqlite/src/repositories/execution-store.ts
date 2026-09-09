@@ -135,6 +135,8 @@ interface TurnRow {
   conversation_id: string;
   sequence: number;
   actor_principal_id: string;
+  actor_transport: string | null;
+  actor_external_id: string | null;
   input_event_id: string;
   primary_run_id: string | null;
   content_json: string;
@@ -242,6 +244,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           conversationId: conversation.id,
           sequence: 0,
           actorPrincipalId: request.actorPrincipalId,
+          actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
           inputEventId: request.event.id,
           primaryRunId: request.newRunId,
           content: structuredClone(request.event.content),
@@ -274,6 +277,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         conversationId: row.id,
         sequence: next.sequence,
         actorPrincipalId: request.actorPrincipalId,
+        actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
         inputEventId: request.event.id,
         primaryRunId: request.newRunId,
         content: structuredClone(request.event.content),
@@ -350,13 +354,15 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   private insertTurn(turn: Turn): void {
     this.database.prepare(`
-      INSERT INTO turns(id, conversation_id, sequence, actor_principal_id, input_event_id, primary_run_id, content_json, reply_to_turn_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO turns(id, conversation_id, sequence, actor_principal_id, actor_transport, actor_external_id, input_event_id, primary_run_id, content_json, reply_to_turn_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       turn.id,
       turn.conversationId,
       turn.sequence,
       turn.actorPrincipalId,
+      turn.actorIdentity?.transport ?? null,
+      turn.actorIdentity?.externalId ?? null,
       turn.inputEventId,
       turn.primaryRunId ?? null,
       json(turn.content),
@@ -410,6 +416,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       conversationId: row.conversation_id,
       sequence: row.sequence,
       actorPrincipalId: row.actor_principal_id,
+      ...(row.actor_transport && row.actor_external_id ? { actorIdentity: { transport: row.actor_transport, externalId: row.actor_external_id } } : {}),
       inputEventId: row.input_event_id,
       ...(row.primary_run_id ? { primaryRunId: row.primary_run_id } : {}),
       content: parseJson<Turn["content"]>(row.content_json),

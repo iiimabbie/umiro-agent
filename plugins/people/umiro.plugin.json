@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "coreApi": "0",
   "entry": "./dist/src/index.js",
-  "permissions": { "capabilities": [], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
+  "permissions": { "capabilities": ["people.write", "people.remove"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
   "namespace": "people",
-  "configSchema": { "type": "object", "additionalProperties": false, "required": ["workspacePath"], "properties": { "workspacePath": { "type": "string", "minLength": 1 }, "maxEntries": { "type": "integer", "minimum": 1 }, "maxCharacters": { "type": "integer", "minimum": 1 } } },
-  "contributes": { "contextProviders": ["people.relevant"] }
+  "configSchema": { "type": "object", "additionalProperties": false, "required": ["workspacePath"], "properties": { "workspacePath": { "type": "string", "minLength": 1 }, "maxEntries": { "type": "integer", "minimum": 1 }, "maxCharacters": { "type": "integer", "minimum": 1 }, "inlineLimit": { "type": "integer", "minimum": 0 }, "recentTurns": { "type": "integer", "minimum": 0 } } },
+  "contributes": { "contextProviders": ["people.relevant"], "tools": ["people_add", "people_update", "people_remove"] }
 }
