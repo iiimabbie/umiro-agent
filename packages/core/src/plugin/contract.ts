@@ -7,6 +7,7 @@ import type { PluginHookDefinition } from "./hooks.js";
 import type { ConversationSearch } from "../search/contract.js";
 import type { SchedulerControl } from "../scheduler/contract.js";
 import type { ChildRunService } from "../delegation/service.js";
+import type { Artifact } from "../artifact/entities.js";
 
 /** Protocol-neutral declarations; Scheduler/Adapter registries consume these later. */
 export interface PluginJobDefinition {
@@ -66,7 +67,11 @@ export interface LegacyPluginServices {
   sendText(input: { readonly channelId: string; readonly content: string }): Promise<{ readonly messageId: string }>;
   editText(input: { readonly channelId: string; readonly messageId: string; readonly content: string }): Promise<{ readonly messageId: string; readonly migrated: boolean }>;
 }
-export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly legacy?: LegacyPluginServices }
+export interface PluginArtifactService {
+  createFromBytes(input: { readonly bytes: Uint8Array; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
+  createFromFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
+}
+export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly artifacts?: PluginArtifactService; readonly legacy?: LegacyPluginServices }
 
 export interface PluginEnableOptions {
   readonly config?: JsonObject;
