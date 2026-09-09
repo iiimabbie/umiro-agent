@@ -27,11 +27,28 @@ export type ChildRunExecutionResult =
 export interface ChildRunServiceOptions {
   readonly now?: () => string;
   readonly createId?: (kind: "delegation" | "run" | "step") => string;
+  readonly maxDepth?: number;
+}
+
+const BUDGET_KEYS = ["maxModelTurns", "maxToolCalls", "maxInputTokens", "maxOutputTokens", "maxDurationMs"] as const;
+
+function narrowedBudget(parent: BudgetCeiling | undefined, requested: BudgetCeiling | undefined): BudgetCeiling | undefined {
+  if (!parent) return requested;
+  const effective: Partial<Record<(typeof BUDGET_KEYS)[number], number>> = {};
+  for (const key of BUDGET_KEYS) {
+    const ceiling = parent[key];
+    const value = requested?.[key];
+    if (ceiling !== undefined && value !== undefined && value > ceiling) throw new Error(`delegation budget ${key} exceeds Parent ceiling ${ceiling}`);
+    if (value !== undefined) effective[key] = value;
+    else if (ceiling !== undefined) effective[key] = ceiling;
+  }
+  return effective as BudgetCeiling;
 }
 
 export class ChildRunService {
   private readonly now: () => string;
   private readonly createId: NonNullable<ChildRunServiceOptions["createId"]>;
+  private readonly maxDepth: number;
 
   constructor(
     private readonly engine: HeadlessRunEngine,
@@ -40,6 +57,8 @@ export class ChildRunService {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? (() => crypto.randomUUID());
+    this.maxDepth = options.maxDepth ?? 4;
+    if (!Number.isSafeInteger(this.maxDepth) || this.maxDepth <= 0) throw new TypeError("maxDepth must be a positive safe integer");
   }
 
   async execute(request: ExecuteChildRunRequest): Promise<ChildRunExecutionResult> {
@@ -51,6 +70,11 @@ export class ChildRunService {
     if (!parent || ["succeeded", "failed", "cancelled", "timed_out"].includes(parent.state)) {
       throw new Error(`Parent Run is unavailable for delegation: ${request.parentRunId}`);
     }
+    let depth = 1; let ancestor = parent;
+    while (ancestor.parentRunId) { depth += 1; if (depth > this.maxDepth) throw new Error(`delegation depth exceeds ${this.maxDepth}`); const next = await this.store.getRun(ancestor.parentRunId); if (!next) throw new Error(`delegation ancestor is missing: ${ancestor.parentRunId}`); ancestor = next; }
+    const parentDelegation = parent.parentRunId ? await this.store.getDelegationByChildRunId(parent.id) : undefined;
+    if (parent.parentRunId && !parentDelegation) throw new Error(`Parent Run delegation record is missing: ${parent.id}`);
+    const budgetCeiling = narrowedBudget(parentDelegation?.budgetCeiling, request.budgetCeiling);
 
     const createdAt = this.now();
     const childRunId = this.createId("run");
@@ -86,7 +110,7 @@ export class ChildRunService {
       childRunId,
       idempotencyKey: request.idempotencyKey,
       task: structuredClone(request.task),
-      ...(request.budgetCeiling ? { budgetCeiling: structuredClone(request.budgetCeiling) } : {}),
+      ...(budgetCeiling ? { budgetCeiling: structuredClone(budgetCeiling) } : {}),
       ...(request.agentProfileRef ? { agentProfileRef: request.agentProfileRef } : {}),
       createdAt,
     };
@@ -99,6 +123,10 @@ export class ChildRunService {
       ...(delegation.budgetCeiling?.maxModelTurns !== undefined
         ? { maxModelTurns: delegation.budgetCeiling.maxModelTurns }
         : {}),
+      ...(delegation.budgetCeiling?.maxToolCalls !== undefined ? { maxToolCalls: delegation.budgetCeiling.maxToolCalls } : {}),
+      ...(delegation.budgetCeiling?.maxInputTokens !== undefined ? { maxInputTokens: delegation.budgetCeiling.maxInputTokens } : {}),
+      ...(delegation.budgetCeiling?.maxOutputTokens !== undefined ? { maxOutputTokens: delegation.budgetCeiling.maxOutputTokens } : {}),
+      ...(delegation.budgetCeiling?.maxDurationMs !== undefined ? { maxDurationMs: delegation.budgetCeiling.maxDurationMs } : {}),
     });
     return this.projectResult(childRunId, result, false);
   }
@@ -130,5 +158,6 @@ export class ChildRunService {
     if (!request.task.objective.trim()) throw new TypeError("delegation requires an objective");
     if (!request.prompt.trim()) throw new TypeError("delegation requires a compiled prompt");
     if (!request.model.trim()) throw new TypeError("delegation requires a model");
+    for (const [name, value] of Object.entries(request.budgetCeiling ?? {})) if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`delegation budget ${name} must be a positive safe integer`);
   }
 }

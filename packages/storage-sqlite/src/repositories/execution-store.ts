@@ -702,6 +702,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return row ? this.delegationFromRow(row) : undefined;
   }
 
+  async getDelegationByChildRunId(childRunId: string): Promise<DelegationRecord | undefined> {
+    const row = this.database.prepare("SELECT * FROM delegations WHERE child_run_id = ?").get(childRunId) as DelegationRow | undefined;
+    return row ? this.delegationFromRow(row) : undefined;
+  }
+
   async getDelegationByKey(parentRunId: string, idempotencyKey: string): Promise<DelegationRecord | undefined> {
     const row = this.database.prepare("SELECT * FROM delegations WHERE parent_run_id = ? AND idempotency_key = ?")
       .get(parentRunId, idempotencyKey) as DelegationRow | undefined;

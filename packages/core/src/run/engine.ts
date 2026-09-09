@@ -14,6 +14,10 @@ export interface HeadlessRunRequest {
   readonly prompt: string;
   readonly signal?: AbortSignal;
   readonly maxModelTurns?: number;
+  readonly maxToolCalls?: number;
+  readonly maxInputTokens?: number;
+  readonly maxOutputTokens?: number;
+  readonly maxDurationMs?: number;
   readonly deliveryDestination?: JsonObject;
   readonly conversationId?: string;
   readonly turnId?: string;
@@ -56,6 +60,20 @@ function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
     outputTokens: left.outputTokens + right.outputTokens,
     reasoningTokens: left.reasoningTokens + right.reasoningTokens,
   };
+}
+
+function validateRunLimits(request: HeadlessRunRequest): void {
+  for (const [name, value] of Object.entries({
+    maxModelTurns: request.maxModelTurns,
+    maxToolCalls: request.maxToolCalls,
+    maxInputTokens: request.maxInputTokens,
+    maxOutputTokens: request.maxOutputTokens,
+    maxDurationMs: request.maxDurationMs,
+  })) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+      throw new TypeError(`${name} must be a positive safe integer`);
+    }
+  }
 }
 
 function checkpointData(model: string, messages: readonly ModelMessage[], usage: ModelUsage, deliveryDestination: JsonObject): JsonValue {
@@ -584,6 +602,7 @@ export class HeadlessRunEngine {
   }
 
   private async execute(request: HeadlessRunRequest, restored?: RestoredExecution): Promise<HeadlessRunResult> {
+    validateRunLimits(request);
     const runId = restored?.runId ?? request.runId ?? this.createId("run");
     let runRevision = restored?.runRevision ?? 0;
     let sequence = restored?.sequence ?? 0;
@@ -621,13 +640,30 @@ export class HeadlessRunEngine {
     }
 
     const maxModelTurns = request.maxModelTurns ?? 8;
+    let toolCalls = 0;
+    const startedMs = Date.now();
+    const durationError = request.maxDurationMs === undefined ? undefined : new Error(`run duration budget exceeded: ${request.maxDurationMs}ms`);
+    const durationController = durationError ? new AbortController() : undefined;
+    const durationTimer = durationController && request.maxDurationMs !== undefined
+      ? setTimeout(() => durationController.abort(durationError), request.maxDurationMs)
+      : undefined;
+    const runSignal = durationController
+      ? request.signal ? AbortSignal.any([request.signal, durationController.signal]) : durationController.signal
+      : request.signal;
+    const assertBudget = (beforeModel = false) => {
+      if (durationController?.signal.aborted || (request.maxDurationMs !== undefined && Date.now() - startedMs >= request.maxDurationMs)) throw durationError;
+      if (request.maxInputTokens !== undefined && (beforeModel ? usage.inputTokens >= request.maxInputTokens : usage.inputTokens > request.maxInputTokens)) throw new Error(`input token budget exceeded: ${request.maxInputTokens}`);
+      if (request.maxOutputTokens !== undefined && (beforeModel ? usage.outputTokens >= request.maxOutputTokens : usage.outputTokens > request.maxOutputTokens)) throw new Error(`output token budget exceeded: ${request.maxOutputTokens}`);
+    };
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
+        assertBudget(true);
         const response = await this.modelPort.generate({
           model: request.model,
           messages,
           tools: this.tools.modelDefinitions(),
-          ...(request.signal ? { signal: request.signal } : {}),
+          ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: Math.max(1, request.maxOutputTokens - usage.outputTokens) } : {}),
+          ...(runSignal ? { signal: runSignal } : {}),
         });
         usage = addUsage(usage, response.usage);
         await this.store.recordModelCall({
@@ -647,6 +683,7 @@ export class HeadlessRunEngine {
         });
         runRevision += 1;
         checkpointVersion += 1;
+        assertBudget();
 
         if (response.toolCalls.length === 0) {
           const completedAt = this.now();
@@ -668,6 +705,8 @@ export class HeadlessRunEngine {
         }
 
         for (const call of response.toolCalls) {
+          toolCalls += 1;
+          if (request.maxToolCalls !== undefined && toolCalls > request.maxToolCalls) throw new Error(`tool call budget exceeded: ${request.maxToolCalls}`);
           const toolStep = this.newStep(runId, sequence++, "operation");
           await this.store.appendStep(toolStep);
           await this.store.updateExecutionProgress({
@@ -689,8 +728,9 @@ export class HeadlessRunEngine {
                 ...(this.tools.get(call.name)?.policy.sideEffect === "idempotent"
                   ? { idempotencyKey: `${runId}:${call.id}` }
                   : {}),
-                ...(request.signal ? { signal: request.signal } : {}),
+                ...(runSignal ? { signal: runSignal } : {}),
               });
+          if (durationController?.signal.aborted) throw durationError;
           const stepState = toolResult.status === "cancelled" ? "cancelled" : toolResult.status === "outcome_unknown" ? "failed" : "succeeded";
           const payload = toolResult.status === "succeeded"
             ? { ok: true, output: toolResult.output }
@@ -746,6 +786,8 @@ export class HeadlessRunEngine {
         clearCheckpoint: true,
       });
       return { status: cancelled ? "cancelled" : "failed", runId, error: message };
+    } finally {
+      if (durationTimer) clearTimeout(durationTimer);
     }
   }
 

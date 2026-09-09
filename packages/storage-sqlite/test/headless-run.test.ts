@@ -184,6 +184,79 @@ test("returns malformed model tool arguments to the model without executing them
   }
 });
 
+test("fails a Run when the model exceeds input or output token ceilings", async (context) => {
+  for (const scenario of [
+    { name: "input", usage: { inputTokens: 6, outputTokens: 1, reasoningTokens: 0 }, request: { maxInputTokens: 5 }, error: /input token budget exceeded: 5/ },
+    { name: "output", usage: { inputTokens: 1, outputTokens: 6, reasoningTokens: 0 }, request: { maxOutputTokens: 5 }, error: /output token budget exceeded: 5/ },
+  ] as const) {
+    await context.test(scenario.name, async () => {
+      const store = new SQLiteExecutionStore(":memory:");
+      let requestedOutput: number | undefined;
+      const model: ModelPort = { async generate(request) { requestedOutput = request.maxOutputTokens; return response({ text: "too much", usage: scenario.usage, assistantMessage: { role: "assistant", content: "too much" } }); } };
+      try {
+        const engine = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() });
+        const result = await engine.run({ context: ownerContext(), model: "fake-model", prompt: "bounded", ...scenario.request });
+        assert.equal(result.status, "failed");
+        if (result.status === "failed") assert.match(result.error, scenario.error);
+        if (scenario.name === "output") assert.equal(requestedOutput, 5);
+        assert.equal((await store.getRun("run-1"))?.state, "failed");
+        assert.equal((await store.listModelCalls("run-1")).length, 1);
+      } finally { store.close(); }
+    });
+  }
+});
+
+test("does not execute tool calls beyond the Run ceiling", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let executed = 0;
+  const calls = [
+    { id: "call-1", name: "test.count", input: {} },
+    { id: "call-2", name: "test.count", input: {} },
+  ];
+  const model: ModelPort = { async generate() { return response({ toolCalls: calls, finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: calls } }); } };
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "test.count", description: "Count", inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    policy: { capability: "test.count", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+    async execute() { executed += 1; return { ok: true, output: null, effectStatus: "not_applicable" }; },
+  });
+  try {
+    const engine = new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() });
+    const result = await engine.run({ context: ownerContext("test.count"), model: "fake-model", prompt: "two calls", maxToolCalls: 1 });
+    assert.equal(result.status, "failed");
+    if (result.status === "failed") assert.match(result.error, /tool call budget exceeded: 1/);
+    assert.equal(executed, 1);
+  } finally { store.close(); }
+});
+
+test("aborts an in-flight model call at the Run duration ceiling", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const model: ModelPort = {
+    async generate(request) {
+      return await new Promise<ModelResponse>((_resolve, reject) => {
+        const fail = () => reject(request.signal?.reason ?? new Error("aborted"));
+        if (request.signal?.aborted) fail(); else request.signal?.addEventListener("abort", fail, { once: true });
+      });
+    },
+  };
+  try {
+    const engine = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() });
+    const result = await engine.run({ context: ownerContext(), model: "fake-model", prompt: "wait", maxDurationMs: 20 });
+    assert.equal(result.status, "failed");
+    if (result.status === "failed") assert.match(result.error, /run duration budget exceeded: 20ms/);
+  } finally { store.close(); }
+});
+
+test("rejects invalid Run ceilings before creating durable state", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const model: ModelPort = { async generate() { return response({ text: "unused" }); } };
+  try {
+    const engine = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() });
+    await assert.rejects(engine.run({ context: ownerContext(), model: "fake-model", prompt: "invalid", maxToolCalls: 0 }), /maxToolCalls must be a positive safe integer/);
+    assert.equal(await store.getRun("run-1"), undefined);
+  } finally { store.close(); }
+});
+
 test("waits for manual review when a non-idempotent effect is unknown", async () => {
   const directory = mkdtempSync(join(tmpdir(), "umiro-headless-unknown-tool-"));
   const store = new SQLiteExecutionStore(join(directory, "execution.db"));
