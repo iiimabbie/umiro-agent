@@ -11,6 +11,11 @@ const plugins = join(home, "config", "plugins.json");
 const configFile = join(home, "config", "umiro.json");
 const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 const exec = promisify(execFile);
+interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
+async function loadPlugins(): Promise<ManagedPlugin[]> {
+  const raw = JSON.parse(await readFile(plugins, "utf8")) as Array<string | ManagedPlugin>;
+  return raw.map(item => typeof item === "string" ? { source: item, path: item, enabled: true } : item);
+}
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -59,12 +64,13 @@ async function stop(): Promise<void> {
   } catch { await rm(pidFile, { force: true }); console.log("stopped"); }
 }
 
-async function plugin(action: string, source?: string, workspaceName?: string): Promise<void> {
-  const entries: string[] = JSON.parse(await readFile(plugins, "utf8"));
-  if (action === "list") { console.log(entries.join("\n")); return; }
+async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string): Promise<void> {
+  const entries = await loadPlugins();
+  if (action === "list") { console.log(entries.map(item => `${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; }
   if (!source) throw new Error(`plugin ${action} requires a path`);
   let path = resolve(source);
-  if (action === "install" && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
+  const installing = action === "install" || action === "update";
+  if (installing && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
     const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, "");
     path = join(home, "app", "plugins", workspaceName ? `${repo}-${workspaceName}` : repo);
     const cloneRoot = workspaceName ? `${path}.checkout` : path;
@@ -100,20 +106,28 @@ async function plugin(action: string, source?: string, workspaceName?: string): 
       await rm(path, { recursive: true, force: true });
       throw new Error(`plugin dependency install/build failed: ${source}`, { cause: error });
     }
-  } else if (action !== "install" && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
+  } else if (!installing && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
     const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, "");
     path = join(home, "app", "plugins", workspaceName ? `${repo}-${workspaceName}` : repo);
-  } else if (action === "install" && /^(?:https?|git):/.test(source)) {
+  } else if (installing && /^(?:https?|git):/.test(source)) {
     throw new Error("only public GitHub HTTPS plugin URLs are supported");
   }
-  if (action === "install") {
+  if (installing) {
     try { await readFile(join(path, "umiro.plugin.json"), "utf8"); }
     catch {
       const pkg = JSON.parse(await readFile(join(path, "package.json"), "utf8")) as { umiro?: { plugin?: string } };
       if (!pkg.umiro?.plugin) throw new Error(`plugin manifest not found: ${path}`);
     }
   }
-  const next = action === "install" ? [...new Set([...entries, path])] : entries.filter(item => item !== path);
+  let next = entries;
+  if (installing) {
+    const previous = entries.find(item => item.path === path || (item.source === source && item.workspace === workspaceName));
+    next = [...entries.filter(item => item.path !== path), { source, path, ...(workspaceName ? { workspace: workspaceName } : {}), enabled: previous?.enabled ?? true, ...(previous?.config ? { config: previous.config } : {}) }];
+  }
+  else if (action === "remove") next = entries.filter(item => item.path !== path && item.source !== source);
+  else if (action === "enable" || action === "disable") next = entries.map(item => item.path === path || item.source === source ? { ...item, enabled: action === "enable" } : item);
+  else if (action === "configure") next = entries.map(item => item.path === path || item.source === source ? { ...item, config: JSON.parse(configJson ?? "{}") as Record<string, unknown> } : item);
+  else throw new Error(`unsupported plugin action: ${action}`);
   await writeFile(plugins, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   if (action === "remove" && path.startsWith(`${join(home, "app", "plugins")}/`)) {
     await rm(path, { recursive: true, force: true });
@@ -125,10 +139,12 @@ const args = process.argv.slice(2);
 const [command, action, source] = args;
 const workspaceIndex = args.indexOf("--workspace");
 const workspaceName = workspaceIndex >= 0 ? args[workspaceIndex + 1] : undefined;
+const configIndex = args.indexOf("--config");
+const configJson = configIndex >= 0 ? args[configIndex + 1] : undefined;
 if (command === "install") await install();
 else if (command === "init") await init();
 else if (command === "start") await start();
 else if (command === "stop") await stop();
 else if (command === "status") await status();
-else if (command === "plugin") await plugin(action ?? "list", source, workspaceName);
+else if (command === "plugin") await plugin(action ?? "list", source, workspaceName, configJson);
 else throw new Error("usage: umiro install|init|start|stop|status | umiro plugin install <source> [--workspace name] | list | remove <source>");

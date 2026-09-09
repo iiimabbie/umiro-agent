@@ -11,8 +11,12 @@ import { PluginJobScheduler } from "./plugin-jobs.js";
 
 const paths = umiroPaths();
 const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; plugins?: Array<{ path: string; config?: JsonObject }> };
-const managed: string[] = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]"));
-const configured: Array<{ path: string; config?: JsonObject }> = [...(config.plugins ?? []), ...managed.map(path => ({ path }))];
+const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
+const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
+const byPath = new Map<string, { path: string; config?: JsonObject }>();
+for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.config ? { config: item.config } : {}) });
+for (const item of config.plugins ?? []) byPath.set(item.path, item);
+const configured = [...byPath.values()];
 const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
 const granted = capabilities(...modules.flatMap(module => module.manifest.permissions.capabilities));
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
