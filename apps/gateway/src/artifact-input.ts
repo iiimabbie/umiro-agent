@@ -5,12 +5,12 @@ import type { ModelImagePart, ModelTextPart } from "@umiro/core/model";
 const MAX_EXTRACTED_CHARACTERS = 200_000;
 
 /** Converts durable inbound artifacts into model input without silently dropping unsupported files. */
-export async function artifactModelContent(prompt: string, artifacts: readonly Artifact[]): Promise<readonly (ModelTextPart | ModelImagePart)[]> {
+export async function artifactModelContent(prompt: string, artifacts: readonly Artifact[], supportsVision = true): Promise<readonly (ModelTextPart | ModelImagePart)[]> {
   const content: Array<ModelTextPart | ModelImagePart> = [];
   if (prompt.trim()) content.push({ type: "text", text: prompt });
   for (const artifact of artifacts) {
     const mediaType = artifact.mediaType.toLowerCase();
-    if (mediaType.startsWith("image/")) {
+    if (mediaType.startsWith("image/") && supportsVision) {
       const bytes = await readFile(artifact.location);
       content.push({ type: "image", url: `data:${artifact.mediaType};base64,${bytes.toString("base64")}`, detail: "auto" });
     } else if (mediaType.startsWith("text/") || mediaType === "application/json") {

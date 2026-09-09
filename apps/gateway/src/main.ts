@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type HeadlessRunResult, type JsonObject } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
-import { OpenAIResponsesModel } from "@umiro/model-openai";
+import { OpenAIResponsesModel, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
@@ -27,7 +27,7 @@ const readiness = { storage: false, plugins: false, discord: false, scheduler: f
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = JSON.parse(await readFile(paths.configFile, "utf8")) as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
@@ -36,7 +36,8 @@ for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.co
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
 const configured = [...byPath.values()];
 const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
-const granted = capabilities(...modules.flatMap(module => module.manifest.permissions.capabilities));
+const hostedWebSearch = config.modelCapabilities?.includes("hosted_web_search") === true;
+const granted = capabilities(...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
@@ -68,6 +69,20 @@ const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
 const apiKey = process.env.LLM_API_KEY?.trim();
 const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
+if (hostedWebSearch) tools.register({
+  name: "web_search",
+  description: "Search the public web through the active model's hosted web search capability.",
+  inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 2, maxLength: 2_000 } } },
+  policy: { capability: "model.hosted_web_search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+  async execute(input, context) {
+    try {
+      const result = await callResponsesWebSearch({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: config.model, query: String(input.query), signal: context.signal });
+      return { ok: true, output: { text: result.text, sources: result.sources }, effectStatus: "not_applicable" };
+    } catch (error) {
+      return { ok: false, effectStatus: "not_applicable", error: { code: "hosted_web_search_unavailable", message: error instanceof Error ? error.message : "hosted web search unavailable", retryable: false } };
+    }
+  },
+});
 const engine = new HeadlessRunEngine(modelPort, tools, store);
 const contextEngine = new ContextEngine(providers);
 const childRuns = new ChildRunService(engine, store);
@@ -211,7 +226,7 @@ discord.onMessage(async message => {
   }
   const controller = new AbortController();
   const event = toInputEvent(message, artifactIds);
-  const userContent = await artifactModelContent(message.content, importedArtifacts);
+  const userContent = await artifactModelContent(message.content, importedArtifacts, config.modelCapabilities?.includes("vision") === true);
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));

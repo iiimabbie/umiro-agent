@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CONFIG_EXPLANATIONS, ControlPanelServer } from "../src/control-panel.js";
+import { CONFIG_EXPLANATIONS, ControlPanelServer, validateControlConfig } from "../src/control-panel.js";
+
+test("model capabilities are explicit and reject unknown values", () => {
+  assert.deepEqual(validateControlConfig({ model: "gemma4", modelCapabilities: ["vision", "hosted_web_search"] }), { model: "gemma4", modelCapabilities: ["vision", "hosted_web_search"] });
+  assert.throws(() => validateControlConfig({ model: "gemma4", modelCapabilities: ["web_search"] }), /modelCapabilities/);
+});
 
 test("localhost control panel authenticates config and fixed workspace file operations", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-web-ui-")); const workspace = join(root, "workspace"); const configFile = join(root, "umiro.json");

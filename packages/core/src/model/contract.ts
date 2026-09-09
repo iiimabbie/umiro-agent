@@ -1,4 +1,5 @@
 export type ReasoningEffort = "default" | "low" | "medium" | "high" | "xhigh";
+export type ModelCapability = "vision" | "function_tools" | "hosted_web_search" | "hosted_image_generation" | "hosted_code_execution";
 
 export interface ModelUsage {
   readonly inputTokens: number;

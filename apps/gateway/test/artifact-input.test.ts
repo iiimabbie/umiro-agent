@@ -18,5 +18,6 @@ test("inbound images, text and unsupported files remain visible to the model", a
       { type: "text", text: "Attached file note.txt:\nhello attachment" },
       { type: "text", text: "Attached file: doc.pdf (application/pdf, 3 bytes)" },
     ]);
+    assert.deepEqual(await artifactModelContent("", [artifact("i", "image/png", image, "shot.png")], false), [{ type: "text", text: "Attached file: shot.png (image/png, 3 bytes)" }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
