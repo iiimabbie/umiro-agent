@@ -20,6 +20,7 @@ import { approvalDetails } from "./approval-presentation.js";
 import { DiscordStreamingDelivery } from "./discord-streaming.js";
 import { ControlPanelServer } from "./control-panel.js";
 import { artifactModelContent } from "./artifact-input.js";
+import { ActiveWorkTracker } from "./active-work.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -65,6 +66,7 @@ const legacyServices = {
 };
 let host: PluginHost;
 const activeRuns = new Map<string, { readonly controller: AbortController; readonly userId: string }>();
+const activeWork = new ActiveWorkTracker();
 
 const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
@@ -164,7 +166,7 @@ const builtinCommands = [
   { name: "followup", description: "Send a follow-up turn to this conversation.", ownerOnly: false, ephemeral: true, options: [{ name: "prompt", description: "Follow-up message", type: "string" as const, required: true }] },
   { name: "archive", description: "Archive this conversation and start fresh on the next message.", ownerOnly: true, ephemeral: true },
 ];
-discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
+const handleCommand = async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
   if (name === "stop") {
     const runId = String(input.run_id ?? "");
     const active = activeRuns.get(runId);
@@ -200,8 +202,9 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
   if (!command) throw new Error(`plugin command not found: ${name}`);
   if (command.ownerOnly !== false && commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
   return host.executeCommand(name, input, commandContext);
-});
-discord.onApproval(async (approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => {
+};
+discord.onCommand([...host.listCommands(), ...builtinCommands], (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => activeWork.track(handleCommand(name, input, commandContext)));
+const handleApproval = async (approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => {
   const resolved = await identities.resolve({ transport: "discord", externalId: interaction.userId, principalId: null });
   const outcome = await approvalRuns.resolveAndResume(approvalId, action, { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive", transport: "discord", conversationId: interaction.channelId } });
   if (outcome.status === "resumed") {
@@ -211,8 +214,9 @@ discord.onApproval(async (approvalId: string, action: DiscordApprovalAction, int
     return { content: `Approval ${outcome.approval.state}; Run ${state}.` };
   }
   return { content: `Approval ${outcome.approval.state}; Run is already ${outcome.runState}.` };
-});
-discord.onMessage(async message => {
+};
+discord.onApproval((approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => activeWork.track(handleApproval(approvalId, action, interaction)));
+const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => {
   const decision = decideDiscordIngress({
     channelId: message.channelId,
     ...(message.guildId ? { guildId: message.guildId } : {}),
@@ -252,7 +256,8 @@ discord.onMessage(async message => {
   if (result.status === "executed") await presentApproval(result.result, message.channelId);
   if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
   await delivery.drain();
-});
+};
+discord.onMessage(message => activeWork.track(handleMessage(message)));
 const token = process.env.DISCORD_TOKEN?.trim();
 if (!token) throw new Error("DISCORD_TOKEN is required");
 await controlPanel?.start();
@@ -269,7 +274,25 @@ const shutdown = async (exitCode = 0) => {
   readiness.shuttingDown = true;
   readiness.scheduler = false;
   readiness.discord = false;
-  scheduler.stop(); embeddingWorker?.stop(); await controlPanel?.stop(); await discord.stop(); store.close(); await rm(`${paths.state}/gateway.ready`, { force: true }); await releaseSingletonLock(); process.exit(exitCode);
+  scheduler.stop();
+  embeddingWorker?.stop();
+  await controlPanel?.stop();
+  await discord.stop();
+  const drain = await activeWork.drain({
+    timeoutMs: 30_000,
+    cancellationGraceMs: 10_000,
+    cancel: () => {
+      const controllers = new Set([...activeRuns.values()].map(active => active.controller));
+      for (const controller of controllers) controller.abort(new Error("gateway is shutting down"));
+      return controllers.size;
+    },
+  });
+  if (!drain.drained) logger.write({ level: "warn", event: "shutdown.inflight_abandoned", message: "In-flight work did not stop before the shutdown deadline", occurredAt: new Date().toISOString(), data: { activeWork: activeWork.size, cancelledRuns: drain.cancelled } });
+  else await delivery.drain().catch(error => logger.write({ level: "warn", event: "shutdown.delivery_drain_failed", message: "Pending delivery drain failed during shutdown", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
+  if (drain.drained) store.close();
+  await rm(`${paths.state}/gateway.ready`, { force: true });
+  await releaseSingletonLock();
+  process.exit(exitCode);
 };
 const fatal = (event: "unhandledRejection" | "uncaughtException", error: unknown) => {
   try { logger.write({ level: "error", event: `process.${event}`, message: "Fatal process error; shutting down cleanly", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }); } catch { /* Last-resort handler must continue shutdown. */ }
