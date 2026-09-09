@@ -1,19 +1,35 @@
-import { ApplicationCommandOptionType, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ActionRowBuilder, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
+
+export type DiscordApprovalAction = "approve" | "deny";
+export interface DiscordApprovalPrompt { readonly approvalId: string; readonly operation: string; readonly details: string; readonly expiresAt: string }
+export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
+
+export function approvalCustomId(action: DiscordApprovalAction, approvalId: string): string {
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(approvalId)) throw new TypeError("invalid Discord approval ID");
+  return `umiro:approval:${action}:${approvalId}`;
+}
+
+export function parseApprovalCustomId(value: string): { action: DiscordApprovalAction; approvalId: string } | undefined {
+  const match = /^umiro:approval:(approve|deny):([A-Za-z0-9._-]{1,64})$/.exec(value);
+  return match ? { action: match[1] as DiscordApprovalAction, approvalId: match[2]! } : undefined;
+}
 
 export class DiscordJsAdapter implements DiscordTextTransport {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
   private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
+  private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
   private readonly messageTimes = new Map<string, number[]>();
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
+  onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
 
   async start(token: string): Promise<void> {
     this.client.on("messageCreate", message => void this.handle(message));
-    this.client.on("interactionCreate", interaction => { if (interaction.isChatInputCommand()) void this.handleCommand(interaction); });
+    this.client.on("interactionCreate", interaction => { if (interaction.isChatInputCommand()) void this.handleCommand(interaction); else if (interaction.isButton()) void this.handleApproval(interaction); });
     await this.client.login(token);
     if (!this.client.user) throw new Error("Discord login returned without a bot user");
     console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
@@ -40,6 +56,18 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
     const sent = await channel.send({ files: files.map(file => ({ attachment: file.path, ...(file.name ? { name: file.name } : {}) })) });
+    return { messageId: sent.id };
+  }
+
+  async sendApproval(channelId: string, prompt: DiscordApprovalPrompt): Promise<{ messageId: string }> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(approvalCustomId("approve", prompt.approvalId)).setLabel("Approve").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(approvalCustomId("deny", prompt.approvalId)).setLabel("Deny").setStyle(ButtonStyle.Secondary),
+    );
+    const content = `Approval required: **${prompt.operation.slice(0, 120)}**\nExpires: ${prompt.expiresAt}\n\n${prompt.details}`.slice(0, 1900);
+    const sent = await channel.send({ content, components: [row] });
     return { messageId: sent.id };
   }
 
@@ -87,5 +115,17 @@ export class DiscordJsAdapter implements DiscordTextTransport {
       const result = await this.commandHandler(interaction.commandName, input, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
       await interaction.editReply({ content: JSON.stringify(result).slice(0, 1900) });
     } catch (error) { await interaction.editReply({ content: `Command failed: ${error instanceof Error ? error.message : String(error)}` }); }
+  }
+
+  private async handleApproval(interaction: ButtonInteraction): Promise<void> {
+    const parsed = parseApprovalCustomId(interaction.customId);
+    if (!parsed || !this.approvalHandler) return;
+    await interaction.deferUpdate();
+    try {
+      const result = await this.approvalHandler(parsed.approvalId, parsed.action, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
+      await interaction.editReply({ content: result.content.slice(0, 1900), components: [] });
+    } catch {
+      await interaction.followUp({ content: "Approval failed or is no longer actionable.", ephemeral: true });
+    }
   }
 }

@@ -33,6 +33,7 @@ export interface IngestInputEventRequest {
   readonly actorPrincipalId: PrincipalId;
   readonly newConversationId: string;
   readonly newTurnId: string;
+  /** Required while ingress supports trigger only; becomes optional for future observe-only Turns. */
   readonly newRunId: string;
   readonly createdAt: string;
 }

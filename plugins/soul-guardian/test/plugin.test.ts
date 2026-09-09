@@ -24,6 +24,8 @@ test("one Soul Guardian entry contributes tools, a job and a command", async () 
   assert.equal(policies.soul_guardian_check?.sideEffect, "idempotent");
   assert.equal(policies.soul_guardian_approve?.interactionRequirement, "interactive_required");
   assert.equal(policies.soul_guardian_restore?.interactionRequirement, "interactive_required");
+  assert.equal(policies.soul_guardian_approve?.approvalRequirement, "required");
+  assert.equal(policies.soul_guardian_restore?.approvalRequirement, "required");
   assert.equal(plugin.contributions.jobs?.[0]?.id, "soul-guardian.check");
   assert.equal(plugin.contributions.commands?.[0]?.name, "soul-guardian");
 });

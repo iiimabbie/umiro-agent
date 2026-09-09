@@ -1,6 +1,6 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
-import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent } from "@umiro/adapter-discord";
+import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type HeadlessRunResult, type JsonObject } from "@umiro/core";
+import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent, type DiscordApprovalAction, type DiscordInteractionContext } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
@@ -14,6 +14,7 @@ import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
 import { JsonLineLogger } from "./structured-logger.js";
+import { approvalDetails } from "./approval-presentation.js";
 
 const paths = umiroPaths();
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
@@ -61,6 +62,7 @@ const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : 
 const engine = new HeadlessRunEngine(modelPort, tools, store);
 const contextEngine = new ContextEngine(providers);
 const childRuns = new ChildRunService(engine, store);
+const approvalRuns = new ApprovalRunCoordinator(store, engine);
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
 const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
@@ -69,6 +71,14 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
+async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
+  if (result.status !== "waiting" || result.reason !== "approval_required") return;
+  const approval = await store.getApproval(result.approvalId);
+  if (!approval) throw new Error(`Approval is missing: ${result.approvalId}`);
+  const operation = await store.getOperation(approval.operationId);
+  if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
+  await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
+}
 host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, legacy: legacyServices });
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());
@@ -108,6 +118,7 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
     activeRuns.set(runId, active);
     try {
       const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
+      if (result.status === "executed") await presentApproval(result.result, commandContext.channelId);
       await delivery.drain(controller.signal);
       return { conversationId: result.conversationId, turnId: result.turnId, runId: result.status === "duplicate" ? result.runId : result.result.runId, status: result.status };
     } finally { activeRuns.delete(runId); activeRuns.delete(event.id); }
@@ -121,6 +132,17 @@ discord.onCommand([...host.listCommands(), ...builtinCommands], async (name: str
   if (!command) throw new Error(`plugin command not found: ${name}`);
   if (command.ownerOnly !== false && commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
   return host.executeCommand(name, input, commandContext);
+});
+discord.onApproval(async (approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => {
+  const resolved = await identities.resolve({ transport: "discord", externalId: interaction.userId, principalId: null });
+  const outcome = await approvalRuns.resolveAndResume(approvalId, action, { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive", transport: "discord", conversationId: interaction.channelId } });
+  if (outcome.status === "resumed") {
+    await presentApproval(outcome.result, interaction.channelId);
+    await delivery.drain();
+    const state = outcome.result.status === "succeeded" ? "completed" : outcome.result.status;
+    return { content: `Approval ${outcome.approval.state}; Run ${state}.` };
+  }
+  return { content: `Approval ${outcome.approval.state}; Run is already ${outcome.runState}.` };
 });
 discord.onMessage(async message => {
   await discord.sendTyping(message.channelId);
@@ -136,7 +158,9 @@ discord.onMessage(async message => {
   const active = { controller, userId: message.authorId };
   const execution = ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
   activeRuns.set(runKey, active);
-  try { await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); }
+  let result;
+  try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); }
+  if (result.status === "executed") await presentApproval(result.result, message.channelId);
   await delivery.drain();
 });
 const token = process.env.DISCORD_TOKEN?.trim();
