@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 0,
+  "id": "discord-tools",
+  "version": "0.0.0",
+  "coreApi": "0",
+  "entry": "./dist/src/index.js",
+  "permissions": { "capabilities": ["discord.message.write", "discord.message.react", "discord.message.pin", "discord.message.read"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
+  "namespace": "discord-tools",
+  "contributes": { "tools": ["discord_send_message", "discord_react", "discord_pin", "discord_unpin", "discord_fetch_message"] }
+}

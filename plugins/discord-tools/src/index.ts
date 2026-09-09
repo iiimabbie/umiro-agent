@@ -1,0 +1,25 @@
+import type { JsonObject } from "@umiro/core/ports";
+import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
+import type { ToolDefinition, ToolExecutionContext, ToolExecutionResult } from "@umiro/core/tool";
+
+const failure = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "discord_tool_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
+const success = (output: unknown): ToolExecutionResult => ({ ok: true, effectStatus: "confirmed", output: output as never });
+
+function channel(input: JsonObject): string { const value = input.channelId; if (typeof value !== "string" || !/^[0-9]{2,32}$/.test(value)) throw new TypeError("channelId must be a Discord snowflake"); return value; }
+function message(input: JsonObject): string { const value = input.messageId; if (typeof value !== "string" || !/^[0-9]{2,32}$/.test(value)) throw new TypeError("messageId must be a Discord snowflake"); return value; }
+function resource(input: JsonObject) { return { kind: "discord-channel", id: channel(input) }; }
+function define(definition: Omit<ToolDefinition, "execute"> & { execute: (input: JsonObject, context: ToolExecutionContext) => Promise<unknown> }): ToolDefinition {
+  return { ...definition, async execute(input, context) { try { return success(await definition.execute(input, context)); } catch (error) { return failure(error); } } };
+}
+
+export function createPlugin(setup: PluginSetupContext): PluginInstance {
+  const service = () => { const value = setup.services?.discord; if (!value) throw new Error("Discord operation service is unavailable"); return value; };
+  const tools: ToolDefinition[] = [
+    define({ name: "discord_send_message", description: "Send a message to an explicitly identified Discord channel.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "content"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, content: { type: "string", minLength: 1, maxLength: 2_000 } } }, policy: { capability: "discord.message.write", tier: "common", interactionRequirement: "not_required", sideEffect: "non_idempotent", resource }, async execute(input, context) { return service().sendMessage({ channelId: channel(input), content: String(input.content), signal: context.signal }); } }),
+    define({ name: "discord_react", description: "Add a reaction to an explicitly identified Discord message.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "messageId", "emoji"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, messageId: { type: "string", pattern: "^[0-9]{2,32}$" }, emoji: { type: "string", minLength: 1, maxLength: 64 } } }, policy: { capability: "discord.message.react", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent", resource }, async execute(input, context) { await service().react({ channelId: channel(input), messageId: message(input), emoji: String(input.emoji), signal: context.signal }); return { reacted: true }; } }),
+    define({ name: "discord_pin", description: "Pin an explicitly identified Discord message.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "messageId"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, messageId: { type: "string", pattern: "^[0-9]{2,32}$" } } }, policy: { capability: "discord.message.pin", tier: "sensitive", interactionRequirement: "not_required", sideEffect: "idempotent", resource }, async execute(input, context) { await service().pin({ channelId: channel(input), messageId: message(input), signal: context.signal }); return { pinned: true }; } }),
+    define({ name: "discord_unpin", description: "Unpin an explicitly identified Discord message.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "messageId"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, messageId: { type: "string", pattern: "^[0-9]{2,32}$" } } }, policy: { capability: "discord.message.pin", tier: "sensitive", interactionRequirement: "not_required", sideEffect: "idempotent", resource }, async execute(input, context) { await service().unpin({ channelId: channel(input), messageId: message(input), signal: context.signal }); return { unpinned: true }; } }),
+    define({ name: "discord_fetch_message", description: "Fetch one explicitly identified Discord message.", inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "messageId"], properties: { channelId: { type: "string", pattern: "^[0-9]{2,32}$" }, messageId: { type: "string", pattern: "^[0-9]{2,32}$" } } }, policy: { capability: "discord.message.read", tier: "sensitive", interactionRequirement: "not_required", sideEffect: "none", resource }, async execute(input, context) { return service().fetchMessage({ channelId: channel(input), messageId: message(input), signal: context.signal }); } }),
+  ];
+  return { contributions: { tools } };
+}
