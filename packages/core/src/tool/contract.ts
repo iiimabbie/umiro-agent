@@ -16,6 +16,7 @@ export interface ToolPolicy {
 
 export interface ToolExecutionContext {
   readonly execution: ExecutionContext;
+  readonly runId?: string;
   readonly operationId: string;
   readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
@@ -60,6 +61,7 @@ export interface ToolInvocation {
   readonly input: Record<string, unknown>;
   readonly stepId: string;
   readonly context: ExecutionContext;
+  readonly runId?: string;
   readonly idempotencyKey?: string;
   readonly signal?: AbortSignal;
 }

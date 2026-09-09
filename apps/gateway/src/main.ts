@@ -1,5 +1,5 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
+import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHost, ToolRegistry, intersectAuthority, type JsonObject } from "@umiro/core";
 import { DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, toInputEvent } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -42,10 +42,7 @@ const legacyServices = {
   sendText: (input: { channelId: string; content: string }) => discord.sendText(input.channelId, input.content),
   editText: (input: { channelId: string; messageId: string; content: string }) => discord.editText(input.channelId, input.messageId, input.content),
 };
-const host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler, legacy: legacyServices });
-for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
-await scheduler.syncPluginJobs(host.listJobs());
-embeddingWorker?.start();
+let host: PluginHost;
 
 const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
@@ -53,6 +50,7 @@ const apiKey = process.env.LLM_API_KEY?.trim();
 const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
 const engine = new HeadlessRunEngine(modelPort, tools, store);
 const contextEngine = new ContextEngine(providers);
+const childRuns = new ChildRunService(engine, store);
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
 const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
@@ -61,6 +59,10 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord);
+host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), undefined, undefined, undefined, { conversationSearch: search, scheduler, childRuns, legacy: legacyServices });
+for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
+await scheduler.syncPluginJobs(host.listJobs());
+embeddingWorker?.start();
 scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   if (trigger.jobRef.startsWith("plugin:")) { await host.runJob(trigger.jobRef.slice("plugin:".length), signal); return; }
   if (trigger.jobRef !== "agent.prompt" || typeof trigger.input.prompt !== "string") throw new Error(`unsupported scheduled job: ${trigger.jobRef}`);

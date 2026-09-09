@@ -257,6 +257,7 @@ export class ToolRuntime {
         input,
         {
           execution: invocation.context,
+          ...(invocation.runId ? { runId: invocation.runId } : {}),
           operationId,
           ...(idempotencyKey ? { idempotencyKey } : {}),
         },

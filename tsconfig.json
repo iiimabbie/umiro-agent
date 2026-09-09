@@ -11,6 +11,7 @@
     { "path": "./plugins/people" },
     { "path": "./plugins/memory" },
     { "path": "./plugins/scheduler" },
+    { "path": "./plugins/subagent" },
     { "path": "./plugins/soul-guardian" },
     { "path": "./apps/dev-driver" }
   ]

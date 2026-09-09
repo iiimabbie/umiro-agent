@@ -575,6 +575,7 @@ export class HeadlessRunEngine {
       input: call.input,
       stepId,
       context,
+      runId,
       ...(this.tools.get(call.name)?.policy.sideEffect === "idempotent"
         ? { idempotencyKey: `${runId}:${call.id}` }
         : {}),
