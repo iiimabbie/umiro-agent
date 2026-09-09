@@ -3,3 +3,4 @@ export * from "./host.js";
 export * from "./manifest.js";
 export * from "./state.js";
 export * from "./hooks.js";
+export * from "./contributions.js";

@@ -7,6 +7,7 @@ import type { LoadedPlugin, PluginEnableOptions, PluginInstance, PluginManifestV
 import { validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
+import { PluginCommandRegistry, PluginJobRegistry } from "./contributions.js";
 
 interface ActivePlugin {
   readonly manifest: PluginManifestV0;
@@ -51,6 +52,8 @@ export class PluginHost {
     private readonly hostAuthorityCeiling: Authority,
     private readonly stateForNamespace?: (namespace: string) => PluginStateStore,
     private readonly hooks = new PluginHookRegistry(),
+    private readonly jobs = new PluginJobRegistry(),
+    private readonly commands = new PluginCommandRegistry(),
   ) {}
 
   async enable(module: PluginModule, options: PluginEnableOptions = {}): Promise<void> {
@@ -93,6 +96,8 @@ export class PluginHost {
     const registeredTools: string[] = [];
     const registeredProviders: string[] = [];
     const registeredHooks: string[] = [];
+    const registeredJobs: string[] = [];
+    const registeredCommands: string[] = [];
     try {
       exactContributionSet(toolNames, manifest.contributes.tools, `plugin ${manifest.id} tools`);
       exactContributionSet(providerIds, manifest.contributes.contextProviders, `plugin ${manifest.id} context providers`);
@@ -117,10 +122,14 @@ export class PluginHost {
         this.hooks.register(manifest.id, hook);
         registeredHooks.push(hook.id);
       }
+      for (const job of active.instance.contributions.jobs ?? []) { this.jobs.register(manifest.id, job); registeredJobs.push(job.id); }
+      for (const command of active.instance.contributions.commands ?? []) { this.commands.register(manifest.id, command); registeredCommands.push(command.name); }
       active.state = "enabled";
     } catch (error) {
       for (const providerId of registeredProviders.reverse()) this.contextProviders.unregister(providerId);
       for (const hookId of registeredHooks.reverse()) this.hooks.unregister(hookId);
+      for (const jobId of registeredJobs.reverse()) this.jobs.unregister(jobId);
+      for (const commandId of registeredCommands.reverse()) this.commands.unregister(commandId);
       for (const toolName of registeredTools.reverse()) this.tools.unregister(toolName);
       try {
         await active.instance.stop?.();
@@ -143,6 +152,8 @@ export class PluginHost {
       this.contextProviders.unregister(provider.id);
     }
     for (const hook of active.instance.contributions.hooks ?? []) this.hooks.unregister(hook.id);
+    for (const job of active.instance.contributions.jobs ?? []) this.jobs.unregister(job.id);
+    for (const command of active.instance.contributions.commands ?? []) this.commands.unregister(command.name);
     try {
       await active.instance.stop?.();
       active.state = "disabled";
@@ -166,6 +177,11 @@ export class PluginHost {
   async emitHook(event: string, payload: import("../ports/json.js").JsonObject, signal?: AbortSignal): Promise<void> {
     await this.hooks.emit(event, payload, signal);
   }
+
+  listJobs() { return this.jobs.list(); }
+  runJob(id: string, signal?: AbortSignal) { return this.jobs.run(id, signal); }
+  listCommands() { return this.commands.list(); }
+  executeCommand(name: string, input: import("../ports/json.js").JsonObject, signal?: AbortSignal) { return this.commands.execute(name, input, signal); }
 
   private snapshot(active: ActivePlugin): LoadedPlugin {
     return {
