@@ -214,8 +214,37 @@ async function start(): Promise<void> {
   await waitForReady(child.pid); console.log(`started ${child.pid} (ready)`);
 }
 async function stop(): Promise<void> {
-  if (await systemdActive()) { await exec("systemctl", ["--user", "stop", "umiro.service"]); console.log("stopped (systemd)"); return; }
-  const processState = await fallbackProcess(); if (processState) process.kill(processState.pid, "SIGTERM"); await rm(pidFile, { force: true }); console.log("stopped");
+  if (await systemdActive()) { await exec("systemctl", ["--user", "stop", "umiro.service"]); await rm(readyFile, { force: true }); console.log("stopped (systemd)"); return; }
+  const processState = await fallbackProcess();
+  if (processState) {
+    process.kill(processState.pid, "SIGTERM");
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) { try { process.kill(processState.pid, 0); } catch { break; } await new Promise(resolveWait => setTimeout(resolveWait, 100)); }
+    try { process.kill(processState.pid, 0); throw new Error(`gateway ${processState.pid} did not stop within 10000ms`); } catch (error) { if (error instanceof Error && error.message.includes("did not stop")) throw error; }
+  }
+  await rm(pidFile, { force: true }); await rm(readyFile, { force: true }); console.log("stopped");
+}
+
+async function uninstall(purge = false): Promise<void> {
+  const target = resolve(home);
+  if (purge) {
+    const forbidden = new Set([resolve("/"), resolve(homedir()), resolve(process.cwd())]);
+    if (forbidden.has(target)) throw new Error(`refusing to purge unsafe UMIRO_HOME: ${target}`);
+    if (!await exists(configFile) || !await exists(pluginsFile) || !await exists(workspace)) throw new Error(`refusing to purge a directory without Umiro installation markers: ${target}`);
+  }
+  await stop();
+  if (process.env.UMIRO_NO_SYSTEMD !== "1") {
+    await exec("systemctl", ["--user", "disable", "--now", "umiro.service"]).catch(() => undefined);
+    await exec("systemctl", ["--user", "unlink", unitPath]).catch(() => undefined);
+    await exec("systemctl", ["--user", "daemon-reload"]).catch(() => undefined);
+  }
+  await rm(unitPath, { force: true });
+  if (purge) {
+    await rm(target, { recursive: true, force: true }); console.log(`uninstalled and purged ${target}`); return;
+  }
+  await rm(app, { recursive: true, force: true }); await rm(join(home, "bin"), { recursive: true, force: true });
+  await rm(pidFile, { force: true }); await rm(readyFile, { force: true }); await rm(join(home, "state", "gateway.lock"), { force: true });
+  console.log(`uninstalled; preserved config, workspace, data, and logs in ${home}`);
 }
 async function rollback(): Promise<void> {
   const current = await readlink(currentRelease); const releases = (await readdir(join(app, "releases"), { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name).sort().reverse(); const currentName = current.split("/").pop(); const previous = releases.find(name => name !== currentName); if (!previous) throw new Error("no previous release available");
@@ -283,4 +312,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install" || command === "upgrade") await install(); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
+if (command === "install" || command === "upgrade") await install(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
