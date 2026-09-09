@@ -37,6 +37,7 @@ import {
   type IngestInputEventRequest,
   type IngestInputEventResult,
   type PersistedTransportIdentity,
+  type SearchHit,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
 
@@ -362,6 +363,35 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       turn.replyToTurnId ?? null,
       turn.createdAt,
     );
+    const text = turn.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    if (text.trim()) this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)")
+      .run(turn.id, turn.conversationId, turn.actorPrincipalId, text);
+  }
+
+  async search(query: string, limit: number): Promise<readonly SearchHit[]> {
+    const normalized = query.trim();
+    if (!normalized) return [];
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("search limit must be between 1 and 100");
+    if ([...normalized].length < 3) {
+      return this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, 0 AS rank
+        FROM conversation_fts WHERE text LIKE ? LIMIT ?`).all(`%${normalized.replace(/[\\%_]/g, "\\$&")}%`, limit) as SearchHit[];
+    }
+    const rows = this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, bm25(conversation_fts) AS rank
+      FROM conversation_fts WHERE conversation_fts MATCH ? ORDER BY rank LIMIT ?`).all(query, limit) as SearchHit[];
+    return rows;
+  }
+
+  async rebuildSearchProjection(): Promise<void> {
+    this.database.transaction(() => {
+      this.database.prepare("DELETE FROM conversation_fts").run();
+      const rows = this.database.prepare("SELECT * FROM turns ORDER BY conversation_id, sequence").all() as TurnRow[];
+      const insert = this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)");
+      for (const row of rows) {
+        const content = parseJson<Turn["content"]>(row.content_json);
+        const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        if (text.trim()) insert.run(row.id, row.conversation_id, row.actor_principal_id, text);
+      }
+    })();
   }
 
   private conversationFromRow(row: ConversationRow): Conversation {
