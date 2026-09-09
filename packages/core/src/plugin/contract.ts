@@ -15,6 +15,7 @@ export interface PluginJobDefinition {
 export interface PluginCommandDefinition {
   readonly name: string;
   readonly description: string;
+  readonly ownerOnly?: boolean;
   readonly execute: (input: JsonObject, signal?: AbortSignal) => Promise<JsonObject>;
 }
 

@@ -35,6 +35,12 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, new ContextEngine(providers), engine);
 const discord = new DiscordJsAdapter();
 const delivery = new DiscordDeliveryWorker(store, discord);
+discord.onCommand(host.listCommands(), async (name, input, userId) => {
+  const command = host.listCommands().find(candidate => candidate.name === name);
+  if (!command) throw new Error(`plugin command not found: ${name}`);
+  if (command.ownerOnly !== false && userId !== ownerDiscordId) throw new Error("Owner only");
+  return host.executeCommand(name, input);
+});
 discord.onMessage(async message => {
   await ingress.handle({ event: toInputEvent(message), model: config.model, maxContextCharacters: 100_000, deliveryDestination: { kind: "discord", channelId: message.channelId } });
   await delivery.drain();
