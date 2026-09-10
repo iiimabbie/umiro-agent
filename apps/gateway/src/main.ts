@@ -46,6 +46,24 @@ const authority = { capabilities: granted, visibility: { kind: "all" as const },
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
 const store = new SQLiteExecutionStore(paths.sqlite);
+const migratePluginState = async (namespace: string) => {
+  const legacy = new FilePluginStateStore(pluginStateDirectory(paths.data, namespace));
+  const target = store.pluginState(namespace);
+  for (const entry of await legacy.list()) {
+    if (await target.read(entry.key)) continue;
+    const value = await legacy.read(entry.key);
+    if (!value) continue;
+    let expiresAt: string | undefined;
+    if (namespace === "discord-tools" && entry.key.startsWith("buttons/")) {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(value)) as { expiresAt?: unknown };
+        if (typeof parsed.expiresAt === "string" && Number.isFinite(Date.parse(parsed.expiresAt))) expiresAt = parsed.expiresAt;
+      } catch { /* Legacy opaque state remains importable without TTL metadata. */ }
+    }
+    await target.writeAtomic(entry.key, value, expiresAt ? { expiresAt } : undefined);
+  }
+};
+for (const namespace of new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)])) await migratePluginState(namespace);
 const artifacts = new ArtifactFileService(paths.artifacts, store);
 const logger = new JsonLineLogger();
 const embedder = createConfiguredEmbedder(config.embedding);
@@ -123,16 +141,12 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const discord = new DiscordJsAdapter();
 await discord.setRespondToBots(discordPolicy.respondToBots === true);
-const buttonState = new FilePluginStateStore(pluginStateDirectory(paths.data, "discord-tools"));
-const activeButtonSets = new Set<string>();
+const buttonState = store.pluginState("discord-tools");
 discord.onButton(async (interaction: DiscordButtonInteraction) => {
-  if (activeButtonSets.has(interaction.buttonSetId)) throw new Error("button action is already processing");
-  activeButtonSets.add(interaction.buttonSetId);
-  try {
     const key = `buttons/${interaction.buttonSetId}.json`;
-    const bytes = await buttonState.read(key);
-    if (!bytes) throw new Error("button set is unavailable");
-    const record = JSON.parse(new TextDecoder().decode(bytes)) as { channelId: string; allowedUserIds: string[]; expiresAt: string; usedButtonIds: string[]; buttons: Array<{ id: string; actionTool: string; actionArgs: JsonObject }> };
+    const current = await buttonState.readVersioned(key);
+    if (!current) throw new Error("button set is unavailable or expired");
+    const record = JSON.parse(new TextDecoder().decode(current.value)) as { channelId: string; allowedUserIds: string[]; expiresAt: string; usedButtonIds: string[]; buttons: Array<{ id: string; actionTool: string; actionArgs: JsonObject }> };
     if (record.channelId !== interaction.channelId) throw new Error("button channel does not match");
     if (Date.parse(record.expiresAt) <= Date.now()) { await buttonState.remove(key); throw new Error("button set expired"); }
     if (record.allowedUserIds.length > 0 && !record.allowedUserIds.includes(interaction.userId)) throw new Error("button user is not allowed");
@@ -143,7 +157,8 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     if (!actionDefinition) throw new Error("button action tool is unavailable");
     if (actionDefinition.policy.approvalRequirement === "required") throw new Error("button action requires the separate exact-operation approval flow");
     record.usedButtonIds.push(interaction.buttonId);
-    await buttonState.writeAtomic(key, new TextEncoder().encode(JSON.stringify(record)));
+    const claimed = await buttonState.compareAndSwap(key, current.version, new TextEncoder().encode(JSON.stringify(record)), { expiresAt: record.expiresAt });
+    if (!claimed.updated) throw new Error("button was already claimed");
     const resolved = await identities.resolve({ transport: "discord", externalId: interaction.userId, principalId: null });
     const now = new Date().toISOString(); const runId = crypto.randomUUID(); const stepId = crypto.randomUUID();
     const execution = { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive" as const, transport: "discord", conversationId: interaction.channelId } };
@@ -155,7 +170,6 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     const terminal = result.status === "succeeded" ? "succeeded" : result.status === "approval_required" ? "waiting" : "failed";
     await store.updateExecutionProgress({ runId, expectedRunRevision: 1, expectedRunState: "running", runState: terminal, ...(terminal === "waiting" ? { waitingReason: "approval_required" } : {}), resumeEligibility: terminal === "waiting" ? "manual_review" : "not_applicable", runUpdatedAt: new Date().toISOString(), ...(terminal === "waiting" ? {} : { step: { id: stepId, expectedRevision: 1, expectedState: "running" as const, state: terminal === "succeeded" ? "succeeded" as const : "failed" as const, updatedAt: new Date().toISOString() } }) });
     return { content: result.status === "succeeded" ? `Action completed: ${action.actionTool}` : result.status === "approval_required" ? `Approval required: ${result.approvalId}` : `Action ${result.status}` };
-  } finally { activeButtonSets.delete(interaction.buttonSetId); }
 });
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
@@ -192,7 +206,7 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
   if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
   await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
 }
-host = new PluginHost(tools, providers, authority, namespace => new FilePluginStateStore(pluginStateDirectory(paths.data, namespace)), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, artifacts, discord, legacy: legacyServices }, undefined, logger);
+host = new PluginHost(tools, providers, authority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, scheduler, childRuns, artifacts, discord, legacy: legacyServices }, undefined, logger);
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 await scheduler.syncPluginJobs(host.listJobs());
 readiness.plugins = true;

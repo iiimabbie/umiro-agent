@@ -14,8 +14,9 @@ import { DELIVERY_RETRY_SCHEMA } from "./012-delivery-retry.js";
 import { APPROVALS_SCHEMA } from "./013-approvals.js";
 import { OPERATION_ARTIFACTS_SCHEMA } from "./014-operation-artifacts.js";
 import { CONVERSATION_COMPACTIONS_SCHEMA } from "./015-conversation-compactions.js";
+import { PLUGIN_STATE_SCHEMA } from "./016-plugin-state.js";
 
-const LATEST_VERSION = 15;
+const LATEST_VERSION = 16;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -123,6 +124,12 @@ export function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(CONVERSATION_COMPACTIONS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(15, new Date().toISOString());
+    })();
+  }
+  if (current.version < 16) {
+    database.transaction(() => {
+      database.exec(PLUGIN_STATE_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(16, new Date().toISOString());
     })();
   }
 }

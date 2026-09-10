@@ -55,6 +55,7 @@ import {
   exactOperationFingerprint,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
+import { SQLitePluginStateStore } from "./plugin-state-store.js";
 
 interface RunRow {
   id: string;
@@ -294,6 +295,10 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     this.database.pragma("synchronous = FULL");
     migrate(this.database);
     this.seedEmbeddingJobs();
+  }
+
+  pluginState(namespace: string): SQLitePluginStateStore {
+    return new SQLitePluginStateStore(this.database, namespace);
   }
 
   async find(transport: string, externalId: string): Promise<PersistedTransportIdentity | undefined> {
