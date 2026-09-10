@@ -27,6 +27,10 @@ import { observeExecutionStore, type CoreExecutionEventName } from "./execution-
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
+const releaseIdentity = await readFile(`${paths.app}/current/install-manifest.json`, "utf8").then(raw => {
+  const manifest = JSON.parse(raw) as { releaseId?: unknown; revision?: unknown; installedAt?: unknown };
+  return { mode: "installed", ...(typeof manifest.releaseId === "string" ? { releaseId: manifest.releaseId } : {}), ...(typeof manifest.revision === "string" ? { revision: manifest.revision } : {}), ...(typeof manifest.installedAt === "string" ? { installedAt: manifest.installedAt } : {}) };
+}).catch(() => ({ mode: "source" }));
 const readiness = { storage: false, plugins: false, discord: false, scheduler: false, shuttingDown: false };
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
@@ -241,10 +245,10 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     if (outcome.status === "resumed") { await delivery.drain(); return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.result.status }; }
     return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.runState };
   },
-}, runs: {
+}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); return { id: run.id, state: run.state, origin: run.context.origin.kind, createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
-}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
+}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
 async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
   if (result.status !== "waiting" || result.reason !== "approval_required") return;
   const approval = await store.getApproval(result.approvalId);
