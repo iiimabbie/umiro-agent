@@ -149,6 +149,63 @@ test("passes the selected session reasoning effort to every model turn", async (
   } finally { store.close(); }
 });
 
+test("persists an intermediate delivery without completing the active Run", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let started!: () => void; let release!: () => void;
+  const modelStarted = new Promise<void>(resolve => { started = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const model: ModelPort = { async generate() { started(); await held; return response({ text: "final", assistantMessage: { role: "assistant", content: "final" } }); } };
+  try {
+    const engine = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() });
+    const running = engine.run({ context: ownerContext(), model: "fake", prompt: "work", deliveryDestination: { kind: "discord", channelId: "123" } });
+    await modelStarted;
+    await store.createDeliveryIntent({ id: "delivery-middle", runId: "run-1", destination: { kind: "discord", channelId: "123" }, payload: { text: "still working" }, state: "pending", createdAt: at });
+    assert.equal((await store.getRun("run-1"))?.state, "running");
+    assert.equal((await store.getDeliveryIntent("delivery-middle"))?.payload.text, "still working");
+    release();
+    assert.equal((await running).status, "succeeded");
+    assert.deepEqual((await store.listPendingDeliveries()).map(delivery => delivery.id), ["delivery-1", "delivery-middle"]);
+  } finally { release(); store.close(); }
+});
+
+test("runs consecutive parallel-safe tools concurrently while preserving deterministic result order", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const events: string[] = [];
+  let modelCalls = 0;
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    if (modelCalls === 1) {
+      const toolCalls = [
+        { id: "call-a", name: "test.parallel_a", input: {} },
+        { id: "call-b", name: "test.parallel_b", input: {} },
+        { id: "call-c", name: "test.exclusive", input: {} },
+      ];
+      return response({ toolCalls, finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls } });
+    }
+    assert.deepEqual(request.messages.filter(message => message.role === "tool").map(message => message.toolCallId), ["call-a", "call-b", "call-c"]);
+    return response({ text: "done", assistantMessage: { role: "assistant", content: "done" } });
+  } };
+  const registry = new ToolRegistry();
+  for (const name of ["test.parallel_a", "test.parallel_b"]) registry.register({
+    name, description: name, inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    policy: { capability: name, tier: "common", interactionRequirement: "not_required", sideEffect: "none", concurrency: "parallel_safe" },
+    async execute() { events.push(`${name}:start`); await held; events.push(`${name}:end`); return { ok: true, output: { name }, effectStatus: "not_applicable" }; },
+  });
+  registry.register({ name: "test.exclusive", description: "exclusive", inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.exclusive", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { events.push("exclusive:start"); return { ok: true, output: {}, effectStatus: "not_applicable" }; } });
+  try {
+    const engine = new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds(), maxParallelToolCalls: 2 });
+    const running = engine.run({ context: ownerContext("test.parallel_a", "test.parallel_b", "test.exclusive"), model: "fake", prompt: "parallel" });
+    while (events.filter(event => event.endsWith(":start")).length < 2) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(events.includes("exclusive:start"), false);
+    release();
+    assert.equal((await running).status, "succeeded");
+    assert.ok(events.indexOf("exclusive:start") > events.indexOf("test.parallel_b:end"));
+    assert.deepEqual((await store.listSteps("run-1")).map(step => [step.sequence, step.kind]), [[0, "model_call"], [1, "operation"], [2, "operation"], [3, "operation"], [4, "model_call"]]);
+  } finally { release(); store.close(); }
+});
+
 test("durably steers another participant into the active Run at a safe boundary", async () => {
   const directory = mkdtempSync(join(tmpdir(), "umiro-steer-authority-"));
   const databasePath = join(directory, "execution.db");

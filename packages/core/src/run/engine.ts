@@ -50,6 +50,7 @@ export type HeadlessRunResult =
 export interface HeadlessRunEngineOptions {
   readonly now?: () => string;
   readonly createId?: (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization" | "approval") => string;
+  readonly maxParallelToolCalls?: number;
 }
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
@@ -141,6 +142,7 @@ export class HeadlessRunEngine {
   private readonly now: () => string;
   private readonly createId: NonNullable<HeadlessRunEngineOptions["createId"]>;
   private readonly toolRuntime: ToolRuntime;
+  private readonly maxParallelToolCalls: number;
 
   constructor(
     private readonly modelPort: ModelPort,
@@ -150,6 +152,8 @@ export class HeadlessRunEngine {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? ((_kind) => crypto.randomUUID());
+    this.maxParallelToolCalls = options.maxParallelToolCalls ?? 2;
+    if (!Number.isSafeInteger(this.maxParallelToolCalls) || this.maxParallelToolCalls <= 0) throw new TypeError("maxParallelToolCalls must be a positive safe integer");
     this.toolRuntime = new ToolRuntime(tools, store, { now: this.now, createId: kind => this.createId(kind) });
   }
 
@@ -215,7 +219,7 @@ export class HeadlessRunEngine {
     if (claim.run.state !== "running" || claim.run.resumeEligibility !== "eligible") {
       throw new RunNotRecoverableError(claim.run.id, "the Run has not been claimed");
     }
-    const modelStep = claim.steps.at(-1);
+    const modelStep = claim.steps.find(step => step.state === "pending" || step.state === "running") ?? claim.steps.at(-1);
     const checkpoint = restoredCheckpoint(claim);
     if (!modelStep) throw new RunNotRecoverableError(claim.run.id, "the Run has no current Step");
     if (modelStep.state === "pending") return this.resumePendingCursor(claim, checkpoint, request, modelStep);
@@ -556,6 +560,13 @@ export class HeadlessRunEngine {
       },
     });
     const remainingCall = assistant?.toolCalls?.find(candidate => !completedCallIds.has(candidate.id) && candidate.id !== call.id);
+    const existingNextStep = claim.steps.find(step => step.sequence > operationStep.sequence && (step.state === "pending" || step.state === "running"));
+    if (existingNextStep) {
+      const advanced = { ...claim, run: { ...claim.run, revision: claim.run.revision + 1 }, checkpoint: { ...claim.checkpoint, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort), updatedAt: progressedAt } };
+      return existingNextStep.state === "pending"
+        ? this.resumePendingCursor(advanced, { ...checkpoint, messages }, request, existingNextStep)
+        : this.resumeOperationCursor(advanced, { ...checkpoint, messages }, request, existingNextStep);
+    }
     const nextStep = this.newStep(claim.run.id, operationStep.sequence + 1, remainingCall ? "operation" : "model_call");
     await this.store.appendStep(nextStep);
     await this.store.updateExecutionProgress({
@@ -798,63 +809,90 @@ export class HeadlessRunEngine {
           return { status: "succeeded", runId, deliveryId, text: response.text, usage };
         }
 
-        for (const call of response.toolCalls) {
-          toolCalls += 1;
+        for (let callIndex = 0; callIndex < response.toolCalls.length;) {
+          const first = response.toolCalls[callIndex]!;
+          const parallel = this.tools.get(first.name)?.policy.concurrency === "parallel_safe";
+          const batch = parallel
+            ? response.toolCalls.slice(callIndex, callIndex + this.maxParallelToolCalls).filter((_call, offset, calls) =>
+                calls.slice(0, offset + 1).every(candidate => this.tools.get(candidate.name)?.policy.concurrency === "parallel_safe"))
+            : [first];
+          callIndex += batch.length;
+          toolCalls += batch.length;
           if (request.maxToolCalls !== undefined && toolCalls > request.maxToolCalls) throw new Error(`tool call budget exceeded: ${request.maxToolCalls}`);
-          const toolStep = this.newStep(runId, sequence++, "operation");
-          await this.store.appendStep(toolStep);
-          await this.store.updateExecutionProgress({
-            runId,
-            expectedRunRevision: runRevision,
-            expectedRunState: "running",
-            runState: "running",
-            resumeEligibility: "eligible",
-            runUpdatedAt: this.now(),
-            step: { id: toolStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
-          });
-          runRevision += 1;
-          checkpointVersion += 1;
-          const toolResult = call.argumentError
-            ? { status: "invalid_input" as const, error: { code: "malformed_tool_arguments", message: call.argumentError, retryable: false } }
-            : await this.toolRuntime.execute({
-                toolName: call.name, input: call.input, stepId: toolStep.id, context: executionContext,
-                ...(this.tools.get(call.name)?.policy.sideEffect === "idempotent"
-                  ? { idempotencyKey: `${runId}:${call.id}` }
-                  : {}),
-                ...(runSignal ? { signal: runSignal } : {}),
-              });
-          if (durationController?.signal.aborted) throw durationError;
-          if (toolResult.status === "approval_required") {
+
+          const prepared: Array<{ call: ModelToolCall; step: Step }> = [];
+          for (const call of batch) {
+            const step = this.newStep(runId, sequence++, "operation");
+            prepared.push({ call, step });
+            await this.store.appendStep(step);
             await this.store.updateExecutionProgress({
-              runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting",
-              waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(),
+              runId,
+              expectedRunRevision: runRevision,
+              expectedRunState: "running",
+              runState: "running",
+              resumeEligibility: "eligible",
+              runUpdatedAt: this.now(),
+              step: { id: step.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
               checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
             });
-            return { status: "waiting", runId, reason: "approval_required", approvalId: toolResult.approvalId };
+            runRevision += 1;
+            checkpointVersion += 1;
           }
-          const stepState = toolResult.status === "cancelled" ? "cancelled" : toolResult.status === "outcome_unknown" ? "failed" : "succeeded";
-          const payload = toolResult.status === "succeeded"
-            ? { ok: true, output: toolResult.output }
-            : { ok: false, error: toolResult.error };
-          if (toolResult.status !== "outcome_unknown" && toolResult.status !== "cancelled") {
-            messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(payload) });
+
+          const completed = await Promise.all(prepared.map(async ({ call, step }) => ({
+            call,
+            step,
+            result: call.argumentError
+              ? { status: "invalid_input" as const, error: { code: "malformed_tool_arguments", message: call.argumentError, retryable: false } }
+              : await this.toolRuntime.execute({
+                  toolName: call.name, input: call.input, stepId: step.id, context: executionContext,
+                  ...(this.tools.get(call.name)?.policy.sideEffect === "idempotent"
+                    ? { idempotencyKey: `${runId}:${call.id}` }
+                    : {}),
+                  ...(runSignal ? { signal: runSignal } : {}),
+                }),
+          })));
+          if (durationController?.signal.aborted) throw durationError;
+
+          let approvalId: string | undefined;
+          let outcomeUnknown = false;
+          let cancellationError: string | undefined;
+          for (const { call, step, result: toolResult } of completed) {
+            if (toolResult.status === "approval_required") { approvalId ??= toolResult.approvalId; continue; }
+            const stepState = toolResult.status === "cancelled" ? "cancelled" : toolResult.status === "outcome_unknown" ? "failed" : "succeeded";
+            const payload = toolResult.status === "succeeded"
+              ? { ok: true, output: toolResult.output }
+              : { ok: false, error: toolResult.error };
+            if (toolResult.status !== "outcome_unknown" && toolResult.status !== "cancelled") {
+              messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(payload) });
+            }
+            if (toolResult.status === "outcome_unknown") outcomeUnknown = true;
+            if (toolResult.status === "cancelled") cancellationError ??= toolResult.error.message;
+            await this.store.updateExecutionProgress({
+              runId,
+              expectedRunRevision: runRevision,
+              expectedRunState: "running",
+              runState: "running",
+              resumeEligibility: "eligible",
+              runUpdatedAt: this.now(),
+              step: { id: step.id, expectedRevision: 1, expectedState: "running", state: stepState, updatedAt: this.now() },
+              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+            });
+            runRevision += 1;
+            checkpointVersion += 1;
           }
-          await this.store.updateExecutionProgress({
-            runId,
-            expectedRunRevision: runRevision,
-            expectedRunState: "running",
-            runState: toolResult.status === "outcome_unknown" ? "waiting" : toolResult.status === "cancelled" ? "cancelled" : "running",
-            resumeEligibility: toolResult.status === "outcome_unknown" ? "manual_review" : toolResult.status === "cancelled" ? "ineligible" : "eligible",
-            ...(toolResult.status === "outcome_unknown" ? { waitingReason: "operation_outcome_unknown" } : {}),
-            runUpdatedAt: this.now(),
-            step: { id: toolStep.id, expectedRevision: 1, expectedState: "running", state: stepState, updatedAt: this.now() },
-            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
-          });
-          runRevision += 1;
-          checkpointVersion += 1;
-          if (toolResult.status === "outcome_unknown") return { status: "waiting", runId, reason: "outcome_unknown" };
-          if (toolResult.status === "cancelled") return { status: "cancelled", runId, error: toolResult.error.message };
+          if (outcomeUnknown) {
+            await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting", waitingReason: "operation_outcome_unknown", resumeEligibility: "manual_review", runUpdatedAt: this.now(), checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() } });
+            return { status: "waiting", runId, reason: "outcome_unknown" };
+          }
+          if (cancellationError) {
+            await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "cancelled", resumeEligibility: "ineligible", runUpdatedAt: this.now(), clearCheckpoint: true });
+            return { status: "cancelled", runId, error: cancellationError };
+          }
+          if (approvalId) {
+            await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting", waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(), checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() } });
+            return { status: "waiting", runId, reason: "approval_required", approvalId };
+          }
         }
 
         modelStep = this.newStep(runId, sequence++, "model_call");

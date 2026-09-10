@@ -73,6 +73,8 @@ export interface ExecutionStore extends ApprovalStore {
   appendStep(step: Step): Promise<void>;
   recordModelCall(call: ModelCallRecord): Promise<void>;
   completeRunWithOutput(completion: CompleteRunWithOutput): Promise<void>;
+  /** Adds a durable delivery without completing its active Run. */
+  createDeliveryIntent(delivery: DeliveryIntent): Promise<void>;
   recordOperationAuthorization(operation: Operation, decision: AuthorizationDecisionRecord, approval?: ApprovalRequest): Promise<void>;
   markOperationExecuting(operationId: string, updatedAt: string): Promise<void>;
   recordOperationOutcome(operationId: string, result: OperationResult, updatedAt: string): Promise<void>;

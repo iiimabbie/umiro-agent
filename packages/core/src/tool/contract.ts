@@ -12,6 +12,8 @@ export interface ToolPolicy {
   /** Exact-operation approval is independent from interactive-origin and privilege checks. */
   readonly approvalRequirement?: "not_required" | "required";
   readonly sideEffect: SideEffectClass;
+  /** Exclusive by default. Only tools safe to overlap within one model turn opt in. */
+  readonly concurrency?: "exclusive" | "parallel_safe";
   readonly timeoutMs?: number;
   readonly resource?: (input: JsonObject) => ResourceRef | undefined;
 }

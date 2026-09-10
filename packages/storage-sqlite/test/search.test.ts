@@ -69,8 +69,8 @@ test("embedding jobs survive as a rebuildable visibility-aware projection", asyn
     { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "alice", inputEventId: "e", content: [{ type: "text", text: "semantic memory" }], createdAt: "now" },
   );
   const [job] = await store.claimEmbeddingJobs(10, "2026-01-01T00:00:00.000Z", "2025-12-31T23:55:00.000Z");
-  assert.equal(job?.turnId, "t");
-  await store.completeEmbeddingJob("t", job!.contentHash, "model", [1, 0], "2026-01-01T00:00:01.000Z");
+  assert.equal(job?.documentKey, "turn:t");
+  await store.completeEmbeddingJob(job!.documentKey, job!.contentHash, "model", [1, 0], "2026-01-01T00:00:01.000Z");
   assert.equal((await store.semanticSearch([0.9, 0.1], "model", 10, { kind: "all" }))[0]?.turnId, "t");
   assert.equal((await store.semanticSearch([1, 0], "model", 10, { kind: "restricted", principalIds: ["bob"], labels: [], resources: [] })).length, 0);
   await store.prepareEmbeddingModel("model");

@@ -1,10 +1,5 @@
 import type { JsonObject, JsonValue } from "../ports/json.js";
 
-export interface ContextReference {
-  readonly sourceRef: string;
-  readonly label?: string;
-}
-
 export interface OutputContract {
   readonly kind: "text" | "json" | "artifact";
   readonly schema?: JsonObject;
@@ -20,7 +15,6 @@ export interface BudgetCeiling {
 
 export interface TaskPackage {
   readonly objective: string;
-  readonly contextRefs: readonly ContextReference[];
   readonly constraints: readonly string[];
   readonly acceptanceCriteria: readonly string[];
   readonly outputContract: OutputContract;
@@ -35,8 +29,10 @@ export interface DelegationRecord {
   readonly idempotencyKey: string;
   readonly task: TaskPackage;
   readonly budgetCeiling?: BudgetCeiling;
-  readonly agentProfileRef?: string;
+  readonly state?: "active" | "waiting" | "succeeded" | "failed" | "cancelled";
   readonly createdAt: string;
+  readonly updatedAt?: string;
+  readonly cancelledAt?: string;
 }
 
 export interface ChildRunOutcome {

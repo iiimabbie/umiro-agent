@@ -1,5 +1,5 @@
 import { deriveAuthority, type AuthorityScopeRequest } from "../authorization/authority.js";
-import type { ExecutionStore } from "../ports/execution-store.js";
+import { ExecutionStoreConflictError, type ExecutionStore } from "../ports/execution-store.js";
 import type { JsonObject } from "../ports/json.js";
 import { HeadlessRunEngine, type HeadlessRunResult } from "../run/engine.js";
 import type { Run, Step } from "../run/entities.js";
@@ -15,7 +15,6 @@ export interface ExecuteChildRunRequest {
   /** Compiled by the Subagent Plugin; Core stores Task Package separately. */
   readonly prompt: string;
   readonly budgetCeiling?: BudgetCeiling;
-  readonly agentProfileRef?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -28,6 +27,7 @@ export interface ChildRunServiceOptions {
   readonly now?: () => string;
   readonly createId?: (kind: "delegation" | "run" | "step") => string;
   readonly maxDepth?: number;
+  readonly maxActiveChildrenPerPrincipal?: number;
 }
 
 const BUDGET_KEYS = ["maxModelTurns", "maxToolCalls", "maxInputTokens", "maxOutputTokens", "maxDurationMs"] as const;
@@ -49,6 +49,8 @@ export class ChildRunService {
   private readonly now: () => string;
   private readonly createId: NonNullable<ChildRunServiceOptions["createId"]>;
   private readonly maxDepth: number;
+  private readonly maxActiveChildrenPerPrincipal: number;
+  private readonly activeChildren = new Map<string, AbortController>();
 
   constructor(
     private readonly engine: HeadlessRunEngine,
@@ -57,8 +59,10 @@ export class ChildRunService {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? (() => crypto.randomUUID());
-    this.maxDepth = options.maxDepth ?? 4;
-    if (!Number.isSafeInteger(this.maxDepth) || this.maxDepth <= 0) throw new TypeError("maxDepth must be a positive safe integer");
+    this.maxDepth = options.maxDepth ?? 1;
+    if (this.maxDepth !== 1) throw new TypeError("Subagent delegation depth is fixed at one level");
+    this.maxActiveChildrenPerPrincipal = options.maxActiveChildrenPerPrincipal ?? 2;
+    if (!Number.isSafeInteger(this.maxActiveChildrenPerPrincipal) || this.maxActiveChildrenPerPrincipal <= 0) throw new TypeError("maxActiveChildrenPerPrincipal must be a positive safe integer");
   }
 
   async execute(request: ExecuteChildRunRequest): Promise<ChildRunExecutionResult> {
@@ -70,6 +74,7 @@ export class ChildRunService {
     if (!parent || ["succeeded", "failed", "cancelled", "timed_out"].includes(parent.state)) {
       throw new Error(`Parent Run is unavailable for delegation: ${request.parentRunId}`);
     }
+    if (parent.parentRunId) throw new Error("Child Runs cannot delegate another Subagent");
     let depth = 1; let ancestor = parent;
     while (ancestor.parentRunId) { depth += 1; if (depth > this.maxDepth) throw new Error(`delegation depth exceeds ${this.maxDepth}`); const next = await this.store.getRun(ancestor.parentRunId); if (!next) throw new Error(`delegation ancestor is missing: ${ancestor.parentRunId}`); ancestor = next; }
     const parentDelegation = parent.parentRunId ? await this.store.getDelegationByChildRunId(parent.id) : undefined;
@@ -79,7 +84,8 @@ export class ChildRunService {
     const createdAt = this.now();
     const childRunId = this.createId("run");
     const childStepId = this.createId("step");
-    const authority = deriveAuthority(parent.context.authority, request.authorityScope);
+    const derived = deriveAuthority(parent.context.authority, request.authorityScope);
+    const authority = { ...derived, capabilities: derived.capabilities.filter(capability => capability !== "subagent.delegate") };
     const run: Run = {
       id: childRunId,
       revision: 0,
@@ -111,24 +117,38 @@ export class ChildRunService {
       idempotencyKey: request.idempotencyKey,
       task: structuredClone(request.task),
       ...(budgetCeiling ? { budgetCeiling: structuredClone(budgetCeiling) } : {}),
-      ...(request.agentProfileRef ? { agentProfileRef: request.agentProfileRef } : {}),
       createdAt,
     };
-    await this.store.createChildRunWithStep(delegation, run, firstStep);
-    const result = await this.engine.runPrepared(childRunId, {
-      model: request.model,
-      prompt: request.prompt,
-      deliveryDestination: { kind: "parent_run", parentRunId: parent.id } satisfies JsonObject,
-      ...(request.signal ? { signal: request.signal } : {}),
-      ...(delegation.budgetCeiling?.maxModelTurns !== undefined
-        ? { maxModelTurns: delegation.budgetCeiling.maxModelTurns }
-        : {}),
-      ...(delegation.budgetCeiling?.maxToolCalls !== undefined ? { maxToolCalls: delegation.budgetCeiling.maxToolCalls } : {}),
-      ...(delegation.budgetCeiling?.maxInputTokens !== undefined ? { maxInputTokens: delegation.budgetCeiling.maxInputTokens } : {}),
-      ...(delegation.budgetCeiling?.maxOutputTokens !== undefined ? { maxOutputTokens: delegation.budgetCeiling.maxOutputTokens } : {}),
-      ...(delegation.budgetCeiling?.maxDurationMs !== undefined ? { maxDurationMs: delegation.budgetCeiling.maxDurationMs } : {}),
-    });
-    return this.projectResult(childRunId, result, false);
+    await this.store.createChildRunWithStep(delegation, run, firstStep, { principalId: parent.context.actor.id, maxActiveChildren: this.maxActiveChildrenPerPrincipal });
+    const controller = new AbortController();
+    this.activeChildren.set(childRunId, controller);
+    const signal = request.signal ? AbortSignal.any([request.signal, controller.signal]) : controller.signal;
+    try {
+      const result = await this.engine.runPrepared(childRunId, {
+        model: request.model,
+        prompt: request.prompt,
+        deliveryDestination: { kind: "parent_run", parentRunId: parent.id } satisfies JsonObject,
+        signal,
+        ...(delegation.budgetCeiling?.maxModelTurns !== undefined ? { maxModelTurns: delegation.budgetCeiling.maxModelTurns } : {}),
+        ...(delegation.budgetCeiling?.maxToolCalls !== undefined ? { maxToolCalls: delegation.budgetCeiling.maxToolCalls } : {}),
+        ...(delegation.budgetCeiling?.maxInputTokens !== undefined ? { maxInputTokens: delegation.budgetCeiling.maxInputTokens } : {}),
+        ...(delegation.budgetCeiling?.maxOutputTokens !== undefined ? { maxOutputTokens: delegation.budgetCeiling.maxOutputTokens } : {}),
+        ...(delegation.budgetCeiling?.maxDurationMs !== undefined ? { maxDurationMs: delegation.budgetCeiling.maxDurationMs } : {}),
+      });
+      return this.projectResult(childRunId, result, false);
+    } catch (error) {
+      if (error instanceof ExecutionStoreConflictError && (await this.store.getRun(childRunId))?.state === "cancelled") return { status: "cancelled", childRunId, detail: "cancelled by Parent Run" };
+      throw error;
+    } finally {
+      if (this.activeChildren.get(childRunId) === controller) this.activeChildren.delete(childRunId);
+    }
+  }
+
+  async cancel(parentRunId: string, childRunId: string): Promise<{ readonly cancelled: boolean; readonly childRunId: string }> {
+    if (!parentRunId.trim() || !childRunId.trim()) throw new TypeError("cancellation requires Parent and Child Run IDs");
+    const cancelled = await this.store.cancelChildRun(parentRunId, childRunId, this.now());
+    if (cancelled) this.activeChildren.get(childRunId)?.abort(new Error("cancelled by Parent Run"));
+    return { cancelled, childRunId };
   }
 
   private async existingResult(delegation: DelegationRecord): Promise<ChildRunExecutionResult> {

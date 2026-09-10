@@ -17,6 +17,8 @@ export interface SearchDocumentInput {
   readonly text: string;
   readonly visibility: VisibilityScope;
   readonly occurredAt?: string;
+  readonly conversationId?: string;
+  readonly actorPrincipalId?: string;
 }
 
 /** Plugin-facing facade; namespace is injected by PluginHost and cannot be forged. */
@@ -32,7 +34,8 @@ export interface SearchDocumentProjection {
 }
 
 export interface EmbeddingJob {
-  readonly turnId: string;
+  /** Stable projection identity, for example `turn:<id>` or `document:<namespace>:<id>`. */
+  readonly documentKey: string;
   readonly text: string;
   readonly contentHash: string;
   readonly attempts: number;
@@ -41,8 +44,8 @@ export interface EmbeddingJob {
 export interface EmbeddingProjection {
   prepareEmbeddingModel(model: string): Promise<void>;
   claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]>;
-  completeEmbeddingJob(turnId: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void>;
-  failEmbeddingJob(turnId: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void>;
+  completeEmbeddingJob(documentKey: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void>;
+  failEmbeddingJob(documentKey: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void>;
   semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope, options?: { readonly excludeConversationId?: string; readonly beforeCreatedAt?: string; readonly minSimilarity?: number }): Promise<readonly SearchHit[]>;
   rebuildEmbeddingProjection(): Promise<void>;
 }

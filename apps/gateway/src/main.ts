@@ -39,7 +39,7 @@ const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 type ConfigModelProfile = { readonly model: string; readonly protocol?: OpenAIProtocol; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
 type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly protocol: OpenAIProtocol; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const defaultProtocol = parseOpenAIProtocol(config.protocol);
 const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? defaultProtocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
 const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, protocol: defaultProtocol, capabilities: [...(config.modelCapabilities ?? [])] };
@@ -167,9 +167,9 @@ if (hostedImageGeneration) tools.register({
     } catch (error) { return { ok: false, effectStatus: "unknown", error: { code: "hosted_image_generation_failed", message: error instanceof Error ? error.message : "hosted image generation failed", retryable: false } }; }
   },
 });
-const engine = new HeadlessRunEngine(modelPort, tools, store);
+const engine = new HeadlessRunEngine(modelPort, tools, store, { maxParallelToolCalls: config.subagent?.maxParallelTools ?? 2 });
 const contextEngine = new ContextEngine(providers);
-const childRuns = new ChildRunService(engine, store);
+const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: config.subagent?.maxConcurrentChildren ?? 2 });
 const approvalRuns = new ApprovalRunCoordinator(store, engine);
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
@@ -229,6 +229,18 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
 });
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
+const replies = { async send(runId: string, text: string, signal?: AbortSignal) {
+  const checkpoint = await store.getCheckpoint(runId);
+  const data = checkpoint?.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`Run ${runId} has no delivery checkpoint`);
+  const destination = (data as Record<string, unknown>).deliveryDestination;
+  if (!destination || typeof destination !== "object" || Array.isArray(destination)) throw new Error(`Run ${runId} has no delivery destination`);
+  const deliveryId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  await store.createDeliveryIntent({ id: deliveryId, runId, destination: structuredClone(destination) as JsonObject, payload: { text }, state: "pending", createdAt });
+  await delivery.drain(signal);
+  return { deliveryId };
+} };
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
   list: () => scheduler.list(),
@@ -262,7 +274,7 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
   if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
   await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
 }
-host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, artifacts, discord, legacy: legacyServices }, undefined, logger);
+host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord, legacy: legacyServices }, undefined, logger);
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
 await scheduler.syncPluginJobs(host.listJobs());

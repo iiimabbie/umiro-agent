@@ -20,8 +20,11 @@ import { STEERED_INPUTS_SCHEMA } from "./018-steered-inputs.js";
 import { ARTIFACT_TEXT_SCHEMA } from "./019-artifact-text.js";
 import { SEARCH_DOCUMENTS_SCHEMA } from "./020-search-documents.js";
 import { STEERED_INPUT_AUTHORITY_SCHEMA } from "./021-steered-input-authority.js";
+import { DELEGATION_STATE_SCHEMA } from "./022-delegation-state.js";
+import { MULTIPLE_DELIVERIES_SCHEMA } from "./023-multiple-deliveries.js";
+import { SOURCE_EMBEDDINGS_SCHEMA } from "./024-source-embeddings.js";
 
-const LATEST_VERSION = 21;
+const LATEST_VERSION = 24;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -165,6 +168,24 @@ export function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(STEERED_INPUT_AUTHORITY_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(21, new Date().toISOString());
+    })();
+  }
+  if (current.version < 22) {
+    database.transaction(() => {
+      database.exec(DELEGATION_STATE_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(22, new Date().toISOString());
+    })();
+  }
+  if (current.version < 23) {
+    database.transaction(() => {
+      database.exec(MULTIPLE_DELIVERIES_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(23, new Date().toISOString());
+    })();
+  }
+  if (current.version < 24) {
+    database.transaction(() => {
+      database.exec(SOURCE_EMBEDDINGS_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(24, new Date().toISOString());
     })();
   }
 }

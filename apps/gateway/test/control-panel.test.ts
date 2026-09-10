@@ -14,6 +14,8 @@ test("model capabilities are explicit and reject unknown values", () => {
   assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { apiKey: "must-not-live-here" } }), /must use SecretSource/);
   assert.throws(() => validateControlConfig({ model: "gemma4", plugins: [{ path: "/plugin", config: { token: "secret" } }] }), /must use SecretSource/);
   assert.deepEqual(validateControlConfig({ model: "gemma4", authority: { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } } }).authority, { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } });
+  assert.deepEqual(validateControlConfig({ model: "gemma4", subagent: { maxConcurrentChildren: 2, maxParallelTools: 1 } }).subagent, { maxConcurrentChildren: 2, maxParallelTools: 1 });
+  assert.throws(() => validateControlConfig({ model: "gemma4", subagent: { maxConcurrentChildren: 3 } }), /must be 1 or 2/);
 });
 
 test("model profiles validate model, capability, and reasoning selection", () => {

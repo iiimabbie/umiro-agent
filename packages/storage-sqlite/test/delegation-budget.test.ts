@@ -6,7 +6,7 @@ import { SQLiteExecutionStore } from "../src/index.js";
 const at = "2026-09-09T00:00:00.000Z";
 const authority = { capabilities: capabilities("subagent.delegate"), visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const execution: ExecutionContext = { actor: { id: "owner", kind: "human", roles: ["owner"] }, origin: { kind: "interactive", transport: "test", conversationId: "c" }, authority };
-const task: TaskPackage = { objective: "bounded work", contextRefs: [], constraints: [], acceptanceCriteria: ["done"], outputContract: { kind: "text" } };
+const task: TaskPackage = { objective: "bounded work", constraints: [], acceptanceCriteria: ["done"], outputContract: { kind: "text" } };
 
 function run(id: string, parentRunId?: string): Run {
   return { id, revision: 0, state: "queued", context: parentRunId ? { ...execution, origin: { kind: "delegation", parentRunId } } : execution, ...(parentRunId ? { parentRunId } : {}), resumeEligibility: "eligible", createdAt: at, updatedAt: at };
@@ -31,31 +31,107 @@ test("Child Run persists and enforces all requested budget fields", async () => 
     assert.equal(result.status, "succeeded");
     assert.equal(outputLimit, 7);
     assert.deepEqual((await store.getDelegationByKey("root", "request-1"))?.budgetCeiling, budgetCeiling);
+    assert.equal((await store.getDelegationByKey("root", "request-1"))?.state, "succeeded");
+    assert.equal((await store.getRun(result.childRunId))?.context.authority.capabilities.includes("subagent.delegate"), false);
   } finally { store.close(); }
 });
 
-test("nested delegation inherits Parent ceilings and rejects expansion", async () => {
+test("only the Parent Run can durably cancel one active Child Run", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.createRunWithStep(run("root"), step("root"));
+  await store.createRunWithStep(run("other"), step("other"));
+  let started!: () => void;
+  const modelStarted = new Promise<void>(resolve => { started = resolve; });
+  const childModel: ModelPort = { async generate(request) {
+    started();
+    return await new Promise((_resolve, reject) => {
+      const abort = () => reject(request.signal?.reason ?? new Error("cancelled"));
+      if (request.signal?.aborted) abort(); else request.signal?.addEventListener("abort", abort, { once: true });
+    });
+  } };
+  const service = new ChildRunService(new HeadlessRunEngine(childModel, new ToolRegistry(), store), store, { now: () => at, createId: ids() });
+  try {
+    const execution = service.execute({ parentRunId: "root", idempotencyKey: "cancel-me", task, authorityScope: {}, model: "fake", prompt: "wait" });
+    await modelStarted;
+    const childRunId = (await store.getDelegationByKey("root", "cancel-me"))!.childRunId;
+    await assert.rejects(service.cancel("other", childRunId), /does not belong/);
+    assert.deepEqual(await service.cancel("root", childRunId), { cancelled: true, childRunId });
+    assert.equal((await execution).status, "cancelled");
+    assert.equal((await store.getRun(childRunId))?.state, "cancelled");
+    assert.equal((await store.getDelegationByChildRunId(childRunId))?.state, "cancelled");
+    assert.ok((await store.listAuditEvents(childRunId)).some(event => event.kind === "delegation.cancelled"));
+  } finally { store.close(); }
+});
+
+test("Child Runs cannot delegate another Subagent", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.createRunWithStep(run("root"), step("root"));
   const parentBudget = { maxModelTurns: 3, maxToolCalls: 2, maxInputTokens: 20, maxOutputTokens: 10, maxDurationMs: 5_000 };
   await store.createChildRunWithStep(delegation("d1", "root", "child-1", parentBudget), run("child-1", "root"), step("child-1"));
   const service = new ChildRunService(new HeadlessRunEngine(model(), new ToolRegistry(), store), store, { now: () => at, createId: ids() });
   try {
-    await assert.rejects(service.execute({ parentRunId: "child-1", idempotencyKey: "expand", task, authorityScope: {}, model: "fake", prompt: "work", budgetCeiling: { maxToolCalls: 3 } }), /maxToolCalls exceeds Parent ceiling 2/);
-    const result = await service.execute({ parentRunId: "child-1", idempotencyKey: "inherit", task, authorityScope: {}, model: "fake", prompt: "work" });
-    assert.equal(result.status, "succeeded");
-    assert.deepEqual((await store.getDelegationByKey("child-1", "inherit"))?.budgetCeiling, parentBudget);
+    await assert.rejects(service.execute({ parentRunId: "child-1", idempotencyKey: "nested", task, authorityScope: {}, model: "fake", prompt: "work", budgetCeiling: { maxToolCalls: 1 } }), /cannot delegate another Subagent/);
+    assert.equal(await store.getDelegationByKey("child-1", "nested"), undefined);
   } finally { store.close(); }
 });
 
-test("delegation depth is bounded before a Child Run is created", async () => {
+test("active Child Runs are atomically limited per initiating Principal", async () => {
   const store = new SQLiteExecutionStore(":memory:");
-  await store.createRunWithStep(run("root"), step("root"));
-  await store.createChildRunWithStep(delegation("d1", "root", "child-1"), run("child-1", "root"), step("child-1"));
-  await store.createChildRunWithStep(delegation("d2", "child-1", "child-2"), run("child-2", "child-1"), step("child-2"));
-  const service = new ChildRunService(new HeadlessRunEngine(model(), new ToolRegistry(), store), store, { now: () => at, createId: ids(), maxDepth: 2 });
+  await store.createRunWithStep(run("root-1"), step("root-1"));
+  await store.createRunWithStep(run("root-2"), step("root-2"));
+  await store.createRunWithStep(run("root-3"), step("root-3"));
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let started = 0;
+  const childModel: ModelPort = { async generate() { started += 1; await held; return { text: "done", toolCalls: [], finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "done" } }; } };
+  const service = new ChildRunService(new HeadlessRunEngine(childModel, new ToolRegistry(), store), store, { now: () => at, createId: ids(), maxActiveChildrenPerPrincipal: 2 });
   try {
-    await assert.rejects(service.execute({ parentRunId: "child-2", idempotencyKey: "too-deep", task, authorityScope: {}, model: "fake", prompt: "work" }), /delegation depth exceeds 2/);
-    assert.equal(await store.getDelegationByKey("child-2", "too-deep"), undefined);
+    const first = service.execute({ parentRunId: "root-1", idempotencyKey: "one", task, authorityScope: {}, model: "fake", prompt: "one" });
+    const second = service.execute({ parentRunId: "root-2", idempotencyKey: "two", task, authorityScope: {}, model: "fake", prompt: "two" });
+    while (started < 2) await new Promise(resolve => setImmediate(resolve));
+    await assert.rejects(service.execute({ parentRunId: "root-3", idempotencyKey: "three", task, authorityScope: {}, model: "fake", prompt: "three" }), /already has 2 active Child Runs/);
+    release();
+    assert.deepEqual((await Promise.all([first, second])).map(result => result.status), ["succeeded", "succeeded"]);
+  } finally { release(); store.close(); }
+});
+
+test("Child output is durably searchable with Parent lineage, visibility, and embedding", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const parent: Run = {
+    ...run("root"),
+    conversationId: "conversation-1",
+    context: {
+      ...execution,
+      authority: {
+        ...authority,
+        visibility: { kind: "restricted", principalIds: ["owner"], labels: [], resources: [{ kind: "conversation", id: "conversation-1" }] },
+      },
+    },
+  };
+  await store.createRunWithStep(parent, step("root"));
+  const service = new ChildRunService(new HeadlessRunEngine({ async generate() { return { text: "subagent private research result", toolCalls: [], finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "subagent private research result" } }; } }, new ToolRegistry(), store), store, { now: () => at, createId: ids() });
+  try {
+    const result = await service.execute({ parentRunId: "root", idempotencyKey: "indexed", task, authorityScope: {}, model: "fake", prompt: "research" });
+    assert.equal(result.status, "succeeded");
+    const childRunId = result.childRunId;
+    const visible = (await store.search("private research", 10, parent.context.authority.visibility))[0];
+    assert.equal(visible?.sourceType, "child_run_output");
+    assert.equal(visible?.sourceId, childRunId);
+    assert.equal(visible?.conversationId, "conversation-1");
+    assert.equal(visible?.actorPrincipalId, "owner");
+    assert.equal((await store.search("private research", 10, { kind: "restricted", principalIds: ["stranger"], labels: [], resources: [] })).length, 0);
+
+    const jobs = await store.claimEmbeddingJobs(10, "2026-09-10T00:01:00.000Z", "2026-09-09T23:00:00.000Z");
+    const childJob = jobs.find(job => job.documentKey === `document:core:${childRunId}`);
+    assert.ok(childJob);
+    await store.completeEmbeddingJob(childJob.documentKey, childJob.contentHash, "embedding-model", [1, 0], "2026-09-10T00:01:01.000Z");
+    const semantic = (await store.semanticSearch([1, 0], "embedding-model", 10, parent.context.authority.visibility)).find(hit => hit.sourceId === childRunId);
+    assert.equal(semantic?.conversationId, "conversation-1");
+
+    await store.rebuildSearchProjection();
+    const rebuilt = (await store.search("private research", 10, parent.context.authority.visibility)).find(hit => hit.sourceId === childRunId);
+    assert.equal(rebuilt?.actorPrincipalId, "owner");
+    const rebuiltJobs = await store.claimEmbeddingJobs(10, "2026-09-10T00:02:00.000Z", "2026-09-09T23:00:00.000Z");
+    assert.ok(rebuiltJobs.some(job => job.documentKey === `document:core:${childRunId}`));
   } finally { store.close(); }
 });

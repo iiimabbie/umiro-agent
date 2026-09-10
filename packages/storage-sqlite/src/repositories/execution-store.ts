@@ -210,7 +210,10 @@ interface DelegationRow {
   task_json: string;
   budget_ceiling_json: string | null;
   agent_profile_ref: string | null;
+  state: NonNullable<DelegationRecord["state"]>;
   created_at: string;
+  updated_at: string | null;
+  cancelled_at: string | null;
 }
 
 function json(value: JsonValue | object): string {
@@ -700,7 +703,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const text = this.turnProjectionText(turn.content, turn.primaryRunId);
     if (text.trim()) this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)")
       .run(turn.id, turn.conversationId, turn.actorPrincipalId, text);
-    if (text.trim()) this.enqueueEmbedding(turn.id, text);
+    if (text.trim()) this.enqueueEmbedding(`turn:${turn.id}`, text);
   }
 
   private attachmentEvidence(content: Turn["content"]): string {
@@ -830,29 +833,37 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   }
 
   private ensureVectorIndex(model: string, dimensions: number): void {
-    const existing = this.database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='conversation_embeddings_vec'").get() as { sql: string } | undefined;
+    const existing = this.database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='search_embeddings_vec'").get() as { sql: string } | undefined;
     const configuredDimensions = existing?.sql.match(/embedding\s+float\[(\d+)\]/i)?.[1];
     if (existing && Number(configuredDimensions) !== dimensions) {
-      this.database.exec("DROP TABLE conversation_embeddings_vec");
-      this.database.prepare("DELETE FROM conversation_embeddings").run();
+      this.database.exec("DROP TABLE search_embeddings_vec");
+      this.database.prepare("DELETE FROM search_embeddings").run();
     }
     if (!existing || Number(configuredDimensions) !== dimensions) {
       if (!Number.isSafeInteger(dimensions) || dimensions < 1 || dimensions > 65_536) throw new TypeError("embedding dimensions are invalid");
-      this.database.exec(`CREATE VIRTUAL TABLE conversation_embeddings_vec USING vec0(turn_id TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
-      const rows = this.database.prepare("SELECT turn_id, vector_json FROM conversation_embeddings WHERE model=? AND dimensions=?").all(model, dimensions) as Array<{ turn_id: string; vector_json: string }>;
-      const insert = this.database.prepare("INSERT INTO conversation_embeddings_vec(turn_id, embedding) VALUES (?, ?)");
-      for (const row of rows) insert.run(row.turn_id, this.vectorBlob(parseJson<number[]>(row.vector_json)));
+      this.database.exec(`CREATE VIRTUAL TABLE search_embeddings_vec USING vec0(document_key TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
+      const rows = this.database.prepare("SELECT document_key, vector_json FROM search_embeddings WHERE model=? AND dimensions=?").all(model, dimensions) as Array<{ document_key: string; vector_json: string }>;
+      const insert = this.database.prepare("INSERT INTO search_embeddings_vec(document_key, embedding) VALUES (?, ?)");
+      for (const row of rows) insert.run(row.document_key, this.vectorBlob(parseJson<number[]>(row.vector_json)));
     }
   }
 
-  private enqueueEmbedding(turnId: string, text: string): void {
+  private enqueueEmbedding(documentKey: string, text: string): void {
     const hash = this.contentHash(text);
-    const existing = this.database.prepare("SELECT content_hash FROM conversation_embeddings WHERE turn_id = ?").get(turnId) as { content_hash: string } | undefined;
+    const existing = this.database.prepare("SELECT content_hash FROM search_embeddings WHERE document_key = ?").get(documentKey) as { content_hash: string } | undefined;
     if (existing?.content_hash === hash) return;
-    this.database.prepare(`INSERT INTO conversation_embedding_jobs(turn_id, content_hash, status, attempts, next_retry_at, last_error, updated_at)
+    this.database.prepare(`INSERT INTO search_embedding_jobs(document_key, content_hash, status, attempts, next_retry_at, last_error, updated_at)
       VALUES (?, ?, 'pending', 0, NULL, NULL, ?)
-      ON CONFLICT(turn_id) DO UPDATE SET content_hash=excluded.content_hash, status='pending', attempts=0, next_retry_at=NULL, last_error=NULL, updated_at=excluded.updated_at`)
-      .run(turnId, hash, new Date().toISOString());
+      ON CONFLICT(document_key) DO UPDATE SET content_hash=excluded.content_hash, status='pending', attempts=0, next_retry_at=NULL, last_error=NULL, updated_at=excluded.updated_at`)
+      .run(documentKey, hash, new Date().toISOString());
+  }
+
+  private removeEmbedding(documentKey: string): void {
+    if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_embeddings_vec'").get()) {
+      this.database.prepare("DELETE FROM search_embeddings_vec WHERE document_key=?").run(documentKey);
+    }
+    this.database.prepare("DELETE FROM search_embedding_jobs WHERE document_key=?").run(documentKey);
+    this.database.prepare("DELETE FROM search_embeddings WHERE document_key=?").run(documentKey);
   }
 
   private refreshTurnSearchProjection(runId: string): void {
@@ -863,26 +874,72 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (!text.trim()) return;
     this.database.prepare("DELETE FROM conversation_fts WHERE turn_id = ?").run(row.id);
     this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)").run(row.id, row.conversation_id, row.actor_principal_id, text);
-    this.enqueueEmbedding(row.id, text);
+    this.enqueueEmbedding(`turn:${row.id}`, text);
+  }
+
+  private refreshChildRunSearchProjection(runId: string): void {
+    const row = this.database.prepare(`SELECT child.id AS child_run_id,child.parent_run_id,parent.conversation_id,parent.context_json,o.text,o.created_at
+      FROM runs child JOIN runs parent ON parent.id=child.parent_run_id JOIN run_outputs o ON o.run_id=child.id
+      WHERE child.id=?`).get(runId) as { child_run_id: string; parent_run_id: string; conversation_id: string | null; context_json: string; text: string; created_at: string } | undefined;
+    if (!row?.text.trim()) return;
+    const parentContext = parseJson<ExecutionContext>(row.context_json);
+    const documentKey = `document:core:${row.child_run_id}`;
+    this.removeEmbedding(documentKey);
+    this.database.prepare("DELETE FROM search_documents_fts WHERE namespace='core' AND document_id=?").run(row.child_run_id);
+    this.database.prepare("DELETE FROM search_documents WHERE namespace='core' AND document_id=?").run(row.child_run_id);
+    this.database.prepare(`INSERT INTO search_documents(namespace,source_id,document_id,source_type,text,visibility_json,occurred_at,conversation_id,actor_principal_id)
+      VALUES ('core',?,?,?,?,?,?,?,?)`).run(row.child_run_id, row.child_run_id, "child_run_output", row.text, json(parentContext.authority.visibility), row.created_at, row.conversation_id, parentContext.actor.id);
+    this.database.prepare("INSERT INTO search_documents_fts(namespace,document_id,source_type,source_id,text) VALUES ('core',?,?,?,?)")
+      .run(row.child_run_id, "child_run_output", row.child_run_id, row.text);
+    this.enqueueEmbedding(documentKey, row.text);
   }
 
   private seedEmbeddingJobs(): void {
-    const rows = this.database.prepare(`SELECT t.id, t.content_json, t.primary_run_id, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string; primary_run_id: string | null; assistant_text: string | null }>;
+    const rows = this.database.prepare(`SELECT t.id, t.content_json, t.primary_run_id, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN search_embeddings e ON e.document_key='turn:' || t.id WHERE e.document_key IS NULL`).all() as Array<{ id: string; content_json: string; primary_run_id: string | null; assistant_text: string | null }>;
     for (const row of rows) {
       const content = parseJson<Turn["content"]>(row.content_json);
       const text = this.turnProjectionText(content, row.primary_run_id, row.assistant_text ?? "");
-      if (text.trim()) this.enqueueEmbedding(row.id, text);
+      if (text.trim()) this.enqueueEmbedding(`turn:${row.id}`, text);
     }
+    const documents = this.database.prepare(`SELECT d.namespace,d.document_id,d.text FROM search_documents d LEFT JOIN search_embeddings e ON e.document_key='document:' || d.namespace || ':' || d.document_id WHERE e.document_key IS NULL`).all() as Array<{ namespace: string; document_id: string; text: string }>;
+    for (const document of documents) this.enqueueEmbedding(`document:${document.namespace}:${document.document_id}`, document.text);
+  }
+
+  private embeddingSource(documentKey: string): { readonly text: string; readonly hit: SearchHit; readonly visibility?: VisibilityScope; readonly occurredAt: string } | undefined {
+    const turn = this.database.prepare(`SELECT t.id,t.conversation_id,t.actor_principal_id,t.content_json,t.primary_run_id,t.created_at,o.text AS assistant_text
+      FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id WHERE 'turn:' || t.id=?`).get(documentKey) as { id: string; conversation_id: string; actor_principal_id: string; content_json: string; primary_run_id: string | null; created_at: string; assistant_text: string | null } | undefined;
+    if (turn) {
+      const text = this.turnProjectionText(parseJson<Turn["content"]>(turn.content_json), turn.primary_run_id, turn.assistant_text ?? "");
+      return { text, occurredAt: turn.created_at, hit: { turnId: turn.id, conversationId: turn.conversation_id, actorPrincipalId: turn.actor_principal_id, text, rank: 0 } };
+    }
+    const document = this.database.prepare(`SELECT namespace,document_id,source_type,source_id,text,visibility_json,occurred_at,conversation_id,actor_principal_id
+      FROM search_documents WHERE 'document:' || namespace || ':' || document_id=?`).get(documentKey) as { namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string; occurred_at: string | null; conversation_id: string | null; actor_principal_id: string | null } | undefined;
+    if (!document) return undefined;
+    return {
+      text: document.text,
+      occurredAt: document.occurred_at ?? "",
+      visibility: parseJson<VisibilityScope>(document.visibility_json),
+      hit: {
+        turnId: `document:${document.namespace}:${document.document_id}`,
+        conversationId: document.conversation_id ?? `source:${document.source_type}:${document.source_id}`,
+        actorPrincipalId: document.actor_principal_id ?? `namespace:${document.namespace}`,
+        text: document.text,
+        rank: 0,
+        documentId: document.document_id,
+        sourceType: document.source_type,
+        sourceId: document.source_id,
+      },
+    };
   }
 
   async prepareEmbeddingModel(model: string): Promise<void> {
     if (!model.trim()) throw new TypeError("embedding model is required");
     this.database.transaction(() => {
-      const incompatible = this.database.prepare("SELECT 1 FROM conversation_embeddings WHERE model <> ? LIMIT 1").get(model);
+      const incompatible = this.database.prepare("SELECT 1 FROM search_embeddings WHERE model <> ? LIMIT 1").get(model);
       if (!incompatible) return;
-      this.database.prepare("DELETE FROM conversation_embeddings").run();
-      if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_embeddings_vec'").get()) this.database.exec("DROP TABLE conversation_embeddings_vec");
-      this.database.prepare("DELETE FROM conversation_embedding_jobs").run();
+      this.database.prepare("DELETE FROM search_embeddings").run();
+      if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_embeddings_vec'").get()) this.database.exec("DROP TABLE search_embeddings_vec");
+      this.database.prepare("DELETE FROM search_embedding_jobs").run();
       this.seedEmbeddingJobs();
     })();
   }
@@ -890,38 +947,42 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("embedding claim limit must be between 1 and 100");
     return this.database.transaction(() => {
-      const rows = this.database.prepare(`SELECT j.turn_id, j.content_hash, j.attempts, t.content_json, t.primary_run_id, o.text AS assistant_text
-        FROM conversation_embedding_jobs j JOIN turns t ON t.id=j.turn_id LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id
+      const rows = this.database.prepare(`SELECT j.document_key, j.content_hash, j.attempts
+        FROM search_embedding_jobs j
         WHERE (j.status='pending' OR (j.status='failed' AND (j.next_retry_at IS NULL OR j.next_retry_at <= ?)) OR (j.status='processing' AND j.updated_at < ?))
-      ORDER BY j.updated_at, j.turn_id LIMIT ?`).all(now, staleBefore, limit) as Array<{ turn_id: string; content_hash: string; attempts: number; content_json: string; primary_run_id: string | null; assistant_text: string | null }>;
-      const update = this.database.prepare("UPDATE conversation_embedding_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE turn_id=? AND content_hash=?");
+      ORDER BY j.updated_at, j.document_key LIMIT ?`).all(now, staleBefore, limit) as Array<{ document_key: string; content_hash: string; attempts: number }>;
+      const update = this.database.prepare("UPDATE search_embedding_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE document_key=? AND content_hash=?");
       return rows.flatMap(row => {
-        if (update.run(now, row.turn_id, row.content_hash).changes !== 1) return [];
-        const content = parseJson<Turn["content"]>(row.content_json); const text = this.turnProjectionText(content, row.primary_run_id, row.assistant_text ?? "");
-        return [{ turnId: row.turn_id, text, contentHash: row.content_hash, attempts: row.attempts + 1 }];
+        const source = this.embeddingSource(row.document_key);
+        if (!source || this.contentHash(source.text) !== row.content_hash) {
+          this.database.prepare("DELETE FROM search_embedding_jobs WHERE document_key=?").run(row.document_key);
+          return [];
+        }
+        if (update.run(now, row.document_key, row.content_hash).changes !== 1) return [];
+        return [{ documentKey: row.document_key, text: source.text, contentHash: row.content_hash, attempts: row.attempts + 1 }];
       });
     })();
   }
 
-  async completeEmbeddingJob(turnId: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void> {
+  async completeEmbeddingJob(documentKey: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void> {
     if (!vector.length || vector.some(value => !Number.isFinite(value))) throw new TypeError("embedding vector must contain finite values");
     this.database.transaction(() => {
-      const job = this.database.prepare("SELECT content_hash FROM conversation_embedding_jobs WHERE turn_id=? AND status='processing'").get(turnId) as { content_hash: string } | undefined;
-      if (job?.content_hash !== contentHash) throw new ExecutionStoreConflictError(`embedding job changed: ${turnId}`);
-      this.database.prepare(`INSERT INTO conversation_embeddings(turn_id, content_hash, model, dimensions, vector_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(turn_id) DO UPDATE SET content_hash=excluded.content_hash, model=excluded.model, dimensions=excluded.dimensions, vector_json=excluded.vector_json, updated_at=excluded.updated_at`)
-        .run(turnId, contentHash, model, vector.length, json([...vector]), now);
+      const job = this.database.prepare("SELECT content_hash FROM search_embedding_jobs WHERE document_key=? AND status='processing'").get(documentKey) as { content_hash: string } | undefined;
+      if (job?.content_hash !== contentHash) throw new ExecutionStoreConflictError(`embedding job changed: ${documentKey}`);
+      this.database.prepare(`INSERT INTO search_embeddings(document_key, content_hash, model, dimensions, vector_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(document_key) DO UPDATE SET content_hash=excluded.content_hash, model=excluded.model, dimensions=excluded.dimensions, vector_json=excluded.vector_json, updated_at=excluded.updated_at`)
+        .run(documentKey, contentHash, model, vector.length, json([...vector]), now);
       this.ensureVectorIndex(model, vector.length);
-      this.database.prepare("DELETE FROM conversation_embeddings_vec WHERE turn_id=?").run(turnId);
-      this.database.prepare("INSERT INTO conversation_embeddings_vec(turn_id, embedding) VALUES (?, ?)").run(turnId, this.vectorBlob(vector));
-      this.database.prepare("DELETE FROM conversation_embedding_jobs WHERE turn_id=? AND content_hash=?").run(turnId, contentHash);
+      this.database.prepare("DELETE FROM search_embeddings_vec WHERE document_key=?").run(documentKey);
+      this.database.prepare("INSERT INTO search_embeddings_vec(document_key, embedding) VALUES (?, ?)").run(documentKey, this.vectorBlob(vector));
+      this.database.prepare("DELETE FROM search_embedding_jobs WHERE document_key=? AND content_hash=?").run(documentKey, contentHash);
     })();
   }
 
-  async failEmbeddingJob(turnId: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void> {
-    const update = this.database.prepare(`UPDATE conversation_embedding_jobs SET status='failed', last_error=?, next_retry_at=?, updated_at=? WHERE turn_id=? AND content_hash=? AND status='processing'`)
-      .run(error.slice(0, 2000), nextRetryAt, now, turnId, contentHash);
-    expectOne(update.changes, `embedding job changed: ${turnId}`);
+  async failEmbeddingJob(documentKey: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void> {
+    const update = this.database.prepare(`UPDATE search_embedding_jobs SET status='failed', last_error=?, next_retry_at=?, updated_at=? WHERE document_key=? AND content_hash=? AND status='processing'`)
+      .run(error.slice(0, 2000), nextRetryAt, now, documentKey, contentHash);
+    expectOne(update.changes, `embedding job changed: ${documentKey}`);
   }
 
   async semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope, options: { readonly excludeConversationId?: string; readonly beforeCreatedAt?: string; readonly minSimilarity?: number } = {}): Promise<readonly SearchHit[]> {
@@ -929,17 +990,23 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     this.ensureVectorIndex(model, vector.length);
     const candidateLimit = Math.min(1_000, Math.max(50, limit * 10));
     const rows = this.database.prepare(`WITH nearest AS (
-      SELECT turn_id, distance FROM conversation_embeddings_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance
-    ) SELECT n.turn_id, n.distance, f.conversation_id, f.actor_principal_id, f.text, t.created_at
-      FROM nearest n JOIN conversation_embeddings e ON e.turn_id=n.turn_id JOIN conversation_fts f ON f.turn_id=n.turn_id JOIN turns t ON t.id=n.turn_id
-      WHERE e.model=? AND e.dimensions=? ORDER BY n.distance`).all(this.vectorBlob(vector), candidateLimit, model, vector.length) as Array<{ turn_id: string; distance: number; conversation_id: string; actor_principal_id: string; text: string; created_at: string }>;
-    return rows.filter(row => (!options.excludeConversationId || row.conversation_id !== options.excludeConversationId) && (!options.beforeCreatedAt || row.created_at < options.beforeCreatedAt) && (visibility.kind === "all" || visibility.principalIds.includes(row.actor_principal_id) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === row.conversation_id)))
-      .map(row => ({ turnId: row.turn_id, conversationId: row.conversation_id, actorPrincipalId: row.actor_principal_id, text: row.text, rank: row.distance, semanticScore: 1 - row.distance }))
-      .filter(hit => hit.semanticScore >= (options.minSimilarity ?? -1)).slice(0, limit);
+      SELECT document_key, distance FROM search_embeddings_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance
+    ) SELECT n.document_key,n.distance FROM nearest n JOIN search_embeddings e ON e.document_key=n.document_key
+      WHERE e.model=? AND e.dimensions=? ORDER BY n.distance`).all(this.vectorBlob(vector), candidateLimit, model, vector.length) as Array<{ document_key: string; distance: number }>;
+    return rows.flatMap(row => {
+      const source = this.embeddingSource(row.document_key);
+      if (!source) return [];
+      const hit = { ...source.hit, rank: row.distance, semanticScore: 1 - row.distance };
+      const visible = source.visibility
+        ? searchDocumentVisible(source.visibility, visibility)
+        : visibility.kind === "all" || visibility.principalIds.includes(hit.actorPrincipalId) || visibility.resources.some(resource => resource.kind === "conversation" && resource.id === hit.conversationId);
+      if (!visible || (options.excludeConversationId && hit.conversationId === options.excludeConversationId) || (options.beforeCreatedAt && source.occurredAt && source.occurredAt >= options.beforeCreatedAt) || hit.semanticScore < (options.minSimilarity ?? -1)) return [];
+      return [hit];
+    }).slice(0, limit);
   }
 
   async rebuildEmbeddingProjection(): Promise<void> {
-    this.database.transaction(() => { this.database.prepare("DELETE FROM conversation_embeddings").run(); if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_embeddings_vec'").get()) this.database.prepare("DELETE FROM conversation_embeddings_vec").run(); this.database.prepare("DELETE FROM conversation_embedding_jobs").run(); this.seedEmbeddingJobs(); })();
+    this.database.transaction(() => { this.database.prepare("DELETE FROM search_embeddings").run(); if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_embeddings_vec'").get()) this.database.prepare("DELETE FROM search_embeddings_vec").run(); this.database.prepare("DELETE FROM search_embedding_jobs").run(); this.seedEmbeddingJobs(); })();
   }
 
   async search(query: string, limit: number, visibility: VisibilityScope): Promise<readonly SearchHit[]> {
@@ -968,12 +1035,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       })();
     const escaped = `%${normalized.replace(/[\\%_]/g, "\\$&")}%`;
     const documentRows = [...normalized].length < 3
-      ? this.database.prepare("SELECT f.namespace, f.document_id, f.source_type, f.source_id, f.text, d.visibility_json FROM search_documents_fts f JOIN search_documents d ON d.namespace=f.namespace AND d.document_id=f.document_id WHERE f.text LIKE ? ESCAPE '\\' LIMIT ?").all(escaped, Math.min(1000, limit * 10)) as Array<{ namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string }>
-      : this.database.prepare("SELECT f.namespace, f.document_id, f.source_type, f.source_id, f.text, d.visibility_json FROM search_documents_fts f JOIN search_documents d ON d.namespace=f.namespace AND d.document_id=f.document_id WHERE search_documents_fts MATCH ? LIMIT ?").all(`"${normalized.replace(/"/g, '""')}"`, Math.min(1000, limit * 10)) as Array<{ namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string }>;
+      ? this.database.prepare("SELECT f.namespace, f.document_id, f.source_type, f.source_id, f.text, d.visibility_json, d.conversation_id, d.actor_principal_id FROM search_documents_fts f JOIN search_documents d ON d.namespace=f.namespace AND d.document_id=f.document_id WHERE f.text LIKE ? ESCAPE '\\' LIMIT ?").all(escaped, Math.min(1000, limit * 10)) as Array<{ namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string; conversation_id: string | null; actor_principal_id: string | null }>
+      : this.database.prepare("SELECT f.namespace, f.document_id, f.source_type, f.source_id, f.text, d.visibility_json, d.conversation_id, d.actor_principal_id FROM search_documents_fts f JOIN search_documents d ON d.namespace=f.namespace AND d.document_id=f.document_id WHERE search_documents_fts MATCH ? LIMIT ?").all(`"${normalized.replace(/"/g, '""')}"`, Math.min(1000, limit * 10)) as Array<{ namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string; conversation_id: string | null; actor_principal_id: string | null }>;
     const documentHits = documentRows.filter(row => searchDocumentVisible(parseJson<VisibilityScope>(row.visibility_json), visibility)).map(row => ({
       turnId: `document:${row.namespace}:${row.document_id}`,
-      conversationId: `source:${row.source_type}:${row.source_id}`,
-      actorPrincipalId: `namespace:${row.namespace}`,
+      conversationId: row.conversation_id ?? `source:${row.source_type}:${row.source_id}`,
+      actorPrincipalId: row.actor_principal_id ?? `namespace:${row.namespace}`,
       text: row.text,
       rank: 0,
       documentId: row.document_id,
@@ -987,20 +1054,25 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (!/^[a-z0-9._-]{1,100}$/i.test(namespace) || !sourceId.trim()) throw new TypeError("invalid search source identity");
     if (documents.length > 1_000) throw new TypeError("search source has too many documents");
     this.database.transaction(() => {
+      const oldKeys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=? AND source_id=?").all(namespace, sourceId) as Array<{ document_key: string }>;
+      for (const { document_key } of oldKeys) this.removeEmbedding(document_key);
       this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND source_id=?").run(namespace, sourceId);
       this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_id=?").run(namespace, sourceId);
-      const insertDocument = this.database.prepare("INSERT INTO search_documents(namespace,source_id,document_id,source_type,text,visibility_json,occurred_at) VALUES (?,?,?,?,?,?,?)");
+      const insertDocument = this.database.prepare("INSERT INTO search_documents(namespace,source_id,document_id,source_type,text,visibility_json,occurred_at,conversation_id,actor_principal_id) VALUES (?,?,?,?,?,?,?,?,?)");
       const insertFts = this.database.prepare("INSERT INTO search_documents_fts(namespace,document_id,source_type,source_id,text) VALUES (?,?,?,?,?)");
       for (const document of documents) {
         if (!/^[a-zA-Z0-9._:-]{1,200}$/.test(document.id) || !document.text.trim() || document.text.length > 200_000) throw new TypeError("invalid search document");
-        insertDocument.run(namespace, sourceId, document.id, document.sourceType.slice(0, 100), document.text, json(document.visibility), document.occurredAt ?? null);
+        insertDocument.run(namespace, sourceId, document.id, document.sourceType.slice(0, 100), document.text, json(document.visibility), document.occurredAt ?? null, document.conversationId ?? null, document.actorPrincipalId ?? null);
         insertFts.run(namespace, document.id, document.sourceType.slice(0, 100), sourceId, document.text);
+        this.enqueueEmbedding(`document:${namespace}:${document.id}`, document.text);
       }
     })();
   }
 
   async removeSearchSource(namespace: string, sourceId: string): Promise<void> {
     this.database.transaction(() => {
+      const keys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=? AND source_id=?").all(namespace, sourceId) as Array<{ document_key: string }>;
+      for (const { document_key } of keys) this.removeEmbedding(document_key);
       this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND source_id=?").run(namespace, sourceId);
       this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_id=?").run(namespace, sourceId);
     })();
@@ -1016,9 +1088,15 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         const text = this.turnProjectionText(content, row.primary_run_id, row.assistant_text ?? "");
         if (text.trim()) {
           insert.run(row.id, row.conversation_id, row.actor_principal_id, text);
-          this.enqueueEmbedding(row.id, text);
+          this.enqueueEmbedding(`turn:${row.id}`, text);
         }
       }
+      const childKeys = this.database.prepare("SELECT 'document:core:' || document_id AS document_key FROM search_documents WHERE namespace='core' AND source_type='child_run_output'").all() as Array<{ document_key: string }>;
+      for (const { document_key } of childKeys) this.removeEmbedding(document_key);
+      this.database.prepare("DELETE FROM search_documents_fts WHERE namespace='core' AND source_type='child_run_output'").run();
+      this.database.prepare("DELETE FROM search_documents WHERE namespace='core' AND source_type='child_run_output'").run();
+      const childRuns = this.database.prepare("SELECT child.id FROM runs child JOIN run_outputs o ON o.run_id=child.id WHERE child.parent_run_id IS NOT NULL AND child.state='succeeded' ORDER BY child.created_at,child.id").all() as Array<{ id: string }>;
+      for (const child of childRuns) this.refreshChildRunSearchProjection(child.id);
     })();
   }
 
@@ -1047,7 +1125,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     };
   }
 
-  async createChildRunWithStep(delegation: DelegationRecord, run: Run, firstStep: Step): Promise<void> {
+  async createChildRunWithStep(delegation: DelegationRecord, run: Run, firstStep: Step, concurrency?: { readonly principalId: string; readonly maxActiveChildren: number }): Promise<void> {
     if (run.parentRunId !== delegation.parentRunId || run.id !== delegation.childRunId) {
       throw new TypeError("delegation lineage must match the Child Run");
     }
@@ -1055,12 +1133,23 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       throw new TypeError("Child Run execution origin must reference its Parent Run");
     }
     this.database.transaction(() => {
+      if (concurrency) {
+        const active = this.database.prepare(`
+          SELECT COUNT(*) AS count
+          FROM delegations d
+          JOIN runs child ON child.id = d.child_run_id
+          JOIN runs parent ON parent.id = d.parent_run_id
+          WHERE json_extract(parent.context_json, '$.actor.id') = ?
+            AND child.state IN ('queued','running','waiting')
+        `).get(concurrency.principalId) as { count: number };
+        if (active.count >= concurrency.maxActiveChildren) throw new ExecutionStoreConflictError(`Principal ${concurrency.principalId} already has ${concurrency.maxActiveChildren} active Child Runs`);
+      }
       this.insertRunWithStep(run, firstStep);
       this.database.prepare(`
         INSERT INTO delegations(
           id, parent_run_id, child_run_id, idempotency_key, task_json,
-          budget_ceiling_json, agent_profile_ref, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          budget_ceiling_json, agent_profile_ref, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         delegation.id,
         delegation.parentRunId,
@@ -1068,8 +1157,10 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         delegation.idempotencyKey,
         json(delegation.task),
         delegation.budgetCeiling ? json(delegation.budgetCeiling) : null,
-        delegation.agentProfileRef ?? null,
+        null,
+        delegation.state ?? "active",
         delegation.createdAt,
+        delegation.updatedAt ?? delegation.createdAt,
       );
     })();
   }
@@ -1096,6 +1187,22 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return rows.map(row => this.delegationFromRow(row));
   }
 
+  async cancelChildRun(parentRunId: string, childRunId: string, cancelledAt: string): Promise<boolean> {
+    return this.database.transaction(() => {
+      const row = this.database.prepare("SELECT state, revision FROM runs WHERE id=? AND parent_run_id=?").get(childRunId, parentRunId) as { state: RunState; revision: number } | undefined;
+      if (!row) throw new ExecutionStoreConflictError(`Child Run ${childRunId} does not belong to Parent Run ${parentRunId}`);
+      if (row.state === "cancelled") return true;
+      if (["succeeded", "failed", "timed_out"].includes(row.state)) return false;
+      assertRunTransition(row.state, "cancelled");
+      expectOne(this.database.prepare("UPDATE runs SET revision=revision+1,state='cancelled',waiting_reason=NULL,resume_eligibility='ineligible',updated_at=? WHERE id=? AND parent_run_id=? AND state=? AND revision=?").run(cancelledAt, childRunId, parentRunId, row.state, row.revision).changes, `Child Run ${childRunId} changed concurrently`);
+      this.database.prepare("UPDATE steps SET revision=revision+1,state='cancelled',updated_at=? WHERE run_id=? AND state IN ('pending','running')").run(cancelledAt, childRunId);
+      this.database.prepare("DELETE FROM checkpoints WHERE run_id=?").run(childRunId);
+      this.insertAudit("run.progressed", "run", childRunId, childRunId, { from: row.state, to: "cancelled", revision: row.revision + 1, checkpointCleared: true }, cancelledAt);
+      this.insertAudit("delegation.cancelled", "run", childRunId, childRunId, { parentRunId }, cancelledAt);
+      return true;
+    })();
+  }
+
   private delegationFromRow(row: DelegationRow): DelegationRecord {
     return {
       id: row.id,
@@ -1106,8 +1213,10 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       ...(row.budget_ceiling_json
         ? { budgetCeiling: parseJson<NonNullable<DelegationRecord["budgetCeiling"]>>(row.budget_ceiling_json) }
         : {}),
-      ...(row.agent_profile_ref ? { agentProfileRef: row.agent_profile_ref } : {}),
+      state: row.state,
       createdAt: row.created_at,
+      updatedAt: row.updated_at ?? row.created_at,
+      ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
     };
   }
 
@@ -1190,6 +1299,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       this.database.prepare("INSERT INTO run_outputs(id, run_id, text, usage_json, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(output.id, output.runId, output.text, json(output.usage), output.createdAt);
       this.refreshTurnSearchProjection(output.runId);
+      this.refreshChildRunSearchProjection(output.runId);
       this.database.prepare(`
         INSERT INTO delivery_intents(id, run_id, destination_json, payload_json, state, created_at, delivered_at)
         VALUES (?, ?, ?, ?, 'pending', ?, NULL)
@@ -1210,6 +1320,16 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         },
         completion.runUpdatedAt,
       );
+    })();
+  }
+
+  async createDeliveryIntent(delivery: DeliveryIntent): Promise<void> {
+    if (delivery.state !== "pending" || delivery.deliveredAt !== undefined) throw new TypeError("new intermediate delivery must be pending");
+    this.database.transaction(() => {
+      const run = this.database.prepare("SELECT state FROM runs WHERE id=?").get(delivery.runId) as { state: RunState } | undefined;
+      if (!run || (run.state !== "running" && run.state !== "waiting")) throw new ExecutionStoreConflictError(`Run ${delivery.runId} is not active for intermediate delivery`);
+      this.database.prepare("INSERT INTO delivery_intents(id,run_id,destination_json,payload_json,state,created_at,delivered_at) VALUES (?,?,?,?, 'pending', ?, NULL)").run(delivery.id, delivery.runId, json(delivery.destination), json(delivery.payload), delivery.createdAt);
+      this.insertAudit("delivery.created", "delivery", delivery.id, delivery.runId, { state: "pending", intermediate: true }, delivery.createdAt);
     })();
   }
 

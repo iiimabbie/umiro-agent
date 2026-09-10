@@ -70,11 +70,11 @@ export class EmbeddingWorker {
       const now = new Date(); const stale = new Date(now.getTime() - 5 * 60_000).toISOString();
       const jobs = await this.store.claimEmbeddingJobs(20, now.toISOString(), stale);
       for (const job of jobs) {
-        try { const vector = await this.embedder.embed(job.text, signal); await this.store.completeEmbeddingJob(job.turnId, job.contentHash, this.embedder.model, vector, new Date().toISOString()); completed++; }
+        try { const vector = await this.embedder.embed(job.text, signal); await this.store.completeEmbeddingJob(job.documentKey, job.contentHash, this.embedder.model, vector, new Date().toISOString()); completed++; }
         catch (error) {
           const delay = Math.min(3_600_000, 15_000 * 2 ** Math.max(0, job.attempts - 1));
-          report(this.logger, { level: "warn", event: "embedding.job.failed", message: "Embedding job failed and will be retried", occurredAt: new Date().toISOString(), data: { model: this.embedder.model, turnId: job.turnId, attempts: job.attempts, retryDelayMs: delay, errorName: errorName(error) } });
-          await this.store.failEmbeddingJob(job.turnId, job.contentHash, `Embedding request failed (${errorName(error)})`, new Date(Date.now() + delay).toISOString(), new Date().toISOString());
+          report(this.logger, { level: "warn", event: "embedding.job.failed", message: "Embedding job failed and will be retried", occurredAt: new Date().toISOString(), data: { model: this.embedder.model, documentKey: job.documentKey, attempts: job.attempts, retryDelayMs: delay, errorName: errorName(error) } });
+          await this.store.failEmbeddingJob(job.documentKey, job.contentHash, `Embedding request failed (${errorName(error)})`, new Date(Date.now() + delay).toISOString(), new Date().toISOString());
         }
       }
       return completed;

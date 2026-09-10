@@ -50,6 +50,8 @@ export const CONFIG_EXPLANATIONS = {
   "discord.presence.activity": { label: "Discord 活動文字", description: "Bot 名稱下方顯示的活動文字。", defaultValue: "with ümiro", risk: "所有能看到 bot 的 Discord 使用者都能看到。", restartRequired: true },
   "authority.owner": { label: "Owner 權限", description: "Owner 的 capability、可見範圍與 instruction authority；省略時取得目前安裝能力的完整權限。", defaultValue: { visibility: { kind: "all" }, instructionAuthority: "full" }, risk: "縮小會限制 Owner；列入未安裝 capability 會讓 daemon 拒絕啟動。", restartRequired: true },
   "authority.member": { label: "一般成員權限", description: "一般成員可用的 capability 與 restricted 可見範圍；預設只開放聊天所需的 11 類能力。", defaultValue: { visibility: { kind: "restricted" }, instructionAuthority: "scoped" }, risk: "擴大 capability 或 resource visibility 會讓群組成員操作更多資料與服務。", restartRequired: true },
+  "subagent.maxConcurrentChildren": { label: "每人並行下屬上限", description: "每個 Principal 同時 active 的 Child Run 數；超過直接拒絕，不排隊。", defaultValue: 2, risk: "提高並行數會同步提高模型成本；目前架構硬上限為 2。", restartRequired: true },
+  "subagent.maxParallelTools": { label: "單輪並行工具上限", description: "同一 model turn 連續 parallel-safe tools 的最大並行數。", defaultValue: 2, risk: "只應用於明確宣告 parallel-safe 的工具；目前硬上限為 2。", restartRequired: true },
   "plugins[].path": { label: "外部外掛路徑", description: "由 config 直接載入的外部外掛位置；一般操作建議使用外掛管理介面。", defaultValue: [], risk: "外掛是 trusted in-process code，只能安裝信任的來源。", restartRequired: true },
   "plugins[].config": { label: "外部外掛設定", description: "傳給該外掛 manifest schema 驗證的非秘密設定。", defaultValue: {}, risk: "設定仍受 manifest schema 與 secrets 分離規則限制。", restartRequired: true },
   "webUi.enabled": { label: "Web UI 啟用", description: "是否啟動本機管理介面。", defaultValue: false, risk: "啟用後需妥善保管獨立 Web UI token。", restartRequired: true },
@@ -72,7 +74,7 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export function validateControlConfig(value: unknown): Record<string, unknown> {
   assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
-  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "discord", "authority", "plugins", "webUi"]);
+  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "discord", "authority", "subagent", "plugins", "webUi"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
   if (typeof config.model !== "string" || !config.model.trim()) throw new TypeError("model must be a non-empty string");
   if (config.protocol !== undefined && config.protocol !== "openai_responses" && config.protocol !== "openai_chat_completions") throw new TypeError("protocol must be openai_responses or openai_chat_completions");
@@ -103,6 +105,12 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
   }
   parseDiscordTriggerPolicy(config.discord);
   validateAuthorityConfig(config.authority);
+  if (config.subagent !== undefined) {
+    if (!config.subagent || typeof config.subagent !== "object" || Array.isArray(config.subagent)) throw new TypeError("subagent must be an object");
+    const subagent = config.subagent as Record<string, unknown>;
+    if (Object.keys(subagent).some(key => key !== "maxConcurrentChildren" && key !== "maxParallelTools")) throw new TypeError("subagent contains an unsupported field");
+    for (const key of ["maxConcurrentChildren", "maxParallelTools"] as const) if (subagent[key] !== undefined && (!Number.isSafeInteger(subagent[key]) || Number(subagent[key]) < 1 || Number(subagent[key]) > 2)) throw new TypeError(`subagent.${key} must be 1 or 2`);
+  }
   if (config.plugins !== undefined && (!Array.isArray(config.plugins) || config.plugins.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof (item as { path?: unknown }).path !== "string"))) throw new TypeError("plugins must contain objects with a path");
   if (config.embedding !== undefined && (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding))) throw new TypeError("embedding must be an object");
   if (config.webUi !== undefined) {

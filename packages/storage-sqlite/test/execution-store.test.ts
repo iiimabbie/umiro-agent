@@ -424,7 +424,7 @@ test("tool call and result evidence is searchable, rebuildable, bounded, and red
     const operation = { ...authorized.operation, input: { query: "Taipei forecast", apiKey: secret } };
     await database.store.recordOperationAuthorization(operation, authorized.decision);
     const [callJob] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:00:10.000Z", "2026-09-08T11:00:00.000Z");
-    await database.store.completeEmbeddingJob("turn-1", callJob!.contentHash, "embedding-model", [1, 0], "2026-09-08T12:00:11.000Z");
+    await database.store.completeEmbeddingJob(callJob!.documentKey, callJob!.contentHash, "embedding-model", [1, 0], "2026-09-08T12:00:11.000Z");
     await database.store.markOperationExecuting(operation.id, at);
     await database.store.recordOperationOutcome(operation.id, { operationId: operation.id, outcome: "succeeded", effectStatus: "confirmed", output: { forecast: "sunny evidence", authorization: `Bearer ${secret}`, oversized: "x".repeat(100_000) }, completedAt: at }, at);
     const [outcomeJob] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:00:20.000Z", "2026-09-08T11:00:00.000Z");

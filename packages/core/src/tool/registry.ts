@@ -27,6 +27,8 @@ export class ToolRegistry {
     }
     if (!definition.description.trim()) throw new TypeError(`tool ${definition.name} requires a description`);
     if (!definition.policy.capability.trim()) throw new TypeError(`tool ${definition.name} requires a capability`);
+    if (definition.policy.concurrency !== undefined && definition.policy.concurrency !== "exclusive" && definition.policy.concurrency !== "parallel_safe") throw new TypeError(`tool ${definition.name} concurrency must be exclusive or parallel_safe`);
+    if (definition.policy.concurrency === "parallel_safe" && definition.policy.approvalRequirement === "required") throw new TypeError(`tool ${definition.name} cannot combine parallel_safe execution with approval`);
     if (definition.inputSchema.type !== "object") throw new TypeError(`tool ${definition.name} input schema root must be an object`);
     if (definition.policy.timeoutMs !== undefined
       && (!Number.isSafeInteger(definition.policy.timeoutMs) || definition.policy.timeoutMs <= 0)) {
