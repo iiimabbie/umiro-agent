@@ -198,7 +198,7 @@ interface ConversationCompactionRow {
 
 interface TriggerRow { id: string; revision: number; name: string; enabled: number; schedule_json: string; timezone: string; job_ref: string; input_json: string; creator_principal_id: string; creator_roles_json: string; authority_json: string; destination_json: string | null; misfire_policy: ScheduledTrigger["misfirePolicy"]; max_attempts: number; retry_backoff_ms: number; next_fire_at: string | null; created_at: string; updated_at: string }
 interface OccurrenceRow { id: string; trigger_id: string; scheduled_for: string; status: ScheduledOccurrence["status"]; attempts: number; run_id: string; next_retry_at: string | null; error: string | null; claimed_at: string; completed_at: string | null }
-interface ArtifactRow { id: string; owner_principal_id: string; visibility: Artifact["visibility"]; media_type: string; filename: string | null; size: number; sha256: string; location: string; parent_source_json: string | null; state: Artifact["state"]; created_at: string; updated_at: string }
+interface ArtifactRow { id: string; owner_principal_id: string; visibility: Artifact["visibility"]; media_type: string; filename: string | null; size: number; sha256: string; location: string; extracted_text: string | null; parent_source_json: string | null; state: Artifact["state"]; created_at: string; updated_at: string }
 
 interface DelegationRow {
   id: string;
@@ -288,6 +288,7 @@ function artifactFromRow(row: ArtifactRow): Artifact {
     size: row.size,
     sha256: row.sha256,
     location: row.location,
+    ...(row.extracted_text !== null ? { extractedText: row.extracted_text } : {}),
     state: row.state,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -349,9 +350,10 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async createArtifact(request: CreateArtifactRequest): Promise<void> {
     const a = request.artifact;
     if (a.size < 0 || !/^[a-f0-9]{64}$/i.test(a.sha256)) throw new TypeError("invalid artifact metadata");
-    this.database.prepare(`INSERT INTO artifacts(id, owner_principal_id, visibility, media_type, filename, size, sha256, location, parent_source_json, state, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(a.id, a.ownerPrincipalId, a.visibility, a.mediaType, a.filename ?? null, a.size, a.sha256, a.location, a.parentSource ? json(a.parentSource) : null, a.state, a.createdAt, a.updatedAt);
+    if (a.extractedText !== undefined && a.extractedText.length > 200_000) throw new TypeError("artifact extracted text exceeds 200000 characters");
+    this.database.prepare(`INSERT INTO artifacts(id, owner_principal_id, visibility, media_type, filename, size, sha256, location, extracted_text, parent_source_json, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(a.id, a.ownerPrincipalId, a.visibility, a.mediaType, a.filename ?? null, a.size, a.sha256, a.location, a.extractedText ?? null, a.parentSource ? json(a.parentSource) : null, a.state, a.createdAt, a.updatedAt);
   }
 
   async getArtifact(id: string): Promise<Artifact | undefined> {
@@ -368,6 +370,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   async updateArtifactState(id: string, state: Artifact["state"], updatedAt: string): Promise<void> {
     const result = this.database.prepare("UPDATE artifacts SET state = ?, updated_at = ? WHERE id = ? AND state <> 'deleted'").run(state, updatedAt, id);
+    expectOne(result.changes, `artifact ${id} not found or deleted`);
+  }
+
+  async updateArtifactExtractedText(id: string, text: string, updatedAt: string): Promise<void> {
+    if (text.length > 200_000) throw new TypeError("artifact extracted text exceeds 200000 characters");
+    const result = this.database.prepare("UPDATE artifacts SET extracted_text=?, updated_at=? WHERE id=? AND state <> 'deleted'").run(text, updatedAt, id);
     expectOne(result.changes, `artifact ${id} not found or deleted`);
   }
 
@@ -677,10 +685,29 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       turn.replyToTurnId ?? null,
       turn.createdAt,
     );
-    const text = turn.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    const text = this.turnProjectionText(turn.content, turn.primaryRunId);
     if (text.trim()) this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)")
       .run(turn.id, turn.conversationId, turn.actorPrincipalId, text);
     if (text.trim()) this.enqueueEmbedding(turn.id, text);
+  }
+
+  private attachmentEvidence(content: Turn["content"]): string {
+    const ids = [...new Set(content.filter(block => block.type === "artifact_reference").map(block => block.artifactId))].slice(0, 20);
+    const rendered = ids.flatMap(id => {
+      const artifact = this.database.prepare("SELECT id, filename, media_type, size, extracted_text FROM artifacts WHERE id=? AND state <> 'deleted'").get(id) as { id: string; filename: string | null; media_type: string; size: number; extracted_text: string | null } | undefined;
+      if (!artifact) return [];
+      const text = artifact.extracted_text?.trim() ?? "";
+      const excerpt = text.length > 6_000 ? `${text.slice(0, 4_500)}\n… attachment text truncated …\n${text.slice(-1_500)}` : text;
+      return [`Attachment: ${artifact.filename ?? artifact.id}\nMedia type: ${artifact.media_type}\nSize: ${artifact.size} bytes${excerpt ? `\nExtracted text:\n${excerpt}` : ""}`];
+    }).join("\n\n");
+    return rendered.length > 24_000 ? `${rendered.slice(0, 16_000)}\n… attachment evidence truncated …\n${rendered.slice(-8_000)}` : rendered;
+  }
+
+  private turnProjectionText(content: Turn["content"], runId?: string | null, assistantText = ""): string {
+    const input = content.filter(block => block.type === "text").map(block => block.text).join("\n").trim();
+    const attachments = this.attachmentEvidence(content);
+    const tools = runId ? this.toolEvidenceForRun(runId) : "";
+    return [input, attachments, assistantText.trim(), tools].filter(Boolean).join("\n\n");
   }
 
   /**
@@ -820,9 +847,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const row = this.database.prepare("SELECT t.id, t.conversation_id, t.actor_principal_id, t.content_json, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id WHERE t.primary_run_id=?").get(runId) as { id: string; conversation_id: string; actor_principal_id: string; content_json: string; assistant_text: string | null } | undefined;
     if (!row) return;
     const content = parseJson<Turn["content"]>(row.content_json);
-    const input = content.filter(block => block.type === "text").map(block => block.text).join("\n").trim();
-    const toolEvidence = this.toolEvidenceForRun(runId);
-    const text = [input, row.assistant_text?.trim() ?? "", toolEvidence].filter(Boolean).join("\n\n");
+    const text = this.turnProjectionText(content, runId, row.assistant_text ?? "");
     if (!text.trim()) return;
     this.database.prepare("DELETE FROM conversation_fts WHERE turn_id = ?").run(row.id);
     this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)").run(row.id, row.conversation_id, row.actor_principal_id, text);
@@ -833,8 +858,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const rows = this.database.prepare(`SELECT t.id, t.content_json, t.primary_run_id, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string; primary_run_id: string | null; assistant_text: string | null }>;
     for (const row of rows) {
       const content = parseJson<Turn["content"]>(row.content_json);
-      const evidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
-      const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? "", evidence].filter(value => value.trim()).join("\n\n");
+      const text = this.turnProjectionText(content, row.primary_run_id, row.assistant_text ?? "");
       if (text.trim()) this.enqueueEmbedding(row.id, text);
     }
   }
@@ -861,7 +885,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const update = this.database.prepare("UPDATE conversation_embedding_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE turn_id=? AND content_hash=?");
       return rows.flatMap(row => {
         if (update.run(now, row.turn_id, row.content_hash).changes !== 1) return [];
-        const content = parseJson<Turn["content"]>(row.content_json); const evidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : ""; const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? "", evidence].filter(value => value.trim()).join("\n\n");
+        const content = parseJson<Turn["content"]>(row.content_json); const text = this.turnProjectionText(content, row.primary_run_id, row.assistant_text ?? "");
         return [{ turnId: row.turn_id, text, contentHash: row.content_hash, attempts: row.attempts + 1 }];
       });
     })();
@@ -938,9 +962,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const insert = this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)");
       for (const row of rows) {
         const content = parseJson<Turn["content"]>(row.content_json);
-        const input = content.filter(block => block.type === "text").map(block => block.text).join("\n");
-        const evidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
-        const text = [input, row.assistant_text ?? "", evidence].filter(value => value.trim()).join("\n\n");
+        const text = this.turnProjectionText(content, row.primary_run_id, row.assistant_text ?? "");
         if (text.trim()) {
           insert.run(row.id, row.conversation_id, row.actor_principal_id, text);
           this.enqueueEmbedding(row.id, text);

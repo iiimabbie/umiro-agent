@@ -12,6 +12,8 @@ export interface Artifact {
   readonly size: number;
   readonly sha256: string;
   readonly location: string;
+  /** Bounded text derived at ingest for model input and rebuildable search. */
+  readonly extractedText?: string;
   readonly parentSource?: { readonly kind: string; readonly id: string };
   readonly state: ArtifactState;
   readonly createdAt: string;

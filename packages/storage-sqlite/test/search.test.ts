@@ -14,6 +14,23 @@ test("indexes conversation turns and rebuilds the FTS projection", async () => {
   store.close();
 });
 
+test("indexes durable extracted attachment text through Turn artifact references", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.createArtifact({ artifact: { id: "artifact", ownerPrincipalId: "alice", visibility: "shared", mediaType: "text/plain", filename: "deploy.txt", size: 18, sha256: "a".repeat(64), location: "/unused", extractedText: "deployment evidence from attachment", parentSource: { kind: "discord_message", id: "message" }, state: "stored", createdAt: "now", updatedAt: "now" } });
+  await store.createConversationWithTurn(
+    { id: "c", revision: 0, state: "active", createdAt: "now", updatedAt: "now" },
+    { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "alice", inputEventId: "e", content: [{ type: "text", text: "請看附件" }, { type: "artifact_reference", artifactId: "artifact" }], createdAt: "now" },
+  );
+  const hit = (await store.search("deployment evidence", 10, { kind: "all" }))[0];
+  assert.equal(hit?.turnId, "t");
+  assert.match(hit?.text ?? "", /Attachment: deploy\.txt[\s\S]*deployment evidence/);
+  const [job] = await store.claimEmbeddingJobs(10, "2026-01-01T00:00:00.000Z", "2025-12-31T23:55:00.000Z");
+  assert.match(job?.text ?? "", /deployment evidence/);
+  await store.rebuildSearchProjection();
+  assert.equal((await store.search("deployment evidence", 10, { kind: "all" }))[0]?.turnId, "t");
+  store.close();
+});
+
 test("search enforces principal and conversation visibility inside SQLite", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.createConversationWithTurn(

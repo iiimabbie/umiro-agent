@@ -67,6 +67,9 @@ const migratePluginState = async (namespace: string) => {
 for (const namespace of new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)])) await migratePluginState(namespace);
 const artifacts = new ArtifactFileService(paths.artifacts, store);
 const logger = new JsonLineLogger();
+const extractionBackfill = await artifacts.backfillTextExtractions();
+if (extractionBackfill.updated > 0) await store.rebuildSearchProjection();
+if (extractionBackfill.failed > 0) logger.write({ level: "warn", event: "artifact.extraction.backfill_degraded", message: "Some legacy artifact text could not be extracted", occurredAt: new Date().toISOString(), data: extractionBackfill });
 const embedder = createConfiguredEmbedder(config.embedding);
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);

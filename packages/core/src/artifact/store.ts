@@ -10,6 +10,7 @@ export interface ArtifactStore {
   getArtifact(id: string): Promise<Artifact | undefined>;
   listArtifacts(ownerPrincipalId?: PrincipalId): Promise<readonly Artifact[]>;
   updateArtifactState(id: string, state: Artifact["state"], updatedAt: string): Promise<void>;
+  updateArtifactExtractedText?(id: string, text: string, updatedAt: string): Promise<void>;
   deleteArtifact(id: string, deletedAt: string): Promise<void>;
   canAccessArtifact(artifact: Artifact, principalId: PrincipalId, visibility: ArtifactVisibility): boolean;
 }

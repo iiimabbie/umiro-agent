@@ -8,7 +8,7 @@ import { SQLiteExecutionStore } from "../src/index.js";
 test("artifacts persist metadata and lifecycle across reopen", async () => {
   const dir = mkdtempSync(join(tmpdir(), "umiro-artifact-"));
   const filename = join(dir, "db.sqlite");
-  const artifact = { id: "a1", ownerPrincipalId: "owner", visibility: "shared" as const, mediaType: "text/plain", filename: "note.txt", size: 3, sha256: "a".repeat(64), location: join(dir, "aa"), parentSource: { kind: "discord_message", id: "m1" }, state: "stored" as const, createdAt: "2026-09-09T00:00:00.000Z", updatedAt: "2026-09-09T00:00:00.000Z" };
+  const artifact = { id: "a1", ownerPrincipalId: "owner", visibility: "shared" as const, mediaType: "text/plain", filename: "note.txt", size: 3, sha256: "a".repeat(64), location: join(dir, "aa"), extractedText: "durable attachment text", parentSource: { kind: "discord_message", id: "m1" }, state: "stored" as const, createdAt: "2026-09-09T00:00:00.000Z", updatedAt: "2026-09-09T00:00:00.000Z" };
   const store = new SQLiteExecutionStore(filename);
   await store.createArtifact({ artifact });
   assert.deepEqual(await store.getArtifact("a1"), artifact);
