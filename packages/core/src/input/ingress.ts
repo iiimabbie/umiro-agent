@@ -19,6 +19,7 @@ export interface InteractiveIngressRequest {
   readonly signal?: AbortSignal;
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
   readonly onRunCreated?: (runId: string) => void;
+  readonly steerControl?: { readonly flush: () => Promise<void>; readonly seal: () => Promise<void> };
 }
 
 export type InteractiveIngressResult =
@@ -129,6 +130,8 @@ export class InteractiveIngress {
       assembledContext,
       deliveryDestination: request.deliveryDestination,
       ...(request.signal ? { signal: request.signal } : {}),
+      ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),
+      ...(request.steerControl ? { steerControl: request.steerControl } : {}),
     });
     return {
       status: "executed",
@@ -136,6 +139,12 @@ export class InteractiveIngress {
       turnId: ingested.turn.id,
       result,
     };
+  }
+
+  async steer(request: { readonly event: InputEvent; readonly runId: string; readonly userContent: ModelContent }): Promise<{ readonly conversationId: string; readonly turnId: string; readonly duplicate: boolean }> {
+    const resolved = await this.identities.resolve(request.event.identity);
+    const result = await this.conversations.steerInputEvent({ event: request.event, actorPrincipalId: resolved.principal.id, runId: request.runId, newTurnId: this.createId("turn"), modelContent: request.userContent, createdAt: this.now() });
+    return { conversationId: result.conversation.id, turnId: result.turn.id, duplicate: result.duplicate };
   }
 
   async observe(event: InputEvent): Promise<IngestInputEventResult | undefined> {

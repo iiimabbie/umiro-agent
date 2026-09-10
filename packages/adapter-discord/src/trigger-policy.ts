@@ -6,7 +6,7 @@ export interface DiscordTriggerPolicyConfig {
   readonly allowedChannels?: readonly string[];
   readonly allowedGuilds?: readonly string[];
   readonly respondToBots?: boolean;
-  readonly queueMode?: "followup" | "steer";
+  readonly queueMode?: "queue" | "steer";
   readonly presence?: DiscordPresenceConfig;
 }
 
@@ -38,14 +38,14 @@ function stringList(value: unknown, name: string): readonly string[] {
 }
 
 export function parseDiscordTriggerPolicy(value: unknown): DiscordTriggerPolicyConfig {
-  if (value === undefined) return { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "followup" };
+  if (value === undefined) return { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue" };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("discord config must be an object");
   const raw = value as Record<string, unknown>;
   const allowed = new Set(["ignoredChannels", "ambientChannels", "allowedChannels", "allowedGuilds", "respondToBots", "queueMode", "presence"]);
   const unexpected = Object.keys(raw).find(key => !allowed.has(key));
   if (unexpected) throw new TypeError(`unsupported discord config field: ${unexpected}`);
   if (raw.respondToBots !== undefined && typeof raw.respondToBots !== "boolean") throw new TypeError("discord.respondToBots must be boolean");
-  if (raw.queueMode !== undefined && raw.queueMode !== "followup" && raw.queueMode !== "steer") throw new TypeError("discord.queueMode must be followup or steer");
+  if (raw.queueMode !== undefined && raw.queueMode !== "queue" && raw.queueMode !== "steer") throw new TypeError("discord.queueMode must be queue or steer");
   if (raw.presence !== undefined && (!raw.presence || typeof raw.presence !== "object" || Array.isArray(raw.presence))) throw new TypeError("discord.presence must be an object");
   const presence = raw.presence as Record<string, unknown> | undefined;
   if (presence) {
@@ -63,7 +63,7 @@ export function parseDiscordTriggerPolicy(value: unknown): DiscordTriggerPolicyC
     allowedChannels: stringList(raw.allowedChannels, "allowedChannels"),
     allowedGuilds: stringList(raw.allowedGuilds, "allowedGuilds"),
     respondToBots: raw.respondToBots !== false,
-    queueMode: raw.queueMode === "steer" ? "steer" : "followup",
+    queueMode: raw.queueMode === "steer" ? "steer" : "queue",
     ...(normalizedPresence ? { presence: normalizedPresence } : {}),
   };
 }

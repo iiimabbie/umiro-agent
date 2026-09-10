@@ -61,7 +61,7 @@ async function init(): Promise<void> {
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
-  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "followup", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
+  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
   if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
   console.log(home);
 }
@@ -156,7 +156,7 @@ async function discord(action: string, options: { ignoredChannels: string | unde
   if (action === "status") { console.log(JSON.stringify(current, null, 2)); return; }
   if (action !== "configure") throw new Error("usage: umiro discord configure|status");
   if (options.respondToBots !== undefined && options.respondToBots !== "true" && options.respondToBots !== "false") throw new Error("--respond-to-bots must be true or false");
-  if (options.queueMode !== undefined && options.queueMode !== "followup" && options.queueMode !== "steer") throw new Error("--queue-mode must be followup or steer");
+  if (options.queueMode !== undefined && options.queueMode !== "queue" && options.queueMode !== "steer") throw new Error("--queue-mode must be queue or steer");
   if (options.status !== undefined && !["online", "idle", "dnd", "invisible"].includes(options.status)) throw new Error("--status must be online, idle, dnd, or invisible");
   if (options.activity !== undefined && !options.activity.trim()) throw new Error("--activity must be non-empty");
   const currentPresence = current.presence && typeof current.presence === "object" && !Array.isArray(current.presence) ? current.presence as Record<string, unknown> : {};
@@ -166,7 +166,7 @@ async function discord(action: string, options: { ignoredChannels: string | unde
     allowedChannels: commaList(options.allowedChannels, current.allowedChannels),
     allowedGuilds: commaList(options.allowedGuilds, current.allowedGuilds),
     respondToBots: options.respondToBots === undefined ? current.respondToBots !== false : options.respondToBots === "true",
-    queueMode: options.queueMode ?? current.queueMode ?? "followup",
+    queueMode: options.queueMode ?? current.queueMode ?? "queue",
     presence: { status: options.status ?? currentPresence.status ?? "online", activity: options.activity?.trim() ?? currentPresence.activity ?? "with ümiro" },
   };
   await saveConfig({ ...config, discord: next });

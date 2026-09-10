@@ -41,7 +41,7 @@ export const CONFIG_EXPLANATIONS = {
   "discord.allowedChannels": { label: "允許頻道", description: "所有人（包含 Owner）在伺服器內可使用的 channel/thread ID；空陣列表示不以此項限制。", restartRequired: true },
   "discord.allowedGuilds": { label: "允許伺服器", description: "所有人（包含 Owner）可使用的 guild ID；空陣列表示不以此項限制。", restartRequired: true },
   "discord.respondToBots": { label: "回應其他 Bot", description: "是否允許其他 bot 觸發；自己的訊息永遠忽略以避免迴圈。", restartRequired: true },
-  "discord.queueMode": { label: "預設訊息模式", description: "followup 會等目前 Run 完成再開新 Run；steer 會把同一作者的新訊息併入目前 Run 的下一個安全邊界。每個 Discord session 可另外覆寫。", restartRequired: true },
+  "discord.queueMode": { label: "預設訊息模式", description: "queue 會等目前 Run 完成再處理；steer 會把同 session 的新訊息併入目前 Run 的下一個安全邊界。每個 Discord session 可另外覆寫。", restartRequired: true },
   "discord.presence.status": { label: "Discord 狀態", description: "Bot 顯示為 online、idle、dnd 或 invisible。", restartRequired: true },
   "discord.presence.activity": { label: "Discord 活動文字", description: "Bot 名稱下方顯示的活動文字。", restartRequired: true },
   "plugins[].path": { label: "外部外掛路徑", description: "由 config 直接載入的外部外掛位置；一般操作建議使用外掛管理介面。", restartRequired: true },

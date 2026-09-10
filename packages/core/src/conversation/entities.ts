@@ -13,7 +13,7 @@ export interface Conversation {
   readonly updatedAt: string;
 }
 
-export type ConversationQueueMode = "followup" | "steer";
+export type ConversationQueueMode = "queue" | "steer";
 
 /** Durable preferences for a transport conversation locator. Unlike a single
  * Conversation transcript, these survive archive/new and describe the channel

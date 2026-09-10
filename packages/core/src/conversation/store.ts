@@ -2,6 +2,7 @@ import type { Conversation, ConversationCompaction, ConversationHistoryItem, Con
 import type { ReasoningEffort } from "../model/contract.js";
 import type { PrincipalId } from "../identity/principal.js";
 import type { InputEvent } from "../input/event.js";
+import type { ModelContent } from "../model/contract.js";
 
 export interface AppendTurnRequest {
   readonly turn: Turn;
@@ -68,8 +69,25 @@ export interface IngestInputEventResult {
   readonly conversationCreated: boolean;
 }
 
+export interface SteerInputEventRequest {
+  readonly event: InputEvent;
+  readonly actorPrincipalId: PrincipalId;
+  readonly runId: string;
+  readonly newTurnId: string;
+  readonly modelContent: ModelContent;
+  readonly createdAt: string;
+}
+
+export interface SteerInputEventResult {
+  readonly conversation: Conversation;
+  readonly turn: Turn;
+  readonly duplicate: boolean;
+}
+
 export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns" | "listRecentHistory" | "refreshConversationCompaction"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
   /** Records only when an active binding already exists; never creates a Conversation or Run. */
   observeInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult | undefined>;
+  /** Atomically appends a canonical Turn and queues it for an already-running Run. */
+  steerInputEvent(request: SteerInputEventRequest): Promise<SteerInputEventResult>;
 }

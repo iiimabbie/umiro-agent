@@ -41,6 +41,8 @@ import {
   type UpdateConversationStateRequest,
   type IngestInputEventRequest,
   type IngestInputEventResult,
+  type SteerInputEventRequest,
+  type SteerInputEventResult,
   type PersistedTransportIdentity,
   type SearchHit,
   type VisibilityScope,
@@ -55,6 +57,7 @@ import {
   type UpdateConversationPreferencesRequest,
   type ApprovalRequest,
   type ApprovalResolution,
+  type PendingSteeredInput,
   exactOperationFingerprint,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
@@ -519,6 +522,36 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       expectOne(update.changes, `conversation ${row.id} changed concurrently`);
       return { conversation: { ...this.conversationFromRow(row), revision: row.revision + 1, updatedAt: request.createdAt }, turn, duplicate: false, conversationCreated: false };
     })();
+  }
+
+  async steerInputEvent(request: SteerInputEventRequest): Promise<SteerInputEventResult> {
+    return this.database.transaction(() => {
+      const existing = this.database.prepare("SELECT * FROM turns WHERE input_event_id=?").get(request.event.id) as TurnRow | undefined;
+      if (existing) {
+        const conversation = this.database.prepare("SELECT * FROM conversations WHERE id=?").get(existing.conversation_id) as ConversationRow | undefined;
+        if (!conversation) throw new Error(`Turn ${existing.id} references a missing Conversation`);
+        const queued = this.database.prepare("SELECT 1 FROM run_steered_inputs WHERE id=? AND run_id=?").get(request.event.id, request.runId);
+        if (!queued) throw new ExecutionStoreConflictError(`Input Event ${request.event.id} is already attached to another execution`);
+        return { conversation: this.conversationFromRow(conversation), turn: this.turnFromRow(existing), duplicate: true };
+      }
+      const run = this.database.prepare("SELECT state, conversation_id FROM runs WHERE id=?").get(request.runId) as { state: RunState; conversation_id: string | null } | undefined;
+      if (!run || run.state !== "running" || !run.conversation_id) throw new ExecutionStoreConflictError(`Run ${request.runId} is not an active conversational Run`);
+      const binding = this.database.prepare("SELECT conversation_id FROM conversation_bindings WHERE transport=? AND external_id=?").get(request.event.conversation.transport, request.event.conversation.externalId) as { conversation_id: string } | undefined;
+      if (binding?.conversation_id !== run.conversation_id) throw new ExecutionStoreConflictError("steered input conversation differs from the active Run");
+      const conversation = this.database.prepare("SELECT * FROM conversations WHERE id=?").get(run.conversation_id) as ConversationRow | undefined;
+      if (!conversation || conversation.state !== "active") throw new ExecutionStoreConflictError("steered input conversation is not active");
+      const next = this.database.prepare("SELECT COALESCE(MAX(sequence)+1,0) AS sequence FROM turns WHERE conversation_id=?").get(conversation.id) as { sequence: number };
+      const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: next.sequence, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
+      this.insertTurn(turn);
+      expectOne(this.database.prepare("UPDATE conversations SET revision=revision+1, updated_at=? WHERE id=? AND revision=? AND state='active'").run(request.createdAt, conversation.id, conversation.revision).changes, `conversation ${conversation.id} changed concurrently`);
+      this.database.prepare("INSERT INTO run_steered_inputs(id,run_id,turn_id,content_json,state,created_at) VALUES (?,?,?,?, 'pending', ?)").run(request.event.id, request.runId, turn.id, json(request.modelContent), request.createdAt);
+      return { conversation: { ...this.conversationFromRow(conversation), revision: conversation.revision + 1, updatedAt: request.createdAt }, turn, duplicate: false };
+    })();
+  }
+
+  async listPendingSteeredInputs(runId: string): Promise<readonly PendingSteeredInput[]> {
+    const rows = this.database.prepare("SELECT id,run_id,turn_id,content_json,created_at FROM run_steered_inputs WHERE run_id=? AND state='pending' ORDER BY created_at,id").all(runId) as Array<{ id: string; run_id: string; turn_id: string; content_json: string; created_at: string }>;
+    return rows.map(row => ({ id: row.id, runId: row.run_id, turnId: row.turn_id, content: parseJson<PendingSteeredInput["content"]>(row.content_json), createdAt: row.created_at }));
   }
 
   async appendTurn(request: AppendTurnRequest): Promise<void> {
@@ -1280,6 +1313,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
       if (update.checkpoint) this.saveCheckpoint(update.checkpoint);
       if (update.clearCheckpoint) this.database.prepare("DELETE FROM checkpoints WHERE run_id = ?").run(update.runId);
+      if (update.consumedSteeredInputIds?.length) {
+        const unique = [...new Set(update.consumedSteeredInputIds)];
+        const consume = this.database.prepare("UPDATE run_steered_inputs SET state='consumed', consumed_at=? WHERE id=? AND run_id=? AND state='pending'");
+        for (const id of unique) expectOne(consume.run(update.runUpdatedAt, id, update.runId).changes, `steered input ${id} changed concurrently`);
+      }
 
       this.insertAudit(
         "run.progressed",
@@ -1293,6 +1331,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           ...(update.step ? { stepId: update.step.id, stepState: update.step.state } : {}),
           ...(update.checkpoint ? { checkpointVersion: update.checkpoint.version } : {}),
           ...(update.clearCheckpoint ? { checkpointCleared: true } : {}),
+          ...(update.consumedSteeredInputIds?.length ? { steeredInputsConsumed: update.consumedSteeredInputIds.length } : {}),
         },
         update.runUpdatedAt,
       );

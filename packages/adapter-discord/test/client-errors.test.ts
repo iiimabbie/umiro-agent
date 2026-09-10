@@ -36,3 +36,55 @@ test("message handler failures are reported and do not poison the channel queue"
   assert.equal(calls, 2);
   assert.deepEqual(errors, [{ event: "message", channelId: "channel", messageId: "first" }]);
 });
+
+test("steer is offered before the channel queue while an earlier message is running", async () => {
+  const adapter = new DiscordJsAdapter();
+  let release!: () => void;
+  let started!: () => void;
+  const firstStarted = new Promise<void>(resolve => { started = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const handled: string[] = [];
+  const steered: string[] = [];
+  adapter.onMessage(async envelope => { handled.push(envelope.messageId); started(); await blocked; });
+  adapter.onSteer(async envelope => { if (envelope.messageId !== "second") return false; steered.push(envelope.messageId); return true; });
+  const enqueue = (adapter as unknown as { enqueueMessage(value: unknown): void }).enqueueMessage.bind(adapter);
+  enqueue(message("first"));
+  await firstStarted;
+  enqueue(message("second"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(steered, ["second"]);
+  assert.deepEqual(handled, ["first"]);
+  release();
+});
+
+test("steer rejected after the active Run is sealed falls back to the channel queue", async () => {
+  const adapter = new DiscordJsAdapter();
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  let markSecondHandled!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+  const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const secondHandled = new Promise<void>(resolve => { markSecondHandled = resolve; });
+  const handled: string[] = [];
+  let sealed = false;
+  adapter.onMessage(async envelope => {
+    handled.push(envelope.messageId);
+    if (envelope.messageId === "first") {
+      markFirstStarted();
+      await firstBlocked;
+    } else {
+      markSecondHandled();
+    }
+  });
+  adapter.onSteer(async envelope => envelope.messageId === "second" && !sealed);
+  const enqueue = (adapter as unknown as { enqueueMessage(value: unknown): void }).enqueueMessage.bind(adapter);
+  enqueue(message("first"));
+  await firstStarted;
+  sealed = true;
+  enqueue(message("second"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(handled, ["first"]);
+  releaseFirst();
+  await secondHandled;
+  assert.deepEqual(handled, ["first", "second"]);
+});

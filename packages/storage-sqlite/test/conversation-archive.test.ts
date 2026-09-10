@@ -29,7 +29,7 @@ test("session model and queue preferences survive conversation archive", async (
     await store.ingestInputEvent({ event: event("e1"), actorPrincipalId: "owner", newConversationId: "c1", newTurnId: "t1", newRunId: "r1", createdAt: "2026-09-09T00:00:00.000Z" });
     await store.archiveBoundConversation("discord", "channel", "2026-09-09T00:01:00.000Z");
     assert.deepEqual(await store.getConversationPreferences("discord", "channel"), first);
-    const second = await store.updateConversationPreferences({ transport: "discord", externalId: "channel", expectedRevision: 1, queueMode: "followup", updatedAt: "2026-09-09T00:02:00.000Z" });
-    assert.deepEqual(second, { transport: "discord", externalId: "channel", revision: 2, queueMode: "followup", updatedAt: "2026-09-09T00:02:00.000Z" });
+    const second = await store.updateConversationPreferences({ transport: "discord", externalId: "channel", expectedRevision: 1, queueMode: "queue", updatedAt: "2026-09-09T00:02:00.000Z" });
+    assert.deepEqual(second, { transport: "discord", externalId: "channel", revision: 2, queueMode: "queue", updatedAt: "2026-09-09T00:02:00.000Z" });
   } finally { store.close(); }
 });

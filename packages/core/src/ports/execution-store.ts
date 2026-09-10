@@ -6,6 +6,15 @@ import type { OperationResult } from "../operation/result.js";
 import type { Run, RunState, Step, StepState } from "../run/entities.js";
 import type { DeliveryIntent, ModelCallRecord, RunOutput } from "../run/records.js";
 import type { JsonValue } from "./json.js";
+import type { ModelContent } from "../model/contract.js";
+
+export interface PendingSteeredInput {
+  readonly id: string;
+  readonly runId: string;
+  readonly turnId: string;
+  readonly content: ModelContent;
+  readonly createdAt: string;
+}
 
 export interface RunCheckpoint {
   readonly runId: string;
@@ -33,6 +42,9 @@ export interface ExecutionProgressUpdate {
   };
   readonly checkpoint?: RunCheckpoint;
   readonly clearCheckpoint?: boolean;
+  /** Pending steered inputs become consumed in the same transaction as the
+   * checkpoint that first contains them. */
+  readonly consumedSteeredInputIds?: readonly string[];
 }
 
 export interface CompleteRunWithOutput {
@@ -79,5 +91,6 @@ export interface ExecutionStore extends ApprovalStore {
   markDeliveryDelivered(deliveryId: string, deliveredAt: string, evidence?: import("./json.js").JsonObject): Promise<void>;
   markDeliveryFailed(deliveryId: string, error: string, nextAttemptAt: string, occurredAt: string): Promise<void>;
   listAuditEvents(runId: string): Promise<readonly AuditEvent[]>;
+  listPendingSteeredInputs(runId: string): Promise<readonly PendingSteeredInput[]>;
   close(): void;
 }

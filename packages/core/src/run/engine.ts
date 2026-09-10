@@ -17,6 +17,9 @@ export interface HeadlessRunRequest {
   readonly userContent?: ModelContent;
   readonly signal?: AbortSignal;
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
+  /** Adapter-owned live ingress gate. flush waits for accepted writes; seal first
+   * stops accepting new steer before the final delivery boundary. */
+  readonly steerControl?: { readonly flush: () => Promise<void>; readonly seal: () => Promise<void> };
   readonly maxModelTurns?: number;
   readonly maxToolCalls?: number;
   readonly maxInputTokens?: number;
@@ -670,6 +673,7 @@ export class HeadlessRunEngine {
       });
       runRevision += 1;
       checkpointVersion += 1;
+      modelStep = { ...modelStep, revision: 1, state: "running" };
     }
 
     const maxModelTurns = request.maxModelTurns ?? 8;
@@ -688,8 +692,32 @@ export class HeadlessRunEngine {
       if (request.maxInputTokens !== undefined && (beforeModel ? usage.inputTokens >= request.maxInputTokens : usage.inputTokens > request.maxInputTokens)) throw new Error(`input token budget exceeded: ${request.maxInputTokens}`);
       if (request.maxOutputTokens !== undefined && (beforeModel ? usage.outputTokens >= request.maxOutputTokens : usage.outputTokens > request.maxOutputTokens)) throw new Error(`output token budget exceeded: ${request.maxOutputTokens}`);
     };
+    const appendPendingSteer = async (seal: boolean, completeCurrentStep: boolean) => {
+      if (seal) await request.steerControl?.seal();
+      else await request.steerControl?.flush();
+      const pending = await this.store.listPendingSteeredInputs(runId);
+      if (pending.length === 0) return 0;
+      for (const input of pending) messages.push({ role: "user", content: input.content });
+      const progressedAt = this.now();
+      await this.store.updateExecutionProgress({
+        runId,
+        expectedRunRevision: runRevision,
+        expectedRunState: "running",
+        runState: "running",
+        resumeEligibility: "eligible",
+        runUpdatedAt: progressedAt,
+        step: { id: modelStep.id, expectedRevision: modelStep.revision, expectedState: "running", state: completeCurrentStep ? "succeeded" : "running", updatedAt: progressedAt },
+        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: progressedAt },
+        consumedSteeredInputIds: pending.map(input => input.id),
+      });
+      runRevision += 1;
+      checkpointVersion += 1;
+      modelStep = { ...modelStep, revision: modelStep.revision + 1, state: completeCurrentStep ? "succeeded" : "running" };
+      return pending.length;
+    };
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
+        await appendPendingSteer(false, false);
         assertBudget(true);
         const response = await this.modelPort.generate({
           model: request.model,
@@ -705,6 +733,25 @@ export class HeadlessRunEngine {
           id: this.createId("model_call"), runId, stepId: modelStep.id, model: request.model,
           messages: structuredClone(messages), response, createdAt: this.now(),
         });
+        const steered = await appendPendingSteer(response.toolCalls.length === 0, true);
+        if (steered > 0) {
+          modelStep = this.newStep(runId, sequence++, "model_call");
+          await this.store.appendStep(modelStep);
+          await this.store.updateExecutionProgress({
+            runId,
+            expectedRunRevision: runRevision,
+            expectedRunState: "running",
+            runState: "running",
+            resumeEligibility: "eligible",
+            runUpdatedAt: this.now(),
+            step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
+            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+          });
+          runRevision += 1;
+          checkpointVersion += 1;
+          modelStep = { ...modelStep, revision: 1, state: "running" };
+          continue;
+        }
         messages.push(response.assistantMessage);
         await this.store.updateExecutionProgress({
           runId,
@@ -813,6 +860,7 @@ export class HeadlessRunEngine {
         });
         runRevision += 1;
         checkpointVersion += 1;
+        modelStep = { ...modelStep, revision: 1, state: "running" };
       }
       throw new Error(`model turn limit exceeded: ${maxModelTurns}`);
     } catch (caught) {

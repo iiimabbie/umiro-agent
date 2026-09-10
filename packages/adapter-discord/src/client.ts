@@ -27,6 +27,7 @@ export function parseButtonCustomId(value: string): { buttonSetId: string; butto
 export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginService {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
+  private steerHandler?: (message: DiscordMessageEnvelope) => Promise<boolean>;
   private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
@@ -37,6 +38,9 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private respondToBots = true;
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
+  /** Called before the per-channel session queue. Returning true means the
+   * event was durably accepted by the active Run. */
+  onSteer(handler: (message: DiscordMessageEnvelope) => Promise<boolean>): void { this.steerHandler = handler; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
   onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
   onButton(handler: NonNullable<typeof this.buttonHandler>): void { this.buttonHandler = handler; }
@@ -63,10 +67,14 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   identity(): { readonly id: string; readonly tag: string } | undefined { return this.client.user ? { id: this.client.user.id, tag: this.client.user.tag } : undefined; }
 
   private enqueueMessage(message: Message): void {
-    const previous = this.channelQueues.get(message.channelId) ?? Promise.resolve();
-    const current = previous.then(() => this.handle(message)).catch(error => this.reportError(error, { event: "message", channelId: message.channelId, messageId: message.id }));
-    this.channelQueues.set(message.channelId, current);
-    void current.finally(() => { if (this.channelQueues.get(message.channelId) === current) this.channelQueues.delete(message.channelId); });
+    void this.normalize(message).then(async envelope => {
+      if (!envelope) return;
+      if (this.steerHandler && await this.steerHandler(envelope)) return;
+      const previous = this.channelQueues.get(message.channelId) ?? Promise.resolve();
+      const current = previous.then(() => this.listener?.(envelope)).catch(error => this.reportError(error, { event: "message", channelId: message.channelId, messageId: message.id }));
+      this.channelQueues.set(message.channelId, current);
+      void current.finally(() => { if (this.channelQueues.get(message.channelId) === current) this.channelQueues.delete(message.channelId); });
+    }).catch(error => this.reportError(error, { event: "message", channelId: message.channelId, messageId: message.id }));
   }
 
   private reportError(error: unknown, context: DiscordAdapterErrorContext): void {
@@ -228,19 +236,18 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   async setRespondToBots(enabled: boolean): Promise<void> { this.respondToBots = enabled; }
   respondsToBots(): boolean { return this.respondToBots; }
 
-  private async handle(message: Message): Promise<void> {
-    if (!this.listener) return;
-    if (message.author.id === this.client.user?.id) return;
+  private async normalize(message: Message): Promise<DiscordMessageEnvelope | undefined> {
+    if (!this.listener || message.author.id === this.client.user?.id) return undefined;
     const now = Date.now();
     const recent = (this.messageTimes.get(message.author.id) ?? []).filter(timestamp => now - timestamp < 60_000);
-    if (recent.length >= 30) return;
+    if (recent.length >= 30) return undefined;
     recent.push(now);
     this.messageTimes.set(message.author.id, recent);
     let replyAuthorId: string | undefined;
     if (message.reference?.messageId) {
       try { replyAuthorId = (await message.fetchReference()).author.id; } catch { /* deleted or inaccessible reference */ }
     }
-    await this.listener({
+    return {
       messageId: message.id,
       channelId: message.channelId,
       ...(message.guildId ? { guildId: message.guildId } : {}),
@@ -256,7 +263,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}),
       ...(replyAuthorId ? { replyAuthorId } : {}),
       attachments: [...message.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) })),
-    });
+    };
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {

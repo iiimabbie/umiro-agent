@@ -149,6 +149,39 @@ test("passes the selected session reasoning effort to every model turn", async (
   } finally { store.close(); }
 });
 
+test("durably steers another participant into the active Run at a safe boundary", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const initialEvent = { id: "event-initial", occurredAt: at, identity: { transport: "discord", externalId: "alice", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: "initial" }] };
+  const ingested = await store.ingestInputEvent({ event: initialEvent, actorPrincipalId: "alice-principal", newConversationId: "conversation", newTurnId: "turn-initial", newRunId: "run-steer", createdAt: at });
+  let modelStarted!: () => void;
+  let releaseModel!: () => void;
+  const started = new Promise<void>(resolve => { modelStarted = resolve; });
+  const release = new Promise<void>(resolve => { releaseModel = resolve; });
+  const requests: Parameters<ModelPort["generate"]>[0][] = [];
+  const model: ModelPort = { async generate(request) {
+    requests.push(request);
+    if (requests.length === 1) { modelStarted(); await release; return response({ text: "stale draft", assistantMessage: { role: "assistant", content: "stale draft" } }); }
+    return response({ text: "combined answer", assistantMessage: { role: "assistant", content: "combined answer" } });
+  } };
+  try {
+    const engine = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() });
+    const running = engine.run({ runId: "run-steer", context: ownerContext(), conversationId: ingested.conversation.id, turnId: ingested.turn.id, model: "fake", prompt: "initial", steerControl: { flush: async () => {}, seal: async () => {} } });
+    await started;
+    const steeredEvent = { id: "event-steered", occurredAt: at, identity: { transport: "discord", externalId: "bob", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: "bob adds context" }] };
+    const steered = await store.steerInputEvent({ event: steeredEvent, actorPrincipalId: "bob-principal", runId: "run-steer", newTurnId: "turn-steered", modelContent: [{ type: "text", text: "[Discord user Bob added:]\nbob adds context" }], createdAt: at });
+    assert.equal(steered.turn.actorPrincipalId, "bob-principal");
+    releaseModel();
+    const result = await running;
+    assert.equal(result.status, "succeeded");
+    if (result.status === "succeeded") assert.equal(result.text, "combined answer");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1]?.messages.some(message => message.role === "assistant" && message.content === "stale draft"), false);
+    assert.equal(requests[1]?.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("bob adds context")), true);
+    assert.equal((await store.listPendingSteeredInputs("run-steer")).length, 0);
+    assert.equal((await store.listTurns("conversation")).length, 2);
+  } finally { store.close(); }
+});
+
 test("returns malformed model tool arguments to the model without executing them", async () => {
   const directory = mkdtempSync(join(tmpdir(), "umiro-headless-invalid-tool-"));
   const store = new SQLiteExecutionStore(join(directory, "execution.db"));
