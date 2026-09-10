@@ -128,6 +128,14 @@ interface ResultRow {
   completed_at: string;
 }
 
+interface ToolEvidenceRow {
+  kind: string;
+  input_json: string;
+  outcome: OperationResult["outcome"] | null;
+  output_json: string | null;
+  error_json: string | null;
+}
+
 interface CheckpointRow {
   run_id: string;
   version: number;
@@ -675,6 +683,47 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (text.trim()) this.enqueueEmbedding(turn.id, text);
   }
 
+  /**
+   * Search gets a bounded evidence projection, never the canonical operation payload.
+   * Tool inputs/results can contain credentials or arbitrary external text, so redact
+   * sensitive keys and common bearer/key-shaped strings before truncating the summary.
+   */
+  private toolEvidenceForRun(runId: string): string {
+    const rows = this.database.prepare(`
+      SELECT o.kind, o.input_json, r.outcome, r.output_json, r.error_json
+      FROM operations o
+      JOIN steps s ON s.id=o.step_id
+      LEFT JOIN operation_results r ON r.operation_id=o.id
+      WHERE s.run_id=? ORDER BY s.sequence DESC, o.created_at DESC, o.id DESC LIMIT 20
+    `).all(runId) as ToolEvidenceRow[];
+    const rendered = rows.reverse().map(row => {
+      const input = this.safeEvidenceJson(row.input_json);
+      const output = row.output_json ? this.safeEvidenceJson(row.output_json) : row.error_json ? this.safeEvidenceJson(row.error_json) : "(no result)";
+      return `Tool: ${row.kind}\nOutcome: ${row.outcome ?? "pending"}\nArguments: ${input}\nResult: ${output}`;
+    }).join("\n\n");
+    return rendered.length > 12_000 ? `${rendered.slice(0, 8_000)}\n… tool evidence truncated …\n${rendered.slice(-4_000)}` : rendered;
+  }
+
+  private safeEvidenceJson(serialized: string): string {
+    let value: unknown;
+    try { value = JSON.parse(serialized) as unknown; } catch { value = serialized; }
+    const redact = (current: unknown, key?: string, depth = 0): unknown => {
+      if (key && /(?:authorization|api[_-]?key|credential|cookie|password|secret|token)/i.test(key)) return "[REDACTED]";
+      if (typeof current === "string") return current
+        .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
+        .replace(/\b(?:sk|rk|xox[baprs]|gh[pousr])-[A-Za-z0-9_-]{8,}\b/gi, "[REDACTED]")
+        .slice(0, 600);
+      if (depth >= 6 && current !== null && typeof current === "object") return "[TRUNCATED]";
+      if (Array.isArray(current)) return current.slice(0, 40).map(item => redact(item, undefined, depth + 1));
+      if (current !== null && typeof current === "object") return Object.fromEntries(Object.entries(current).slice(0, 40).map(([name, item]) => [name, redact(item, name, depth + 1)]));
+      return current;
+    };
+    const rendered = JSON.stringify(redact(value));
+    if (!rendered) return "(empty)";
+    const compact = rendered.replace(/\s+/g, " ").trim();
+    return compact.length > 1_200 ? `${compact.slice(0, 900)} … ${compact.slice(-300)}` : compact;
+  }
+
   private triggerFromRow(row: TriggerRow): ScheduledTrigger {
     return { id: row.id, revision: row.revision, name: row.name, enabled: row.enabled === 1, schedule: parseJson<ScheduledTrigger["schedule"]>(row.schedule_json), timezone: row.timezone, jobRef: row.job_ref, input: parseJson<JsonObject>(row.input_json), creatorPrincipalId: row.creator_principal_id, creatorRoles: parseJson<ScheduledTrigger["creatorRoles"]>(row.creator_roles_json), authority: parseJson<ScheduledTrigger["authority"]>(row.authority_json), ...(row.destination_json ? { destination: parseJson<JsonObject>(row.destination_json) } : {}), misfirePolicy: row.misfire_policy, maxAttempts: row.max_attempts, retryBackoffMs: row.retry_backoff_ms, nextFireAt: row.next_fire_at, createdAt: row.created_at, updatedAt: row.updated_at };
   }
@@ -767,22 +816,25 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       .run(turnId, hash, new Date().toISOString());
   }
 
-  private refreshTurnSearchProjection(runId: string, assistantText: string): void {
-    const row = this.database.prepare("SELECT id, conversation_id, actor_principal_id, content_json FROM turns WHERE primary_run_id = ?").get(runId) as { id: string; conversation_id: string; actor_principal_id: string; content_json: string } | undefined;
-    if (!row || !assistantText.trim()) return;
+  private refreshTurnSearchProjection(runId: string): void {
+    const row = this.database.prepare("SELECT t.id, t.conversation_id, t.actor_principal_id, t.content_json, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id WHERE t.primary_run_id=?").get(runId) as { id: string; conversation_id: string; actor_principal_id: string; content_json: string; assistant_text: string | null } | undefined;
+    if (!row) return;
     const content = parseJson<Turn["content"]>(row.content_json);
     const input = content.filter(block => block.type === "text").map(block => block.text).join("\n").trim();
-    const text = [input, assistantText.trim()].filter(Boolean).join("\n\n");
+    const toolEvidence = this.toolEvidenceForRun(runId);
+    const text = [input, row.assistant_text?.trim() ?? "", toolEvidence].filter(Boolean).join("\n\n");
+    if (!text.trim()) return;
     this.database.prepare("DELETE FROM conversation_fts WHERE turn_id = ?").run(row.id);
     this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)").run(row.id, row.conversation_id, row.actor_principal_id, text);
     this.enqueueEmbedding(row.id, text);
   }
 
   private seedEmbeddingJobs(): void {
-    const rows = this.database.prepare(`SELECT t.id, t.content_json, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string; assistant_text: string | null }>;
+    const rows = this.database.prepare(`SELECT t.id, t.content_json, t.primary_run_id, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN conversation_embeddings e ON e.turn_id=t.id WHERE e.turn_id IS NULL`).all() as Array<{ id: string; content_json: string; primary_run_id: string | null; assistant_text: string | null }>;
     for (const row of rows) {
       const content = parseJson<Turn["content"]>(row.content_json);
-      const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? ""].filter(value => value.trim()).join("\n\n");
+      const evidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
+      const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? "", evidence].filter(value => value.trim()).join("\n\n");
       if (text.trim()) this.enqueueEmbedding(row.id, text);
     }
   }
@@ -802,14 +854,14 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("embedding claim limit must be between 1 and 100");
     return this.database.transaction(() => {
-      const rows = this.database.prepare(`SELECT j.turn_id, j.content_hash, j.attempts, t.content_json, o.text AS assistant_text
+      const rows = this.database.prepare(`SELECT j.turn_id, j.content_hash, j.attempts, t.content_json, t.primary_run_id, o.text AS assistant_text
         FROM conversation_embedding_jobs j JOIN turns t ON t.id=j.turn_id LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id
         WHERE (j.status='pending' OR (j.status='failed' AND (j.next_retry_at IS NULL OR j.next_retry_at <= ?)) OR (j.status='processing' AND j.updated_at < ?))
-      ORDER BY j.updated_at, j.turn_id LIMIT ?`).all(now, staleBefore, limit) as Array<{ turn_id: string; content_hash: string; attempts: number; content_json: string; assistant_text: string | null }>;
+      ORDER BY j.updated_at, j.turn_id LIMIT ?`).all(now, staleBefore, limit) as Array<{ turn_id: string; content_hash: string; attempts: number; content_json: string; primary_run_id: string | null; assistant_text: string | null }>;
       const update = this.database.prepare("UPDATE conversation_embedding_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE turn_id=? AND content_hash=?");
       return rows.flatMap(row => {
         if (update.run(now, row.turn_id, row.content_hash).changes !== 1) return [];
-        const content = parseJson<Turn["content"]>(row.content_json); const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? ""].filter(value => value.trim()).join("\n\n");
+        const content = parseJson<Turn["content"]>(row.content_json); const evidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : ""; const text = [content.filter(block => block.type === "text").map(block => block.text).join("\n"), row.assistant_text ?? "", evidence].filter(value => value.trim()).join("\n\n");
         return [{ turnId: row.turn_id, text, contentHash: row.content_hash, attempts: row.attempts + 1 }];
       });
     })();
@@ -887,8 +939,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       for (const row of rows) {
         const content = parseJson<Turn["content"]>(row.content_json);
         const input = content.filter(block => block.type === "text").map(block => block.text).join("\n");
-        const text = [input, row.assistant_text ?? ""].filter(value => value.trim()).join("\n\n");
-        if (text.trim()) insert.run(row.id, row.conversation_id, row.actor_principal_id, text);
+        const evidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
+        const text = [input, row.assistant_text ?? "", evidence].filter(value => value.trim()).join("\n\n");
+        if (text.trim()) {
+          insert.run(row.id, row.conversation_id, row.actor_principal_id, text);
+          this.enqueueEmbedding(row.id, text);
+        }
       }
     })();
   }
@@ -1060,7 +1116,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       expectOne(runUpdate.changes, `run ${output.runId} changed concurrently`);
       this.database.prepare("INSERT INTO run_outputs(id, run_id, text, usage_json, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(output.id, output.runId, output.text, json(output.usage), output.createdAt);
-      this.refreshTurnSearchProjection(output.runId, output.text);
+      this.refreshTurnSearchProjection(output.runId);
       this.database.prepare(`
         INSERT INTO delivery_intents(id, run_id, destination_json, payload_json, state, created_at, delivered_at)
         VALUES (?, ?, ?, ?, 'pending', ?, NULL)
@@ -1154,6 +1210,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         { operationId: operation.id, allow: decision.allow, reason: decision.reason },
         decision.decidedAt,
       );
+      this.refreshTurnSearchProjection(runId);
     })();
   }
 
@@ -1270,6 +1327,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         { outcome: result.outcome, effectStatus: result.effectStatus },
         result.completedAt,
       );
+      this.refreshTurnSearchProjection(runId);
     })();
   }
 

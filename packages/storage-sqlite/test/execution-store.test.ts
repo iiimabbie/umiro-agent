@@ -410,6 +410,49 @@ test("completed assistant output joins the turn search and embedding projections
   } finally { database.cleanup(); }
 });
 
+test("tool call and result evidence is searchable, rebuildable, bounded, and redacted", async () => {
+  const database = fixture();
+  const secret = "sk-this-must-never-be-indexed";
+  try {
+    await database.store.createConversationWithTurn(
+      { id: "conversation-1", revision: 0, state: "active", createdAt: at, updatedAt: at },
+      { id: "turn-1", conversationId: "conversation-1", sequence: 0, actorPrincipalId: "owner", inputEventId: "event-1", primaryRunId: "run-1", content: [{ type: "text", text: "請查工具執行紀錄" }], createdAt: at },
+    );
+    await database.store.createRunWithStep(run(), step());
+    await database.store.updateExecutionProgress({ runId: "run-1", expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: at, step: { id: "step-1", expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: at } });
+    const authorized = authorizedOperation();
+    const operation = { ...authorized.operation, input: { query: "Taipei forecast", apiKey: secret } };
+    await database.store.recordOperationAuthorization(operation, authorized.decision);
+    const [callJob] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:00:10.000Z", "2026-09-08T11:00:00.000Z");
+    await database.store.completeEmbeddingJob("turn-1", callJob!.contentHash, "embedding-model", [1, 0], "2026-09-08T12:00:11.000Z");
+    await database.store.markOperationExecuting(operation.id, at);
+    await database.store.recordOperationOutcome(operation.id, { operationId: operation.id, outcome: "succeeded", effectStatus: "confirmed", output: { forecast: "sunny evidence", authorization: `Bearer ${secret}`, oversized: "x".repeat(100_000) }, completedAt: at }, at);
+    const [outcomeJob] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:00:20.000Z", "2026-09-08T11:00:00.000Z");
+    assert.notEqual(outcomeJob?.contentHash, callJob?.contentHash);
+
+    const liveHit = (await database.store.search("sunny evidence", 10, { kind: "all" }))[0];
+    assert.equal(liveHit?.turnId, "turn-1");
+    assert.match(liveHit?.text ?? "", /Tool: test\.echo[\s\S]*Outcome: succeeded/);
+    assert.doesNotMatch(liveHit?.text ?? "", new RegExp(secret));
+    assert.ok((liveHit?.text.length ?? Infinity) < 15_000);
+
+    await database.store.completeRunWithOutput({
+      output: { id: "output-tool-search", runId: "run-1", text: "工具查詢完成", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, createdAt: at },
+      delivery: { id: "delivery-tool-search", runId: "run-1", destination: { kind: "test" }, payload: { text: "done" }, state: "pending", createdAt: at },
+      expectedRunRevision: 1,
+      runUpdatedAt: at,
+    });
+    const [job] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:01:00.000Z", "2026-09-08T11:00:00.000Z");
+    assert.match(job?.text ?? "", /sunny evidence/);
+    assert.doesNotMatch(job?.text ?? "", new RegExp(secret));
+
+    await database.store.rebuildSearchProjection();
+    const rebuilt = (await database.store.search("Taipei forecast", 10, { kind: "all" }))[0];
+    assert.equal(rebuilt?.turnId, "turn-1");
+    assert.doesNotMatch(rebuilt?.text ?? "", new RegExp(secret));
+  } finally { database.cleanup(); }
+});
+
 test("builds a bounded rebuildable compaction without deleting canonical turns", async () => {
   const database = fixture();
   try {
