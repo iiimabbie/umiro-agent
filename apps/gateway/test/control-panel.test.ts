@@ -15,6 +15,11 @@ test("model capabilities are explicit and reject unknown values", () => {
   assert.throws(() => validateControlConfig({ model: "gemma4", plugins: [{ path: "/plugin", config: { token: "secret" } }] }), /must use SecretSource/);
 });
 
+test("model profiles validate model, capability, and reasoning selection", () => {
+  assert.deepEqual(validateControlConfig({ model: "gemma4", profiles: { fast: { model: "gemma4:9b", capabilities: ["function_tools"], reasoningEffort: "low" } } }).profiles, { fast: { model: "gemma4:9b", capabilities: ["function_tools"], reasoningEffort: "low" } });
+  assert.throws(() => validateControlConfig({ model: "gemma4", profiles: { fast: { model: "gemma4", capabilities: ["unknown"] } } }), /profile fast\.capabilities/);
+});
+
 test("localhost control panel authenticates config and fixed workspace file operations", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-web-ui-")); const workspace = join(root, "workspace"); const configFile = join(root, "umiro.json");
   await mkdir(workspace); await writeFile(join(workspace, "AGENT.md"), "before\n"); await writeFile(configFile, `${JSON.stringify({ model: "gemma4", discord: {}, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] })}\n`);

@@ -29,6 +29,7 @@ export interface ControlPanelOptions { readonly host: string; readonly port: num
 
 export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", restartRequired: true },
+  profiles: { label: "模型 profiles", description: "依 profile ID 定義模型、能力與預設 reasoning；Discord session 的模型選擇會解析這些 profile。未設定時沿用根層 model。", restartRequired: true },
   modelCapabilities: { label: "模型能力", description: "模型明確支援的能力清單，例如 vision、function_tools、hosted_web_search；未宣告的 hosted 能力不會暴露為工具。", restartRequired: true },
   contextMaxTokens: { label: "Context token 上限", description: "固定文件、人物、記憶與對話歷史合計可使用的估算 token 上限。", restartRequired: true },
   pricing: { label: "模型價格", description: "依 model ID 設定 inputUsdPerMillion／outputUsdPerMillion；未設定的模型不猜測成本。", restartRequired: true },
@@ -66,7 +67,7 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export function validateControlConfig(value: unknown): Record<string, unknown> {
   assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
-  const config = value as Record<string, unknown>; const allowed = new Set(["model", "modelCapabilities", "contextMaxTokens", "pricing", "embedding", "discord", "plugins", "webUi"]);
+  const config = value as Record<string, unknown>; const allowed = new Set(["model", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "discord", "plugins", "webUi"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
   if (typeof config.model !== "string" || !config.model.trim()) throw new TypeError("model must be a non-empty string");
   if (config.contextMaxTokens !== undefined && (!Number.isSafeInteger(config.contextMaxTokens) || Number(config.contextMaxTokens) < 256 || Number(config.contextMaxTokens) > 1_000_000)) throw new TypeError("contextMaxTokens must be between 256 and 1000000");
@@ -76,6 +77,17 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
   }
   const knownCapabilities = new Set(["vision", "function_tools", "hosted_web_search", "hosted_image_generation", "hosted_code_execution"]);
   if (config.modelCapabilities !== undefined && (!Array.isArray(config.modelCapabilities) || config.modelCapabilities.some(item => typeof item !== "string" || !knownCapabilities.has(item)) || new Set(config.modelCapabilities).size !== config.modelCapabilities.length)) throw new TypeError("modelCapabilities must contain unique supported capability names");
+  if (config.profiles !== undefined) {
+    if (!config.profiles || typeof config.profiles !== "object" || Array.isArray(config.profiles)) throw new TypeError("profiles must be an object keyed by profile ID");
+    for (const [id, value] of Object.entries(config.profiles)) {
+      if (!/^[A-Za-z0-9._-]{1,64}$/.test(id)) throw new TypeError(`invalid model profile ID: ${id}`);
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`profile ${id} must be an object`);
+      const profile = value as Record<string, unknown>;
+      if (typeof profile.model !== "string" || !profile.model.trim()) throw new TypeError(`profile ${id}.model must be a non-empty string`);
+      if (profile.capabilities !== undefined && (!Array.isArray(profile.capabilities) || profile.capabilities.some(item => typeof item !== "string" || !knownCapabilities.has(item)) || new Set(profile.capabilities).size !== profile.capabilities.length)) throw new TypeError(`profile ${id}.capabilities must contain unique supported capability names`);
+      if (profile.reasoningEffort !== undefined && !["default", "low", "medium", "high", "xhigh"].includes(String(profile.reasoningEffort))) throw new TypeError(`profile ${id}.reasoningEffort is invalid`);
+    }
+  }
   parseDiscordTriggerPolicy(config.discord);
   if (config.plugins !== undefined && (!Array.isArray(config.plugins) || config.plugins.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof (item as { path?: unknown }).path !== "string"))) throw new TypeError("plugins must contain objects with a path");
   if (config.embedding !== undefined && (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding))) throw new TypeError("embedding must be an object");

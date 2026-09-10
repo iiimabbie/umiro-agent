@@ -1,7 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, ToolRuntime, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ReasoningEffort, type Run, type Step } from "@umiro/core";
+import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, ToolRuntime, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ModelCapability, type ReasoningEffort, type Run, type Step } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -30,7 +30,16 @@ const readiness = { storage: false, plugins: false, discord: false, scheduler: f
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly import("@umiro/core/model").ModelCapability[]; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+type ConfigModelProfile = { readonly model: string; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
+type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
+const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, capabilities: [...(config.modelCapabilities ?? [])] };
+function resolveModelProfile(selection?: string): RuntimeModelProfile {
+  if (!selection) return defaultModelProfile;
+  return configuredProfiles[selection] ?? { id: selection, model: selection, capabilities: defaultModelProfile.capabilities };
+}
+const allModelCapabilities = [...new Set([...(config.modelCapabilities ?? []), ...Object.values(configuredProfiles).flatMap(profile => profile.capabilities)])] as ModelCapability[];
 const contextMaxTokens = config.contextMaxTokens ?? 24_000;
 const discordPolicy = parseDiscordTriggerPolicy(config.discord);
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
@@ -40,8 +49,8 @@ for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.co
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
 const configured = [...byPath.values()];
 const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
-const hostedWebSearch = config.modelCapabilities?.includes("hosted_web_search") === true;
-const hostedImageGeneration = config.modelCapabilities?.includes("hosted_image_generation") === true;
+const hostedWebSearch = allModelCapabilities.includes("hosted_web_search");
+const hostedImageGeneration = allModelCapabilities.includes("hosted_image_generation");
 const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const tools = new ToolRegistry();
@@ -112,8 +121,10 @@ if (hostedWebSearch) tools.register({
   inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 2, maxLength: 2_000 } } },
   policy: { capability: "model.hosted_web_search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
   async execute(input, context) {
+    const profile = context.execution.modelProfile ?? defaultModelProfile;
+    if (!profile.capabilities.includes("hosted_web_search")) return { ok: false, effectStatus: "not_applicable", error: { code: "model_capability_unavailable", message: `model profile ${profile.id} does not provide hosted web search`, retryable: false } };
     try {
-      const result = await callResponsesWebSearch({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: config.model, query: String(input.query), signal: context.signal });
+      const result = await callResponsesWebSearch({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: profile.model, query: String(input.query), signal: context.signal });
       return { ok: true, output: { text: result.text, sources: result.sources }, effectStatus: "not_applicable" };
     } catch (error) {
       return { ok: false, effectStatus: "not_applicable", error: { code: "hosted_web_search_unavailable", message: error instanceof Error ? error.message : "hosted web search unavailable", retryable: false } };
@@ -126,8 +137,10 @@ if (hostedImageGeneration) tools.register({
   inputSchema: { type: "object", additionalProperties: false, required: ["prompt"], properties: { prompt: { type: "string", minLength: 2, maxLength: 4_000 }, filename: { type: "string", minLength: 1, maxLength: 120 } } },
   policy: { capability: "model.hosted_image_generation", tier: "common", interactionRequirement: "not_required", sideEffect: "non_idempotent", timeoutMs: 120_000 },
   async execute(input, context) {
+    const profile = context.execution.modelProfile ?? defaultModelProfile;
+    if (!profile.capabilities.includes("hosted_image_generation")) return { ok: false, effectStatus: "unknown", error: { code: "model_capability_unavailable", message: `model profile ${profile.id} does not provide hosted image generation`, retryable: false } };
     try {
-      const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: config.model, prompt: String(input.prompt), signal: context.signal });
+      const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: profile.model, prompt: String(input.prompt), signal: context.signal });
       const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename: typeof input.filename === "string" ? input.filename : "generated-image.png", mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId } });
       return { ok: true, output: { artifactId: artifact.id, filename: artifact.filename ?? "generated-image.png" }, artifactIds: [artifact.id], effectStatus: "confirmed" };
     } catch (error) { return { ok: false, effectStatus: "unknown", error: { code: "hosted_image_generation_failed", message: error instanceof Error ? error.message : "hosted image generation failed", retryable: false } }; }
@@ -146,7 +159,8 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const sessionProfile = async (channelId: string) => {
   const preferences = await store.getConversationPreferences("discord", channelId);
-  return { model: preferences?.model ?? config.model, reasoningEffort: preferences?.reasoningEffort ?? "default" as ReasoningEffort, queueMode: preferences?.queueMode ?? discordPolicy.queueMode ?? "queue" as const, preferences };
+  const selected = resolveModelProfile(preferences?.model);
+  return { ...selected, reasoningEffort: preferences?.reasoningEffort ?? selected.reasoningEffort ?? "default" as ReasoningEffort, queueMode: preferences?.queueMode ?? discordPolicy.queueMode ?? "queue" as const, preferences };
 };
 const updateSessionPreferences = async (channelId: string, change: (current: ConversationPreferences | undefined) => Pick<ConversationPreferences, "model" | "reasoningEffort" | "queueMode">) => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -270,7 +284,7 @@ const handleCommand = async (name: string, input: Record<string, string | number
     activeRuns.set(runId, active);
     try {
       const profile = await sessionProfile(commandContext.channelId);
-      const result = await ingress.handle({ event, model: profile.model, reasoningEffort: profile.reasoningEffort, maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
+      const result = await ingress.handle({ event, model: profile.model, modelProfile: profile, reasoningEffort: profile.reasoningEffort, maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
       if (result.status === "executed") await presentApproval(result.result, commandContext.channelId);
       if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
       await delivery.drain(controller.signal);
@@ -334,6 +348,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     return;
   }
   await discord.sendTyping(message.channelId);
+  const profile = await sessionProfile(message.channelId);
   const artifactIds: string[] = [];
   const importedArtifacts = [];
   for (const attachment of message.attachments ?? []) {
@@ -345,12 +360,11 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const controller = new AbortController();
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
-  const userContent = await artifactModelContent(message.content, importedArtifacts, config.modelCapabilities?.includes("vision") === true);
+  const userContent = await artifactModelContent(message.content, importedArtifacts, profile.capabilities.includes("vision"));
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
-  const profile = await sessionProfile(message.channelId);
-  const execution = ingress.handle({ event, model: profile.model, reasoningEffort: profile.reasoningEffort, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); } });
+  const execution = ingress.handle({ event, model: profile.model, modelProfile: profile, reasoningEffort: profile.reasoningEffort, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); } });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
@@ -364,12 +378,13 @@ discord.onSteer(async message => {
   const decision = decideDiscordIngress({ channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}), authorId: message.authorId, authorBot: message.authorBot === true, botMentioned: message.botMentioned === true, replyToBot: message.replyToBot === true }, { ...discordPolicy, respondToBots: discord.respondsToBots() }, ownerDiscordId);
   if (decision.disposition !== "trigger" || (await sessionProfile(message.threadId ?? message.channelId)).queueMode !== "steer") return false;
   const accepted = activeSession.gate.submit(async () => {
+    const profile = await sessionProfile(message.threadId ?? message.channelId);
     const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
     const imported = [];
     const artifactIds: string[] = [];
     for (const attachment of message.attachments ?? []) { const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId); imported.push(artifact); artifactIds.push(artifact.id); }
     const event = toInputEvent(message, artifactIds);
-    const modelContent = await artifactModelContent(`[Discord user ${message.authorName ?? message.authorId} (${message.authorId}) added:]\n${message.content}`, imported, config.modelCapabilities?.includes("vision") === true);
+    const modelContent = await artifactModelContent(`[Discord user ${message.authorName ?? message.authorId} (${message.authorId}) added:]\n${message.content}`, imported, profile.capabilities.includes("vision"));
     await ingress.steer({ event, runId: activeSession.runId, userContent: modelContent });
   });
   if (!accepted) return false;

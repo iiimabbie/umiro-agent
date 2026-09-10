@@ -1,5 +1,6 @@
 import type { Authority } from "../authorization/authority.js";
 import type { Principal } from "./principal.js";
+import type { ModelCapability, ReasoningEffort } from "../model/contract.js";
 
 export type ExecutionOrigin =
   | { readonly kind: "interactive"; readonly transport: string; readonly conversationId: string }
@@ -11,4 +12,11 @@ export interface ExecutionContext {
   readonly origin: ExecutionOrigin;
   readonly actor: Principal;
   readonly authority: Authority;
+  /** Request-scoped model selection; never contains provider credentials. */
+  readonly modelProfile?: {
+    readonly id: string;
+    readonly model: string;
+    readonly capabilities: readonly ModelCapability[];
+    readonly reasoningEffort?: ReasoningEffort;
+  };
 }
