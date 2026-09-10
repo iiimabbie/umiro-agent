@@ -16,8 +16,11 @@ test("model capabilities are explicit and reject unknown values", () => {
 });
 
 test("model profiles validate model, capability, and reasoning selection", () => {
-  assert.deepEqual(validateControlConfig({ model: "gemma4", profiles: { fast: { model: "gemma4:9b", capabilities: ["function_tools"], reasoningEffort: "low" } } }).profiles, { fast: { model: "gemma4:9b", capabilities: ["function_tools"], reasoningEffort: "low" } });
+  assert.deepEqual(validateControlConfig({ model: "gemma4", protocol: "openai_chat_completions", profiles: { fast: { model: "gemma4:9b", protocol: "openai_responses", capabilities: ["function_tools"], reasoningEffort: "low" } } }).profiles, { fast: { model: "gemma4:9b", protocol: "openai_responses", capabilities: ["function_tools"], reasoningEffort: "low" } });
   assert.throws(() => validateControlConfig({ model: "gemma4", profiles: { fast: { model: "gemma4", capabilities: ["unknown"] } } }), /profile fast\.capabilities/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", protocol: "ollama" }), /protocol/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", protocol: "openai_chat_completions", modelCapabilities: ["hosted_web_search"] }), /require openai_responses/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", profiles: { fast: { model: "gemma4", typo: true } } }), /unsupported field/);
 });
 
 test("every control-panel config option explains its default, risk, and restart behavior", () => {
@@ -34,7 +37,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
   await mkdir(workspace); await writeFile(join(workspace, "AGENT.md"), "before\n"); await writeFile(configFile, `${JSON.stringify({ model: "gemma4", discord: {}, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] })}\n`);
   const schedules = [{ id: "schedule-1", name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 8 * * *" } }]; let created: unknown; let enabled: unknown; let updatedSchedule: unknown; let removed: unknown;
   let pluginAction: unknown; let approvalAction: unknown; let runLimit: unknown; let runId: unknown; const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
-  const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, workspaceFiles: ["AGENT.md"], secrets: () => ({ DISCORD_TOKEN: true, LLM_API_KEY: false }), audit: (event, data) => audits.push({ event, data }), schedules: {
+  const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, workspaceFiles: ["AGENT.md"], secrets: () => ({ DISCORD_TOKEN: true, LLM_API_KEY: false }), models: async () => ["gemma4", "gpt-5"], audit: (event, data) => audits.push({ event, data }), schedules: {
     async list() { return schedules; }, async create(input) { created = input; return { id: "new", ...input }; }, async setEnabled(id, value) { enabled = [id, value]; return { id, enabled: value }; }, async update(id, input) { updatedSchedule = [id, input]; return { id, ...input }; }, async remove(id) { removed = id; return true; },
   }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
@@ -42,6 +45,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.equal((await fetch(`${endpoint}/api/config`)).status, 401);
     const schema = await (await fetch(`${endpoint}/api/schema`, { headers })).json(); assert.deepEqual(schema, CONFIG_EXPLANATIONS);
     assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: true, LLM_API_KEY: false });
+    assert.deepEqual(await (await fetch(`${endpoint}/api/models`, { headers })).json(), ["gemma4", "gpt-5"]);
     assert.deepEqual(await (await fetch(`${endpoint}/api/workspace`, { headers })).json(), ["AGENT.md"]);
     const updated = { model: "new-model", discord: { allowedGuilds: ["g"] }, webUi: { enabled: true, host: "127.0.0.1", port: 4000 }, plugins: [] };
     assert.equal((await fetch(`${endpoint}/api/config`, { method: "PUT", headers, body: JSON.stringify(updated) })).status, 200);

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, ToolRuntime, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ModelCapability, type ReasoningEffort, type Run, type Step } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
-import { OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
+import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
@@ -24,6 +24,7 @@ import { ActiveWorkTracker } from "./active-work.js";
 import { SteerGate } from "./steer-gate.js";
 import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
+import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, type OpenAIProtocol } from "./model-routing.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -35,14 +36,15 @@ const readiness = { storage: false, plugins: false, discord: false, scheduler: f
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-type ConfigModelProfile = { readonly model: string; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
-type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
-const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
-const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, capabilities: [...(config.modelCapabilities ?? [])] };
+type ConfigModelProfile = { readonly model: string; readonly protocol?: OpenAIProtocol; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
+type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly protocol: OpenAIProtocol; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const defaultProtocol = parseOpenAIProtocol(config.protocol);
+const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? defaultProtocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
+const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, protocol: defaultProtocol, capabilities: [...(config.modelCapabilities ?? [])] };
 function resolveModelProfile(selection?: string): RuntimeModelProfile {
   if (!selection) return defaultModelProfile;
-  return configuredProfiles[selection] ?? { id: selection, model: selection, capabilities: [] };
+  return configuredProfiles[selection] ?? { id: selection, model: selection, protocol: defaultProtocol, capabilities: [] };
 }
 const allModelCapabilities = [...new Set([...(config.modelCapabilities ?? []), ...Object.values(configuredProfiles).flatMap(profile => profile.capabilities)])] as ModelCapability[];
 const contextMaxTokens = config.contextMaxTokens ?? 24_000;
@@ -120,7 +122,9 @@ const activeWork = new ActiveWorkTracker();
 const baseUrl = process.env.LLM_BASE_URL?.trim();
 if (!baseUrl) throw new Error("LLM_BASE_URL is required");
 const apiKey = process.env.LLM_API_KEY?.trim();
-const modelPort = new OpenAIResponsesModel({ baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 });
+const modelConnection = { baseUrl, auth: apiKey ? "bearer" as const : "none" as const, ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 };
+const modelPort = new OpenAIProtocolRouter(new OpenAIResponsesModel(modelConnection), new OpenAIChatCompletionsModel(modelConnection), modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
+const modelCatalog = new OpenAIModelCatalog(modelConnection);
 tools.register({
   name: "tool_catalog",
   description: "List registered tools and whether the current Principal has their declared capability.",
@@ -245,7 +249,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     if (outcome.status === "resumed") { await delivery.drain(); return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.result.status }; }
     return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.runState };
   },
-}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
+}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); return { id: run.id, state: run.state, origin: run.context.origin.kind, createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
 }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
