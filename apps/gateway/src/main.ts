@@ -73,9 +73,18 @@ const migratePluginState = async (namespace: string) => {
     await target.writeAtomic(entry.key, value, expiresAt ? { expiresAt } : undefined);
   }
 };
-for (const namespace of new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)])) await migratePluginState(namespace);
+const pluginStateNamespaces = new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)]);
+for (const namespace of pluginStateNamespaces) await migratePluginState(namespace);
 const artifacts = new ArtifactFileService(paths.artifacts, store);
 const logger = new JsonLineLogger();
+const cleanupExpiredPluginState = async (): Promise<void> => {
+  const now = new Date().toISOString();
+  const removed = (await Promise.all([...pluginStateNamespaces].map(namespace => store.pluginState(namespace).deleteExpired?.(now) ?? 0))).reduce((sum, count) => sum + count, 0);
+  if (removed > 0) logger.write({ level: "debug", event: "plugin_state.expired_cleanup", message: "Expired Plugin state entries were removed", occurredAt: now, data: { removed } });
+};
+await cleanupExpiredPluginState();
+const pluginStateCleanupTimer = setInterval(() => { void cleanupExpiredPluginState().catch(error => logger.write({ level: "warn", event: "plugin_state.expired_cleanup_failed", message: "Expired Plugin state cleanup failed", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } })); }, 60 * 60 * 1_000);
+pluginStateCleanupTimer.unref?.();
 const extractionBackfill = await artifacts.backfillTextExtractions();
 if (extractionBackfill.updated > 0) await store.rebuildSearchProjection();
 if (extractionBackfill.failed > 0) logger.write({ level: "warn", event: "artifact.extraction.backfill_degraded", message: "Some legacy artifact text could not be extracted", occurredAt: new Date().toISOString(), data: extractionBackfill });
@@ -414,6 +423,7 @@ const shutdown = async (exitCode = 0) => {
   readiness.discord = false;
   scheduler.stop();
   embeddingWorker?.stop();
+  clearInterval(pluginStateCleanupTimer);
   await controlPanel?.stop();
   await discord.stop();
   const drain = await activeWork.drain({
