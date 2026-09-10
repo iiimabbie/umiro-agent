@@ -1,4 +1,4 @@
-import type { Authority } from "../authorization/authority.js";
+import type { Authority, AuthorityScopeRequest } from "../authorization/authority.js";
 import type { ContextProvider } from "../context/contract.js";
 import type { JsonObject } from "../ports/json.js";
 import type { ToolDefinition } from "../tool/contract.js";
@@ -8,6 +8,25 @@ import type { ConversationSearch, PluginSearchDocuments, SearchDocumentProjectio
 import type { SchedulerControl } from "../scheduler/contract.js";
 import type { ChildRunService } from "../delegation/service.js";
 import type { Artifact } from "../artifact/entities.js";
+import type { BudgetCeiling, OutputContract } from "../delegation/entities.js";
+
+/** Static, author-auditable subagent role. Declared in the manifest only. */
+export interface SubagentProfileDefinition {
+  readonly id: string;
+  readonly description: string;
+  readonly instructions: readonly string[];
+  readonly model?: string;
+  /** Availability requirement, not a per-Run tool allowlist. */
+  readonly requiredTools?: readonly string[];
+  readonly authorityScope?: AuthorityScopeRequest;
+  readonly budgetCeiling?: BudgetCeiling;
+  readonly outputContract?: OutputContract;
+}
+
+export interface SubagentProfileCatalog {
+  list(): readonly SubagentProfileDefinition[];
+  get(id: string): SubagentProfileDefinition | undefined;
+}
 
 /** Protocol-neutral declarations; Scheduler/Adapter registries consume these later. */
 export interface PluginJobDefinition {
@@ -50,6 +69,8 @@ export interface PluginManifestV0 {
     readonly skills?: readonly string[];
     /** Static, author-auditable usage policy rendered by the Host as scoped instructions. */
     readonly policy?: readonly string[];
+    /** Manifest-only static definitions; no runtime contribution may override them. */
+    readonly subagentProfiles?: readonly SubagentProfileDefinition[];
   };
 }
 
@@ -100,7 +121,7 @@ export interface DiscordPluginService {
   setRespondToBots(enabled: boolean): Promise<void>;
 }
 export interface IntermediateReplyService { send(runId: string, text: string, signal?: AbortSignal): Promise<{ readonly deliveryId: string }> }
-export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly replies?: IntermediateReplyService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService; readonly legacy?: LegacyPluginServices }
+export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly subagentProfiles?: SubagentProfileCatalog; readonly replies?: IntermediateReplyService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService; readonly legacy?: LegacyPluginServices }
 export interface PluginHostServices extends Omit<PluginRuntimeServices, "searchDocuments"> { readonly searchDocumentProjection?: SearchDocumentProjection }
 
 export interface PluginEnableOptions {

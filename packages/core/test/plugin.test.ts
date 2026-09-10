@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextEngine, ContextProviderRegistry } from "../src/context/index.js";
-import { PluginHost, validatePluginManifest, type PluginModule } from "../src/plugin/index.js";
+import { PluginHost, SubagentProfileRegistry, validatePluginManifest, type PluginModule, type SubagentProfileCatalog } from "../src/plugin/index.js";
 import { ToolRegistry } from "../src/tool/index.js";
 
 const authority = { capabilities: [], visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
@@ -92,7 +92,7 @@ test("plugin logger is namespaced, redacts secrets, and cannot break startup", a
       context.logger!.warn("seed_failed", "continuing", { token: "super-secret", detail: "super-secret appeared" });
     } }),
   };
-  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, undefined, undefined, { write(record) { records.push(record); } });
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { write(record) { records.push(record); } });
   await host.enable(module, { secrets: { PLUGIN_TOKEN: "super-secret" } });
   assert.deepEqual(records, [{ level: "warn", event: "plugin.logger.seed_failed", message: "continuing", occurredAt: (records[0] as { occurredAt: string }).occurredAt, pluginId: "logger-plugin", data: { token: "[REDACTED]", detail: "[REDACTED] appeared" } }]);
 });
@@ -120,4 +120,81 @@ test("plugin health is isolated and reports failed checks without throwing", asy
   await host.enable({ manifest: manifest("healthy"), create: () => ({ contributions: {}, async health() { return { status: "ok" as const }; } }) });
   await host.enable({ manifest: manifest("broken-health"), create: () => ({ contributions: {}, async health() { throw new Error("secret detail"); } }) });
   assert.deepEqual(await host.health(), [{ id: "broken-health", status: "failed", detail: "Error" }, { id: "healthy", status: "ok" }]);
+});
+
+test("manifest-only subagent profiles are validated, registered, exposed, and removed", async () => {
+  let catalog: SubagentProfileCatalog | undefined;
+  const profile = { id: "coder", description: "Writes bounded code", instructions: ["Act as a careful coder."], model: "fast", requiredTools: [], authorityScope: { capabilities: [] }, budgetCeiling: { maxModelTurns: 2 }, outputContract: { kind: "text" as const } };
+  const module: PluginModule = { manifest: { schemaVersion: 0, id: "coder-plugin", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "coder-plugin", permissions: authority, contributes: { subagentProfiles: [profile] } }, create: context => { catalog = context.services?.subagentProfiles; return { contributions: {} }; } };
+  const profiles = new SubagentProfileRegistry();
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, undefined, undefined, profiles, { has: id => id === "fast" });
+  await host.enable(module);
+  assert.deepEqual(host.getSubagentProfile("coder"), profile);
+  assert.equal(catalog?.get("coder")?.description, "Writes bounded code");
+  await host.disable("coder-plugin");
+  assert.deepEqual(host.listSubagentProfiles(), []);
+});
+
+test("subagent profile manifests reject ambiguous or unbounded static definitions", () => {
+  const base = { schemaVersion: 0 as const, id: "profiles", version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: "profiles", permissions: authority };
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "empty", description: "x", instructions: [] }] } }), /invalid plugin manifest/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "blank", description: "x", instructions: [" "] }] } }), /empty instructions/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "huge", description: "x", instructions: ["x".repeat(8001)] }] } }), /exceed/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "same", description: "x", instructions: ["x"] }, { id: "same", description: "y", instructions: ["y"] }] } }), /duplicates/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "scope", description: "x", instructions: ["x"], authorityScope: { capabilities: ["filesystem.read"] } }] } }), /undeclared capability/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: Array.from({ length: 17 }, (_, index) => ({ id: `profile-${index}`, description: "x", instructions: ["x"] })) } }), /invalid plugin manifest/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: Array.from({ length: 5 }, (_, index) => ({ id: `large-${index}`, description: "x", instructions: ["x".repeat(7000)] })) } }), /32000/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "budget", description: "x", instructions: ["x"], budgetCeiling: { maxToolCalls: 0 } }] } }), /invalid plugin manifest/);
+  assert.throws(() => validatePluginManifest({ ...base, contributes: { subagentProfiles: [{ id: "unsafe-budget", description: "x", instructions: ["x"], budgetCeiling: { maxToolCalls: Number.MAX_SAFE_INTEGER + 1 } }] } }), /invalid plugin manifest/);
+});
+
+test("subagent profile registration fails closed for conflicts, tools, and model profiles", async () => {
+  const profiles = new SubagentProfileRegistry();
+  const modelDirectory = { has: (id: string) => id === "default" };
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, undefined, undefined, profiles, modelDirectory);
+  const manifest = (id: string, profile: Record<string, unknown>): PluginModule => ({ manifest: { schemaVersion: 0, id, version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: id, permissions: authority, contributes: { subagentProfiles: [profile] } } as never, create: () => ({ contributions: {} }) });
+  await host.enable(manifest("first-profile", { id: "shared", description: "x", instructions: ["x"] }));
+  await assert.rejects(host.enable(manifest("second-profile", { id: "shared", description: "y", instructions: ["y"] })), /duplicate plugin subagent profile/);
+  assert.equal(host.get("first-profile")?.state, "enabled");
+  await assert.rejects(host.enable(manifest("tool-profile", { id: "tool", description: "x", instructions: ["x"], requiredTools: ["missing"] })), /unavailable tool/);
+  await assert.rejects(host.enable(manifest("model-profile", { id: "model", description: "x", instructions: ["x"], model: "unknown" })), /unknown model profile: unknown/);
+});
+
+test("skill requiredModels is enforced by the same model profile directory", async () => {
+  const module: PluginModule = { manifest: { schemaVersion: 0, id: "model-skill", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "model-skill", permissions: authority, contributes: { skills: ["model.workflow"] } }, create: () => ({ contributions: { skills: [{ id: "model.workflow", description: "x", instructions: "x", requiredModels: ["missing"] }] } }) };
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { has: id => id === "default" });
+  await assert.rejects(host.enable(module), /unavailable model profile/);
+  assert.deepEqual(host.listSkills(), []);
+});
+
+test("an unavailable profile tool rolls back every contribution registered by that plugin", async () => {
+  const pluginAuthority = { capabilities: ["filesystem.read" as const], visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
+  const tools = new ToolRegistry();
+  const providers = new ContextProviderRegistry();
+  let hookCalls = 0;
+  const module: PluginModule = {
+    manifest: {
+      schemaVersion: 0, id: "rollback-profile", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "rollback-profile", permissions: pluginAuthority,
+      contributes: { tools: ["present"], contextProviders: ["present-context"], hooks: ["present-hook"], jobs: ["present-job"], commands: ["present-command"], skills: ["present-skill"], subagentProfiles: [{ id: "broken-profile", description: "requires a missing tool", instructions: ["work"], requiredTools: ["missing"] }] },
+    },
+    create: () => ({ contributions: {
+      tools: [{ name: "present", description: "present", inputSchema: { type: "object" }, policy: { capability: "filesystem.read", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true, output: {}, effectStatus: "confirmed" }; } }],
+      contextProviders: [{ id: "present-context", role: "test", priority: 1, async load() { return [{ id: "present", providerId: "present-context", role: "test", content: "present", source: { kind: "test", ref: "present" }, influence: "information", instructionAuthority: "none", retention: "normal" }]; } }],
+      hooks: [{ id: "present-hook", event: "run.completed", async handle() { hookCalls += 1; } }],
+      jobs: [{ id: "present-job", schedule: "0 0 * * *", async run() {} }],
+      commands: [{ name: "present-command", description: "present", async execute() { return {}; } }],
+      skills: [{ id: "present-skill", description: "present", instructions: "present" }],
+    } }),
+  };
+  const host = new PluginHost(tools, providers, pluginAuthority);
+  await assert.rejects(host.enable(module), /unavailable tool/);
+  assert.equal(tools.get("present"), undefined);
+  assert.deepEqual(host.listJobs(), []);
+  assert.deepEqual(host.listCommands(), []);
+  assert.deepEqual(host.listSkills(), []);
+  assert.deepEqual(host.listSubagentProfiles(), []);
+  await host.emitHook("run.completed", {});
+  assert.equal(hookCalls, 0);
+  const request = { runId: "run", execution: { actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, origin: { kind: "interactive" as const, transport: "test", conversationId: "c" }, authority: pluginAuthority }, prompt: "hi", maxCharacters: 10_000 };
+  assert.deepEqual((await new ContextEngine(providers).assemble(request)).blocks, []);
 });

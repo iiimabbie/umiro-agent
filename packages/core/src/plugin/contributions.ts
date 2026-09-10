@@ -1,5 +1,5 @@
 import type { JsonObject } from "../ports/json.js";
-import type { PluginCommandDefinition, PluginJobDefinition, SkillDefinition } from "./contract.js";
+import type { PluginCommandDefinition, PluginJobDefinition, SkillDefinition, SubagentProfileDefinition } from "./contract.js";
 
 class ContributionRegistry<T extends { readonly id?: string; readonly name?: string }> {
   private readonly items = new Map<string, { pluginId: string; value: T }>();
@@ -22,4 +22,8 @@ export class PluginCommandRegistry extends ContributionRegistry<PluginCommandDef
 
 export class SkillRegistry extends ContributionRegistry<SkillDefinition> {
   constructor() { super(value => value.id, "skill"); }
+}
+
+export class SubagentProfileRegistry extends ContributionRegistry<SubagentProfileDefinition> {
+  constructor() { super(value => value.id, "subagent profile"); }
 }

@@ -2,20 +2,48 @@ import type { JsonObject } from "@umiro/core/ports";
 import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
 import type { TaskPackage } from "@umiro/core/delegation";
 import type { ToolDefinition, ToolExecutionResult } from "@umiro/core/tool";
+import { intersectVisibility, type AuthorityScopeRequest } from "@umiro/core/authorization";
+import type { BudgetCeiling, OutputContract } from "@umiro/core/delegation";
 
 const ok = (output: unknown): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: "confirmed" });
 const fail = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "subagent_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
+const instructionRank = { none: 0, scoped: 1, full: 2 } as const;
+function narrowAuthority(left: AuthorityScopeRequest, right: AuthorityScopeRequest): AuthorityScopeRequest {
+  const capabilities = left.capabilities && right.capabilities ? left.capabilities.filter(value => right.capabilities!.includes(value)) : left.capabilities ?? right.capabilities;
+  const visibility = left.visibility && right.visibility ? intersectVisibility(left.visibility, right.visibility) : left.visibility ?? right.visibility;
+  const instructionAuthority = left.instructionAuthority && right.instructionAuthority ? (instructionRank[left.instructionAuthority] <= instructionRank[right.instructionAuthority] ? left.instructionAuthority : right.instructionAuthority) : left.instructionAuthority ?? right.instructionAuthority;
+  return { ...(capabilities ? { capabilities } : {}), ...(visibility ? { visibility } : {}), ...(instructionAuthority ? { instructionAuthority } : {}) };
+}
+function narrowBudget(left?: BudgetCeiling, right?: BudgetCeiling): BudgetCeiling | undefined {
+  if (!left) return right; if (!right) return left;
+  const result: Record<string, number> = {};
+  for (const key of ["maxModelTurns", "maxToolCalls", "maxInputTokens", "maxOutputTokens", "maxDurationMs"] as const) { const values = [left[key], right[key]].filter((value): value is number => value !== undefined); if (values.length) result[key] = Math.min(...values); }
+  return result as BudgetCeiling;
+}
+function compilePrompt(instructions: readonly string[], task: TaskPackage, detail?: string): string {
+  return [instructions.join("\n").trim(), `Objective:\n${task.objective}`, task.constraints.length ? `Constraints:\n${task.constraints.map(item => `- ${item}`).join("\n")}` : "", task.acceptanceCriteria.length ? `Acceptance criteria:\n${task.acceptanceCriteria.map(item => `- ${item}`).join("\n")}` : "", `Output contract:\n${JSON.stringify(task.outputContract)}`, detail?.trim() ? `Additional detail:\n${detail.trim()}` : ""].filter(Boolean).join("\n\n");
+}
 
 export function createPlugin(setup: PluginSetupContext): PluginInstance {
   const childRuns = setup.services?.childRuns; if (!childRuns) throw new Error("subagent ChildRun service is unavailable");
+  const profiles = setup.services?.subagentProfiles;
   const replies = setup.services?.replies; if (!replies) throw new Error("subagent intermediate reply service is unavailable");
   const parentRunId = (context: Parameters<ToolDefinition["execute"]>[1]) => context.runId ?? (context.execution.origin.kind === "delegation" ? context.execution.origin.parentRunId : undefined);
-  const delegate: ToolDefinition = { name: "subagent_delegate", description: "Delegate a bounded objective to a durable child agent run. The child receives only the explicit task package.", inputSchema: { type: "object", additionalProperties: false, required: ["objective", "prompt", "idempotencyKey", "model"], properties: { objective: { type: "string", minLength: 1 }, prompt: { type: "string", minLength: 1 }, idempotencyKey: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 }, constraints: { type: "array", items: { type: "string" } }, acceptanceCriteria: { type: "array", items: { type: "string" } }, outputContract: { type: "object" }, authorityScope: { type: "object" }, budgetCeiling: { type: "object" } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent", concurrency: "parallel_safe" }, async execute(input, context) {
+  const delegate: ToolDefinition = { name: "subagent_delegate", description: "Delegate a bounded objective to a durable Child Run. Select a registered profile, or provide both prompt and model when no profile is selected.", inputSchema: { type: "object", additionalProperties: false, required: ["objective", "idempotencyKey"], properties: { objective: { type: "string", minLength: 1 }, profile: { type: "string", minLength: 1 }, prompt: { type: "string", minLength: 1 }, idempotencyKey: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 }, constraints: { type: "array", items: { type: "string" } }, acceptanceCriteria: { type: "array", items: { type: "string" } }, outputContract: { type: "object" }, authorityScope: { type: "object" }, budgetCeiling: { type: "object" } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent", concurrency: "parallel_safe" }, async execute(input, context) {
     try {
-      const task: TaskPackage = { objective: String(input.objective), constraints: Array.isArray(input.constraints) ? input.constraints.filter((value): value is string => typeof value === "string") : [], acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria.filter((value): value is string => typeof value === "string") : [], outputContract: input.outputContract && typeof input.outputContract === "object" && !Array.isArray(input.outputContract) ? input.outputContract as unknown as TaskPackage["outputContract"] : { kind: "text" } };
+      const selected = typeof input.profile === "string" ? profiles?.get(input.profile) : undefined;
+      if (typeof input.profile === "string" && !selected) throw new Error(`unknown subagent profile: ${input.profile}; available profiles: ${profiles?.list().map(profile => profile.id).join(", ") || "none"}`);
+      if (!selected && (typeof input.prompt !== "string" || typeof input.model !== "string")) throw new Error("subagent delegation requires a profile, or both prompt and model");
+      if (selected && !selected.model && typeof input.model !== "string") throw new Error(`subagent profile ${selected.id} does not fix a model; model is required`);
+      if (selected?.model && typeof input.model === "string" && input.model !== selected.model) throw new Error(`subagent profile ${selected.id} fixes model profile ${selected.model}; model cannot be overridden`);
+      const outputContract = input.outputContract && typeof input.outputContract === "object" && !Array.isArray(input.outputContract) ? input.outputContract as unknown as OutputContract : selected?.outputContract ?? { kind: "text" as const };
+      const task: TaskPackage = { objective: String(input.objective), constraints: Array.isArray(input.constraints) ? input.constraints.filter((value): value is string => typeof value === "string") : [], acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria.filter((value): value is string => typeof value === "string") : [], outputContract };
       const parent = parentRunId(context);
       if (!parent) throw new Error("subagent delegation requires a parent Run context");
-      const result = await childRuns.start({ parentRunId: parent, idempotencyKey: String(input.idempotencyKey), task, authorityScope: input.authorityScope && typeof input.authorityScope === "object" && !Array.isArray(input.authorityScope) ? input.authorityScope as never : {}, model: String(input.model), prompt: String(input.prompt), ...(input.budgetCeiling && typeof input.budgetCeiling === "object" && !Array.isArray(input.budgetCeiling) ? { budgetCeiling: input.budgetCeiling as never } : {}), signal: context.signal });
+      const requestedAuthority = input.authorityScope && typeof input.authorityScope === "object" && !Array.isArray(input.authorityScope) ? input.authorityScope as AuthorityScopeRequest : {};
+      const requestedBudget = input.budgetCeiling && typeof input.budgetCeiling === "object" && !Array.isArray(input.budgetCeiling) ? input.budgetCeiling as BudgetCeiling : undefined;
+      const budgetCeiling = narrowBudget(selected?.budgetCeiling, requestedBudget);
+      const result = await childRuns.start({ parentRunId: parent, idempotencyKey: String(input.idempotencyKey), task, authorityScope: narrowAuthority(selected?.authorityScope ?? {}, requestedAuthority), model: selected?.model ?? String(input.model), prompt: selected ? compilePrompt(selected.instructions, task, typeof input.prompt === "string" ? input.prompt : undefined) : String(input.prompt), ...(budgetCeiling ? { budgetCeiling } : {}), signal: context.signal });
       return ok(result);
     } catch (error) { return fail(error); }
   } };

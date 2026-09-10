@@ -68,6 +68,34 @@ const validateShape = new Ajv({ allErrors: true, strict: true }).compile<PluginM
         commands: { type: "array", items: { type: "string" }, uniqueItems: true },
         skills: { type: "array", items: { type: "string" }, uniqueItems: true },
         policy: { type: "array", maxItems: 16, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 2000 } },
+        subagentProfiles: {
+          type: "array", maxItems: 16,
+          items: {
+            type: "object", additionalProperties: false,
+            required: ["id", "description", "instructions"],
+            properties: {
+              id: { type: "string" }, description: { type: "string", minLength: 1 },
+              instructions: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+              model: { type: "string", minLength: 1 },
+              requiredTools: { type: "array", items: { type: "string" }, uniqueItems: true },
+              authorityScope: {
+                type: "object", additionalProperties: false,
+                properties: {
+                  capabilities: { type: "array", items: { type: "string" }, uniqueItems: true },
+                  instructionAuthority: { enum: ["none", "scoped", "full"] },
+                  visibility: {
+                    oneOf: [
+                      { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "all" } } },
+                      { type: "object", additionalProperties: false, required: ["kind", "principalIds", "labels", "resources"], properties: { kind: { const: "restricted" }, principalIds: { type: "array", items: { type: "string" }, uniqueItems: true }, labels: { type: "array", items: { type: "string" }, uniqueItems: true }, resources: { type: "array", items: { type: "object", additionalProperties: false, required: ["kind", "id"], properties: { kind: { type: "string" }, id: { type: "string" } } } } } },
+                    ],
+                  },
+                },
+              },
+              budgetCeiling: { type: "object", additionalProperties: false, properties: { maxModelTurns: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, maxToolCalls: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, maxInputTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, maxOutputTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, maxDurationMs: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } } },
+              outputContract: { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { enum: ["text", "json", "artifact"] }, schema: { type: "object" } } },
+            },
+          },
+        },
       },
     },
   },
@@ -99,8 +127,21 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
   unique(manifest.contributes.tools, "contributes.tools");
   unique(manifest.contributes.contextProviders, "contributes.contextProviders");
   unique(manifest.contributes.skills, "contributes.skills");
+  unique(manifest.contributes.subagentProfiles?.map(profile => profile.id), "contributes.subagentProfiles");
   if (manifest.contributes.policy?.some(item => !item.trim())) throw new TypeError("plugin manifest contributes.policy contains an empty policy");
   if ((manifest.contributes.policy?.reduce((total, item) => total + item.length, 0) ?? 0) > 8000) throw new TypeError("plugin manifest contributes.policy exceeds 8000 characters");
+  let totalProfileInstructions = 0;
+  for (const profile of manifest.contributes.subagentProfiles ?? []) {
+    if (!profile.description.trim()) throw new TypeError(`plugin manifest subagent profile ${profile.id} has an empty description`);
+    if (!profile.instructions.length || profile.instructions.some(item => !item.trim())) throw new TypeError(`plugin manifest subagent profile ${profile.id} has empty instructions`);
+    const length = profile.instructions.join("\n").length;
+    if (length > 8000) throw new TypeError(`plugin manifest subagent profile ${profile.id} instructions exceed 8000 characters`);
+    totalProfileInstructions += length;
+    unique(profile.requiredTools, `subagent profile ${profile.id}.requiredTools`);
+    const declared = new Set(manifest.permissions.capabilities);
+    if (profile.authorityScope?.capabilities?.some(capability => !declared.has(capability))) throw new TypeError(`plugin manifest subagent profile ${profile.id} requires an undeclared capability`);
+  }
+  if (totalProfileInstructions > 32000) throw new TypeError("plugin manifest subagent profile instructions exceed 32000 characters in total");
   unique(manifest.requiredSecrets, "requiredSecrets", /^[A-Z][A-Z0-9_]*$/);
   if (hostCeiling && !isAuthoritySubset(manifest.permissions, hostCeiling)) {
     throw new TypeError(`plugin ${manifest.id} permissions exceed the host ceiling`);

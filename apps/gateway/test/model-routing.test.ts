@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ModelPort, ModelRequest } from "@umiro/core";
-import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol } from "../src/model-routing.js";
+import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel } from "../src/model-routing.js";
 
 const request = (model: string): ModelRequest => ({ model, messages: [{ role: "user", content: "hi" }] });
 const adapter = (name: string, calls: string[]): ModelPort => ({ async generate(input) { calls.push(`${name}:${input.model}`); return { text: name, toolCalls: [], finishReason: "stop", usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: name } }; } });
@@ -20,4 +20,11 @@ test("protocol routing rejects invalid values and ambiguous model assignments", 
   assert.equal(parseOpenAIProtocol(undefined), "openai_responses");
   assert.throws(() => parseOpenAIProtocol("ollama"), /protocol/);
   assert.throws(() => modelProtocolMap([{ model: "same", protocol: "openai_responses" }, { model: "same", protocol: "openai_chat_completions" }]), /conflicting protocols/);
+});
+
+test("delegated model profiles resolve default and named profiles to concrete model IDs", () => {
+  const profiles = { fast: { model: "gemma4:31b" } };
+  assert.equal(resolveDelegatedModel("default", "gemma4:latest", profiles), "gemma4:latest");
+  assert.equal(resolveDelegatedModel("fast", "gemma4:latest", profiles), "gemma4:31b");
+  assert.equal(resolveDelegatedModel("explicit-model", "gemma4:latest", profiles), "explicit-model");
 });

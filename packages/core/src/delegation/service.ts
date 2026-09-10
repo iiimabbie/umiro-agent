@@ -30,6 +30,7 @@ export interface ChildRunServiceOptions {
   readonly createId?: (kind: "delegation" | "run" | "step") => string;
   readonly maxDepth?: number;
   readonly maxActiveChildrenPerPrincipal?: number;
+  readonly resolveModel?: (selection: string) => string;
 }
 
 const BUDGET_KEYS = ["maxModelTurns", "maxToolCalls", "maxInputTokens", "maxOutputTokens", "maxDurationMs"] as const;
@@ -52,6 +53,7 @@ export class ChildRunService {
   private readonly createId: NonNullable<ChildRunServiceOptions["createId"]>;
   private readonly maxDepth: number;
   private readonly maxActiveChildrenPerPrincipal: number;
+  private readonly resolveModel: (selection: string) => string;
   private readonly activeChildren = new Map<string, AbortController>();
   private readonly activeExecutions = new Map<string, Promise<ChildRunExecutionResult>>();
 
@@ -65,6 +67,7 @@ export class ChildRunService {
     this.maxDepth = options.maxDepth ?? 1;
     if (this.maxDepth !== 1) throw new TypeError("Subagent delegation depth is fixed at one level");
     this.maxActiveChildrenPerPrincipal = options.maxActiveChildrenPerPrincipal ?? 2;
+    this.resolveModel = options.resolveModel ?? (selection => selection);
     if (!Number.isSafeInteger(this.maxActiveChildrenPerPrincipal) || this.maxActiveChildrenPerPrincipal <= 0) throw new TypeError("maxActiveChildrenPerPrincipal must be a positive safe integer");
   }
 
@@ -128,7 +131,7 @@ export class ChildRunService {
     const signal = request.signal ? AbortSignal.any([request.signal, controller.signal]) : controller.signal;
     try {
       const result = await this.engine.runPrepared(childRunId, {
-        model: request.model,
+        model: this.resolveModel(request.model),
         prompt: request.prompt,
         deliveryDestination: { kind: "parent_run", parentRunId: parent.id } satisfies JsonObject,
         signal,

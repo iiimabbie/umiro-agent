@@ -31,3 +31,13 @@ export function modelProtocolMap(entries: readonly { readonly model: string; rea
   }
   return result;
 }
+
+/** Resolve a Child Run model selection while preserving support for explicit raw model IDs. */
+export function resolveDelegatedModel(
+  selection: string,
+  defaultModel: string,
+  configuredProfiles: Readonly<Record<string, { readonly model: string }>>,
+): string {
+  if (selection === "default") return defaultModel;
+  return configuredProfiles[selection]?.model ?? selection;
+}

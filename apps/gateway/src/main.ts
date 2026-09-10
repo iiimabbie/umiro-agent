@@ -24,7 +24,7 @@ import { ActiveWorkTracker } from "./active-work.js";
 import { SteerGate } from "./steer-gate.js";
 import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
-import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, type OpenAIProtocol } from "./model-routing.js";
+import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 
 const paths = umiroPaths();
@@ -44,7 +44,7 @@ const defaultProtocol = parseOpenAIProtocol(config.protocol);
 const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? defaultProtocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
 const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, protocol: defaultProtocol, capabilities: [...(config.modelCapabilities ?? [])] };
 function resolveModelProfile(selection?: string): RuntimeModelProfile {
-  if (!selection) return defaultModelProfile;
+  if (!selection || selection === "default") return defaultModelProfile;
   return configuredProfiles[selection] ?? { id: selection, model: selection, protocol: defaultProtocol, capabilities: [] };
 }
 const allModelCapabilities = [...new Set([...(config.modelCapabilities ?? []), ...Object.values(configuredProfiles).flatMap(profile => profile.capabilities)])] as ModelCapability[];
@@ -169,7 +169,7 @@ if (hostedImageGeneration) tools.register({
 });
 const engine = new HeadlessRunEngine(modelPort, tools, store, { maxParallelToolCalls: config.subagent?.maxParallelTools ?? 2 });
 const contextEngine = new ContextEngine(providers);
-const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: config.subagent?.maxConcurrentChildren ?? 2 });
+const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: config.subagent?.maxConcurrentChildren ?? 2, resolveModel: selection => resolveDelegatedModel(selection, defaultModelProfile.model, configuredProfiles) });
 const approvalRuns = new ApprovalRunCoordinator(store, engine);
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
@@ -274,7 +274,7 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
   if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
   await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
 }
-host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord, legacy: legacyServices }, undefined, logger);
+host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
 await scheduler.syncPluginJobs(host.listJobs());

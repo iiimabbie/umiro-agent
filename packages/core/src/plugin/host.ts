@@ -8,7 +8,7 @@ import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 import { validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
-import { PluginCommandRegistry, PluginJobRegistry, SkillRegistry } from "./contributions.js";
+import { PluginCommandRegistry, PluginJobRegistry, SkillRegistry, SubagentProfileRegistry } from "./contributions.js";
 
 interface ActivePlugin {
   readonly manifest: PluginManifestV0;
@@ -93,6 +93,8 @@ export class PluginHost {
     private readonly commands = new PluginCommandRegistry(),
     private readonly services: PluginHostServices = {},
     private readonly skills = new SkillRegistry(),
+    private readonly subagentProfiles = new SubagentProfileRegistry(),
+    private readonly modelProfiles: { has(id: string): boolean } = { has: () => true },
     private readonly logger: StructuredLogger = NOOP_LOGGER,
   ) {}
 
@@ -125,6 +127,7 @@ export class PluginHost {
         ...(this.stateForNamespace ? { state: this.stateForNamespace(manifest.namespace) } : {}),
         services: {
           ...runtimeServices,
+          subagentProfiles: this.subagentProfiles,
           ...(searchDocumentProjection ? { searchDocuments: {
             replaceSource: (sourceId, documents) => searchDocumentProjection.replaceSearchSource(manifest.namespace, sourceId, documents),
             removeSource: sourceId => searchDocumentProjection.removeSearchSource(manifest.namespace, sourceId),
@@ -150,6 +153,7 @@ export class PluginHost {
     const registeredCommands: string[] = [];
     const registeredSkills: string[] = [];
     const registeredSkillProviders: string[] = [];
+    const registeredSubagentProfiles: string[] = [];
     const policyProvider = manifestPolicyProvider(manifest);
     try {
       exactContributionSet(toolNames, manifest.contributes.tools, `plugin ${manifest.id} tools`);
@@ -185,7 +189,13 @@ export class PluginHost {
       for (const command of active.instance.contributions.commands ?? []) { this.commands.register(manifest.id, command); registeredCommands.push(command.name); }
       for (const skill of active.instance.contributions.skills ?? []) {
         if (skill.requiredTools?.some(name => !this.tools.get(name))) throw new TypeError(`skill ${skill.id} requires an unavailable tool`);
+        if (skill.requiredModels?.some(name => !this.modelProfiles.has(name))) throw new TypeError(`skill ${skill.id} requires an unavailable model profile`);
         this.skills.register(manifest.id, skill); registeredSkills.push(skill.id);
+      }
+      for (const profile of manifest.contributes.subagentProfiles ?? []) {
+        if (profile.requiredTools?.some(name => !this.tools.get(name))) throw new TypeError(`subagent profile ${profile.id} requires an unavailable tool`);
+        if (profile.model !== undefined && !this.modelProfiles.has(profile.model)) throw new TypeError(`subagent profile ${profile.id} requires an unknown model profile: ${profile.model}`);
+        this.subagentProfiles.register(manifest.id, profile); registeredSubagentProfiles.push(profile.id);
       }
       active.state = "enabled";
     } catch (error) {
@@ -195,6 +205,7 @@ export class PluginHost {
       for (const jobId of registeredJobs.reverse()) this.jobs.unregister(jobId);
       for (const commandId of registeredCommands.reverse()) this.commands.unregister(commandId);
       for (const skillId of registeredSkills.reverse()) this.skills.unregister(skillId);
+      for (const profileId of registeredSubagentProfiles.reverse()) this.subagentProfiles.unregister(profileId);
       for (const toolName of registeredTools.reverse()) this.tools.unregister(toolName);
       try {
         await active.instance.stop?.();
@@ -222,6 +233,7 @@ export class PluginHost {
     for (const job of active.instance.contributions.jobs ?? []) this.jobs.unregister(job.id);
     for (const command of active.instance.contributions.commands ?? []) this.commands.unregister(command.name);
     for (const skill of active.instance.contributions.skills ?? []) this.skills.unregister(skill.id);
+    for (const profile of active.manifest.contributes.subagentProfiles ?? []) this.subagentProfiles.unregister(profile.id);
     try {
       await active.instance.stop?.();
       active.state = "disabled";
@@ -252,6 +264,8 @@ export class PluginHost {
   executeCommand(name: string, input: import("../ports/json.js").JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) { return this.commands.execute(name, input, context); }
   listSkills() { return this.skills.list(); }
   getSkill(id: string) { return this.skills.get(id); }
+  listSubagentProfiles() { return this.subagentProfiles.list(); }
+  getSubagentProfile(id: string) { return this.subagentProfiles.get(id); }
 
   async health(): Promise<readonly PluginHealth[]> {
     const results: PluginHealth[] = [];

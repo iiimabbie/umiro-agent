@@ -21,18 +21,40 @@ function model(): ModelPort { return { async generate() { return { text: "done",
 test("Child Run persists and enforces all requested budget fields", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.createRunWithStep(run("root"), step("root"));
-  let outputLimit: number | undefined;
-  const port: ModelPort = { async generate(request) { outputLimit = request.maxOutputTokens; return { text: "done", toolCalls: [], finishReason: "stop", usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "done" } }; } };
+  let outputLimit: number | undefined; let selectedModel: string | undefined; let modelCalls = 0;
+  const port: ModelPort = { async generate(request) { modelCalls += 1; outputLimit = request.maxOutputTokens; selectedModel = request.model; return { text: "done", toolCalls: [], finishReason: "stop", usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "done" } }; } };
   const engine = new HeadlessRunEngine(port, new ToolRegistry(), store);
-  const service = new ChildRunService(engine, store, { now: () => at, createId: ids() });
+  const service = new ChildRunService(engine, store, { now: () => at, createId: ids(), resolveModel: selection => selection === "fast" ? "gemma4:31b" : selection });
   const budgetCeiling = { maxModelTurns: 2, maxToolCalls: 3, maxInputTokens: 8, maxOutputTokens: 7, maxDurationMs: 1_000 };
   try {
-    const result = await service.execute({ parentRunId: "root", idempotencyKey: "request-1", task, authorityScope: {}, model: "fake", prompt: "work", budgetCeiling });
+    const result = await service.execute({ parentRunId: "root", idempotencyKey: "request-1", task, authorityScope: { capabilities: ["filesystem.read", "subagent.delegate"] }, model: "fast", prompt: "work", budgetCeiling });
     assert.equal(result.status, "succeeded");
     assert.equal(outputLimit, 7);
+    assert.equal(selectedModel, "gemma4:31b");
     assert.deepEqual((await store.getDelegationByKey("root", "request-1"))?.budgetCeiling, budgetCeiling);
     assert.equal((await store.getDelegationByKey("root", "request-1"))?.state, "succeeded");
     assert.equal((await store.getRun(result.childRunId))?.context.authority.capabilities.includes("subagent.delegate"), false);
+    assert.deepEqual((await store.getRun(result.childRunId))?.context.authority.capabilities, []);
+    const reused = await service.execute({ parentRunId: "root", idempotencyKey: "request-1", task, authorityScope: {}, model: "another-model", prompt: "must not create another child" });
+    assert.equal(reused.childRunId, result.childRunId);
+    assert.equal(reused.status, "succeeded");
+    if (reused.status === "succeeded") assert.equal(reused.reused, true);
+    assert.equal(modelCalls, 1);
+  } finally { store.close(); }
+});
+
+test("Child authority intersects profile scope with the Parent and always removes delegation", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const parentVisibility = { kind: "restricted" as const, principalIds: ["owner"], labels: ["private"], resources: [{ kind: "conversation", id: "c" }] };
+  const parent: Run = { ...run("root"), context: { ...execution, authority: { capabilities: capabilities("subagent.delegate", "filesystem.read"), visibility: parentVisibility, instructionAuthority: "scoped" } } };
+  await store.createRunWithStep(parent, step("root"));
+  const service = new ChildRunService(new HeadlessRunEngine(model(), new ToolRegistry(), store), store, { now: () => at, createId: ids() });
+  try {
+    const result = await service.execute({ parentRunId: "root", idempotencyKey: "authority", task, authorityScope: { capabilities: capabilities("subagent.delegate", "filesystem.read", "filesystem.write"), visibility: { kind: "all" }, instructionAuthority: "full" }, model: "fake", prompt: "work" });
+    const childAuthority = (await store.getRun(result.childRunId))?.context.authority;
+    assert.deepEqual(childAuthority?.capabilities, ["filesystem.read"]);
+    assert.deepEqual(childAuthority?.visibility, parentVisibility);
+    assert.equal(childAuthority?.instructionAuthority, "scoped");
   } finally { store.close(); }
 });
 
