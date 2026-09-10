@@ -23,6 +23,8 @@ export type ChildRunExecutionResult =
   | { readonly status: "succeeded"; readonly childRunId: string; readonly text: string; readonly reused: boolean }
   | { readonly status: "waiting" | "failed" | "cancelled"; readonly childRunId: string; readonly detail: string };
 
+export type ChildRunStartResult = ChildRunExecutionResult | { readonly status: "active"; readonly childRunId: string };
+
 export interface ChildRunServiceOptions {
   readonly now?: () => string;
   readonly createId?: (kind: "delegation" | "run" | "step") => string;
@@ -51,6 +53,7 @@ export class ChildRunService {
   private readonly maxDepth: number;
   private readonly maxActiveChildrenPerPrincipal: number;
   private readonly activeChildren = new Map<string, AbortController>();
+  private readonly activeExecutions = new Map<string, Promise<ChildRunExecutionResult>>();
 
   constructor(
     private readonly engine: HeadlessRunEngine,
@@ -144,6 +147,79 @@ export class ChildRunService {
     }
   }
 
+  /** Launch a durable Child Run and return its handle without waiting for completion. */
+  async start(request: ExecuteChildRunRequest): Promise<ChildRunStartResult> {
+    const existing = await this.store.getDelegationByKey(request.parentRunId, request.idempotencyKey);
+    if (existing) {
+      const terminal = await this.terminalResult(existing);
+      return terminal ?? { status: "active", childRunId: existing.childRunId };
+    }
+    let settled = false;
+    let outcome: ChildRunExecutionResult | undefined;
+    let failure: unknown;
+    const execution = this.execute(request);
+    void execution.then(result => { settled = true; outcome = result; }, error => { settled = true; failure = error; });
+    while (true) {
+      const created = await this.store.getDelegationByKey(request.parentRunId, request.idempotencyKey);
+      if (created) {
+        if (!settled) {
+          this.activeExecutions.set(created.childRunId, execution);
+          void execution.then(
+            () => { if (this.activeExecutions.get(created.childRunId) === execution) this.activeExecutions.delete(created.childRunId); },
+            () => { if (this.activeExecutions.get(created.childRunId) === execution) this.activeExecutions.delete(created.childRunId); },
+          );
+          return { status: "active", childRunId: created.childRunId };
+        }
+        if (failure) throw failure;
+        return outcome!;
+      }
+      if (settled) {
+        if (failure) throw failure;
+        return outcome!;
+      }
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+  }
+
+  /** Wait until any selected Child reaches a reportable state. */
+  async waitForAny(parentRunId: string, childRunIds: readonly string[], signal?: AbortSignal): Promise<ChildRunExecutionResult> {
+    if (!parentRunId.trim()) throw new TypeError("waiting requires a Parent Run ID");
+    const delegations = childRunIds.length
+      ? await Promise.all(childRunIds.map(async childRunId => {
+          const delegation = await this.store.getDelegationByChildRunId(childRunId);
+          if (!delegation || delegation.parentRunId !== parentRunId) throw new ExecutionStoreConflictError(`Child Run ${childRunId} does not belong to Parent Run ${parentRunId}`);
+          return delegation;
+        }))
+      : [...await this.store.listChildDelegations(parentRunId)].filter(item => item.state === "active" || item.state === "waiting");
+    if (!delegations.length) throw new Error("Parent Run has no selected Child Runs to wait for");
+    const controller = new AbortController();
+    const waitSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const awaitOne = async (delegation: DelegationRecord): Promise<ChildRunExecutionResult> => {
+      const terminal = await this.terminalResult(delegation);
+      if (terminal) return terminal;
+      const active = this.activeExecutions.get(delegation.childRunId);
+      if (active) return active;
+      while (true) {
+        if (waitSignal.aborted) throw waitSignal.reason ?? new Error("Subagent wait cancelled");
+        const latest = await this.store.getDelegation(delegation.id);
+        if (!latest) throw new Error(`delegation disappeared while waiting: ${delegation.id}`);
+        const result = await this.terminalResult(latest);
+        if (result) return result;
+        await new Promise<void>((resolve, reject) => {
+          const finish = () => { waitSignal.removeEventListener("abort", abort); resolve(); };
+          const timer = setTimeout(finish, 50);
+          const abort = () => { clearTimeout(timer); waitSignal.removeEventListener("abort", abort); reject(waitSignal.reason ?? new Error("Subagent wait cancelled")); };
+          if (waitSignal.aborted) abort(); else waitSignal.addEventListener("abort", abort, { once: true });
+        });
+      }
+    };
+    try {
+      const result = await Promise.race(delegations.map(awaitOne));
+      this.activeExecutions.delete(result.childRunId);
+      return result;
+    } finally { controller.abort(new Error("another Child Run reported first")); }
+  }
+
   async cancel(parentRunId: string, childRunId: string): Promise<{ readonly cancelled: boolean; readonly childRunId: string }> {
     if (!parentRunId.trim() || !childRunId.trim()) throw new TypeError("cancellation requires Parent and Child Run IDs");
     const cancelled = await this.store.cancelChildRun(parentRunId, childRunId, this.now());
@@ -152,6 +228,10 @@ export class ChildRunService {
   }
 
   private async existingResult(delegation: DelegationRecord): Promise<ChildRunExecutionResult> {
+    return (await this.terminalResult(delegation)) ?? (() => ({ status: "existing", childRunId: delegation.childRunId, runState: delegation.state === "waiting" ? "waiting" : "running" } as const))();
+  }
+
+  private async terminalResult(delegation: DelegationRecord): Promise<ChildRunExecutionResult | undefined> {
     const run = await this.store.getRun(delegation.childRunId);
     if (!run) throw new Error(`delegation ${delegation.id} references a missing Child Run`);
     if (run.state === "succeeded") {
@@ -159,7 +239,9 @@ export class ChildRunService {
       if (!output) throw new Error(`succeeded Child Run ${run.id} has no durable output`);
       return { status: "succeeded", childRunId: run.id, text: output.text, reused: true };
     }
-    return { status: "existing", childRunId: run.id, runState: run.state };
+    if (run.state === "failed" || run.state === "cancelled" || run.state === "waiting") return { status: run.state, childRunId: run.id, detail: run.waitingReason ?? run.interruption?.detail ?? run.state };
+    if (run.state === "timed_out") return { status: "failed", childRunId: run.id, detail: run.interruption?.detail ?? "timed out" };
+    return undefined;
   }
 
   private projectResult(childRunId: string, result: HeadlessRunResult, reused: boolean): ChildRunExecutionResult {

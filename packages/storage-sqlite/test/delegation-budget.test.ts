@@ -135,3 +135,27 @@ test("Child output is durably searchable with Parent lineage, visibility, and em
     assert.ok(rebuiltJobs.some(job => job.documentKey === `document:core:${childRunId}`));
   } finally { store.close(); }
 });
+
+test("Parent can launch two Children, receive the first report, and cancel the other", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.createRunWithStep(run("root"), step("root"));
+  const releases = new Map<string, () => void>();
+  const childModel: ModelPort = { async generate(request) {
+    await new Promise<void>(resolve => { releases.set(String(request.messages.at(-1)?.content), resolve); });
+    return { text: `report:${String(request.messages.at(-1)?.content)}`, toolCalls: [], finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "done" } };
+  } };
+  const service = new ChildRunService(new HeadlessRunEngine(childModel, new ToolRegistry(), store), store, { now: () => at, createId: ids() });
+  try {
+    const first = await service.start({ parentRunId: "root", idempotencyKey: "first", task, authorityScope: {}, model: "fake", prompt: "A" });
+    const second = await service.start({ parentRunId: "root", idempotencyKey: "second", task, authorityScope: {}, model: "fake", prompt: "B" });
+    assert.equal(first.status, "active"); assert.equal(second.status, "active");
+    while (!releases.has("A") || !releases.has("B")) await new Promise(resolve => setImmediate(resolve));
+    releases.get("A")!();
+    const report = await service.waitForAny("root", [first.childRunId, second.childRunId]);
+    assert.equal(report.childRunId, first.childRunId);
+    assert.equal(report.status, "succeeded");
+    assert.deepEqual(await service.cancel("root", second.childRunId), { cancelled: true, childRunId: second.childRunId });
+    const cancelled = await service.waitForAny("root", [second.childRunId]);
+    assert.equal(cancelled.status, "cancelled");
+  } finally { releases.forEach(release => release()); store.close(); }
+});

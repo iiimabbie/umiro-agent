@@ -15,9 +15,13 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       const task: TaskPackage = { objective: String(input.objective), constraints: Array.isArray(input.constraints) ? input.constraints.filter((value): value is string => typeof value === "string") : [], acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria.filter((value): value is string => typeof value === "string") : [], outputContract: input.outputContract && typeof input.outputContract === "object" && !Array.isArray(input.outputContract) ? input.outputContract as unknown as TaskPackage["outputContract"] : { kind: "text" } };
       const parent = parentRunId(context);
       if (!parent) throw new Error("subagent delegation requires a parent Run context");
-      const result = await childRuns.execute({ parentRunId: parent, idempotencyKey: String(input.idempotencyKey), task, authorityScope: input.authorityScope && typeof input.authorityScope === "object" && !Array.isArray(input.authorityScope) ? input.authorityScope as never : {}, model: String(input.model), prompt: String(input.prompt), ...(input.budgetCeiling && typeof input.budgetCeiling === "object" && !Array.isArray(input.budgetCeiling) ? { budgetCeiling: input.budgetCeiling as never } : {}), signal: context.signal });
+      const result = await childRuns.start({ parentRunId: parent, idempotencyKey: String(input.idempotencyKey), task, authorityScope: input.authorityScope && typeof input.authorityScope === "object" && !Array.isArray(input.authorityScope) ? input.authorityScope as never : {}, model: String(input.model), prompt: String(input.prompt), ...(input.budgetCeiling && typeof input.budgetCeiling === "object" && !Array.isArray(input.budgetCeiling) ? { budgetCeiling: input.budgetCeiling as never } : {}), signal: context.signal });
       return ok(result);
     } catch (error) { return fail(error); }
+  } };
+  const wait: ToolDefinition = { name: "subagent_wait", description: "Wait until any selected Child Run reports back so the Parent can coordinate the others.", inputSchema: { type: "object", additionalProperties: false, properties: { childRunIds: { type: "array", maxItems: 2, items: { type: "string", minLength: 1 } } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute(input, context) {
+    try { const parent = parentRunId(context); if (!parent) throw new Error("subagent wait requires a Parent Run context"); const ids = Array.isArray(input.childRunIds) ? input.childRunIds.filter((value): value is string => typeof value === "string") : []; return ok(await childRuns.waitForAny(parent, ids, context.signal)); }
+    catch (error) { return fail(error); }
   } };
   const cancel: ToolDefinition = { name: "subagent_cancel", description: "Cancel one active Child Run created by this Parent Run.", inputSchema: { type: "object", additionalProperties: false, required: ["childRunId"], properties: { childRunId: { type: "string", minLength: 1 } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" }, async execute(input, context) {
     try {
@@ -33,5 +37,5 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       return ok(await replies.send(runId, String(input.text), context.signal));
     } catch (error) { return fail(error); }
   } };
-  return { contributions: { tools: [delegate, cancel, replyNow] } };
+  return { contributions: { tools: [delegate, wait, cancel, replyNow] } };
 }
