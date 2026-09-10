@@ -37,7 +37,7 @@ const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? 
 const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, capabilities: [...(config.modelCapabilities ?? [])] };
 function resolveModelProfile(selection?: string): RuntimeModelProfile {
   if (!selection) return defaultModelProfile;
-  return configuredProfiles[selection] ?? { id: selection, model: selection, capabilities: defaultModelProfile.capabilities };
+  return configuredProfiles[selection] ?? { id: selection, model: selection, capabilities: [] };
 }
 const allModelCapabilities = [...new Set([...(config.modelCapabilities ?? []), ...Object.values(configuredProfiles).flatMap(profile => profile.capabilities)])] as ModelCapability[];
 const contextMaxTokens = config.contextMaxTokens ?? 24_000;
@@ -112,7 +112,8 @@ tools.register({
   inputSchema: { type: "object", additionalProperties: false },
   policy: { capability: "tool.catalog", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
   async execute(_input, context) {
-    return { ok: true, effectStatus: "not_applicable", output: tools.list().map(tool => ({ name: tool.name, description: tool.description, capability: tool.policy.capability, tier: tool.policy.tier, sideEffect: tool.policy.sideEffect, available: context.execution.authority.capabilities.includes(tool.policy.capability) })) };
+    const profile = context.execution.modelProfile ?? defaultModelProfile;
+    return { ok: true, effectStatus: "not_applicable", output: tools.list().map(tool => ({ name: tool.name, description: tool.description, capability: tool.policy.capability, tier: tool.policy.tier, sideEffect: tool.policy.sideEffect, available: context.execution.authority.capabilities.includes(tool.policy.capability) && (!tool.policy.capability.startsWith("model.") || profile.capabilities.includes(tool.policy.capability.slice("model.".length) as ModelCapability)) })) };
   },
 });
 if (hostedWebSearch) tools.register({
