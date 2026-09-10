@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonObject } from "@umiro/core/ports";
 import type { ContextProvider, ContextRole } from "@umiro/core/context";
@@ -9,11 +9,12 @@ interface ContextFilesConfig {
   readonly workspacePath: string;
 }
 
-const FILES: Readonly<Record<"soul" | "agent" | "owner" | "memory", string>> = {
+const FILES: Readonly<Record<"soul" | "agent" | "owner" | "memory" | "bootstrap", string>> = {
   soul: "SOUL.md",
   agent: "AGENT.md",
   owner: "OWNER.md",
   memory: "MEMORY.md",
+  bootstrap: "BOOTSTRAP.md",
 };
 
 const PRIORITY: Readonly<Record<"soul" | "agent" | "owner" | "memory", number>> = {
@@ -22,6 +23,9 @@ const PRIORITY: Readonly<Record<"soul" | "agent" | "owner" | "memory", number>> 
   owner: 250,
   memory: 300,
 };
+
+const SOUL_TEMPLATE = `# SOUL\n\nWho you are. This file is the only source of your identity and voice — your name, how you speak,\nwhat you care about, and where your boundaries lie. Nothing here describes what you do; that is\n\`AGENT.md\`.\n\n## Name\n\n<!-- What you are called, and how you refer to yourself. -->\n\n## Voice\n\n<!-- Register, warmth, humour, verbosity, emoji habits. Write it as description, not as rules. -->\n\n## Values\n\n<!-- What you care about and what you refuse, in your own terms. -->\n\n## Boundaries\n\n<!-- Where you decline, deflect, or change the subject — as a matter of character rather than policy. -->\n`;
+const OWNER_TEMPLATE = `# OWNER\n\nThe person this agent serves. Read on every turn, so keep it short and current.\n\n## Identity\n\n- Name:\n- How to address them:\n- Pronouns:\n- Timezone:\n- Languages:\n\n## Standing directives\n\n<!-- Imperative statements, one per line, each prefixed with the date it took effect.\n     Example:\n     - (2026-01-15) Give the conclusion first, then the reasoning.\n     - (2026-01-15) Ask before anything destructive or irreversible.\n     Remove this comment once filled. -->\n\n## Notes\n\n<!-- Anything else that stays true across conversations and is not a directive. -->\n`;
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
@@ -62,10 +66,41 @@ function provider(
   };
 }
 
+function bootstrapProvider(config: ContextFilesConfig, getRoot: () => string): ContextProvider {
+  return {
+    id: "context.bootstrap",
+    role: "bootstrap",
+    priority: 50,
+    async load(request) {
+      if (!request.execution.actor.roles.includes("owner")) return [];
+      const path = join(getRoot(), FILES.bootstrap);
+      try {
+        const stat = await lstat(path);
+        if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`context source must be a regular non-symlink file: ${path}`);
+        const content = await readFile(path, "utf8");
+        if (!content.trim()) return [];
+        return [{ id: "context.bootstrap:file", providerId: "context.bootstrap", role: "bootstrap", content, source: { kind: "file", ref: path }, influence: "instruction", instructionAuthority: "scoped", retention: "essential" }];
+      } catch (error) { if (isMissing(error)) return []; throw error; }
+    },
+  };
+}
+
 export function createPlugin(context: PluginSetupContext): PluginInstance {
   const config = context.config as unknown as ContextFilesConfig;
   let workspaceRoot = ""; let writeQueue = Promise.resolve();
   const ownerPath = () => join(workspaceRoot, "OWNER.md");
+  const bootstrapPath = () => join(workspaceRoot, FILES.bootstrap);
+  const removeBootstrapIfConfigured = async (): Promise<void> => {
+    try {
+      const [soul, owner] = await Promise.all([readFile(join(workspaceRoot, FILES.soul), "utf8"), readFile(ownerPath(), "utf8")]);
+      if (soul === SOUL_TEMPLATE || owner === OWNER_TEMPLATE) return;
+      await unlink(bootstrapPath());
+      context.logger?.info("bootstrap.removed", "Removed completed bootstrap workspace protocol");
+    } catch (error) {
+      if (isMissing(error)) return;
+      context.logger?.warn("bootstrap.cleanup_failed", "Bootstrap cleanup failed; setup will remain active", { error: error instanceof Error ? error.name : "unknown" });
+    }
+  };
   const publish = async (role: keyof typeof FILES): Promise<void> => {
     const search = context.services?.searchDocuments; if (!search) return;
     const path = join(workspaceRoot, FILES[role]);
@@ -97,6 +132,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
   return {
     contributions: {
       contextProviders: [
+        bootstrapProvider(config, () => workspaceRoot),
         provider("soul", config, () => workspaceRoot),
         provider("agent", config, () => workspaceRoot),
         provider("owner", config, () => workspaceRoot),
@@ -113,6 +149,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
       if (!stat.isDirectory()) {
         throw new Error(`context workspace must be a regular directory: ${config.workspacePath}`);
       }
+      await removeBootstrapIfConfigured();
       await Promise.all((Object.keys(FILES) as Array<keyof typeof FILES>).map(role => publish(role)));
     },
   };

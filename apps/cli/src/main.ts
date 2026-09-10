@@ -58,7 +58,7 @@ async function validatePluginDirectory(directory: string): Promise<void> {
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
-  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
+  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "BOOTSTRAP.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
   if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });

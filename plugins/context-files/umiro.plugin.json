@@ -19,7 +19,7 @@
     }
   },
   "contributes": {
-    "contextProviders": ["context.soul", "context.agent", "context.owner", "context.memory", "context.conversation_history"],
+    "contextProviders": ["context.bootstrap", "context.soul", "context.agent", "context.owner", "context.memory", "context.conversation_history"],
     "tools": ["owner_profile_add", "owner_profile_replace"]
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,8 +11,8 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root }, getSecret: () => undefined });
   await plugin.start?.();
   const providers = plugin.contributions.contextProviders ?? [];
-  assert.deepEqual(providers.map(provider => provider.id), ["context.soul", "context.agent", "context.owner", "context.memory", "context.conversation_history"]);
-  const request = { runId: "run", execution: {} as never, prompt: "hi" };
+  assert.deepEqual(providers.map(provider => provider.id), ["context.bootstrap", "context.soul", "context.agent", "context.owner", "context.memory", "context.conversation_history"]);
+  const request = { runId: "run", execution: { actor: { id: "owner", kind: "human", roles: ["owner"] } } as never, prompt: "hi" };
   const owner = await providers.find(provider => provider.id === "context.owner")!.load(request);
   assert.equal(owner[0]?.content, "owner");
   const ownerTools = plugin.contributions.tools ?? [];
@@ -25,5 +25,24 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.deepEqual(history.map(block => block.id), ["context.conversation_history:compacted", "context.conversation_history:recent"]);
   assert.match(history[0]?.content ?? "", /先前談過授權邊界/);
   assert.match(history[1]?.content ?? "", /我叫小明[\s\S]*記住了/);
+  await plugin.stop?.();
+});
+
+test("bootstrap is owner-only and disappears after both identity files leave shipped templates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-bootstrap-"));
+  await writeFile(join(root, "SOUL.md"), "# SOUL\n");
+  await writeFile(join(root, "OWNER.md"), "# OWNER\n");
+  await writeFile(join(root, "AGENT.md"), "agent\n");
+  await writeFile(join(root, "MEMORY.md"), "memory\n");
+  const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root }, getSecret: () => undefined });
+  await plugin.start?.();
+  await writeFile(join(root, "BOOTSTRAP.md"), "setup\n");
+  const bootstrap = plugin.contributions.contextProviders!.find(provider => provider.id === "context.bootstrap")!;
+  assert.equal((await bootstrap.load({ runId: "r", execution: { actor: { id: "member", kind: "human", roles: [] } } as never, prompt: "hi" })).length, 0);
+  assert.equal((await bootstrap.load({ runId: "r", execution: { actor: { id: "owner", kind: "human", roles: ["owner"] } } as never, prompt: "hi" }))[0]?.content, "setup\n");
+  await writeFile(join(root, "SOUL.md"), "# SOUL\nChosen voice\n");
+  await writeFile(join(root, "OWNER.md"), "# OWNER\nChosen owner\n");
+  await plugin.start?.();
+  await assert.rejects(access(join(root, "BOOTSTRAP.md")));
   await plugin.stop?.();
 });
