@@ -3,6 +3,7 @@ import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { parseDiscordTriggerPolicy } from "@umiro/adapter-discord";
+import { validateAuthorityConfig } from "./authority-config.js";
 import { assertConfigContainsNoSecrets } from "@umiro/core/config";
 
 const BASE_EDITABLE_FILES = ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"] as const;
@@ -47,6 +48,8 @@ export const CONFIG_EXPLANATIONS = {
   "discord.queueMode": { label: "預設訊息模式", description: "queue 會等目前 Run 完成再處理；steer 會把同 session 的新訊息併入目前 Run 的下一個安全邊界。", defaultValue: "queue", risk: "steer 會讓群聊中合格的新訊息改變正在執行的 Run。", restartRequired: true },
   "discord.presence.status": { label: "Discord 狀態", description: "Bot 顯示為 online、idle、dnd 或 invisible。", defaultValue: "online", risk: "僅影響顯示狀態。", restartRequired: true },
   "discord.presence.activity": { label: "Discord 活動文字", description: "Bot 名稱下方顯示的活動文字。", defaultValue: "with ümiro", risk: "所有能看到 bot 的 Discord 使用者都能看到。", restartRequired: true },
+  "authority.owner": { label: "Owner 權限", description: "Owner 的 capability、可見範圍與 instruction authority；省略時取得目前安裝能力的完整權限。", defaultValue: { visibility: { kind: "all" }, instructionAuthority: "full" }, risk: "縮小會限制 Owner；列入未安裝 capability 會讓 daemon 拒絕啟動。", restartRequired: true },
+  "authority.member": { label: "一般成員權限", description: "一般成員可用的 capability 與 restricted 可見範圍；預設只開放聊天所需的 11 類能力。", defaultValue: { visibility: { kind: "restricted" }, instructionAuthority: "scoped" }, risk: "擴大 capability 或 resource visibility 會讓群組成員操作更多資料與服務。", restartRequired: true },
   "plugins[].path": { label: "外部外掛路徑", description: "由 config 直接載入的外部外掛位置；一般操作建議使用外掛管理介面。", defaultValue: [], risk: "外掛是 trusted in-process code，只能安裝信任的來源。", restartRequired: true },
   "plugins[].config": { label: "外部外掛設定", description: "傳給該外掛 manifest schema 驗證的非秘密設定。", defaultValue: {}, risk: "設定仍受 manifest schema 與 secrets 分離規則限制。", restartRequired: true },
   "webUi.enabled": { label: "Web UI 啟用", description: "是否啟動本機管理介面。", defaultValue: false, risk: "啟用後需妥善保管獨立 Web UI token。", restartRequired: true },
@@ -69,7 +72,7 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export function validateControlConfig(value: unknown): Record<string, unknown> {
   assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
-  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "discord", "plugins", "webUi"]);
+  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "discord", "authority", "plugins", "webUi"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
   if (typeof config.model !== "string" || !config.model.trim()) throw new TypeError("model must be a non-empty string");
   if (config.protocol !== undefined && config.protocol !== "openai_responses" && config.protocol !== "openai_chat_completions") throw new TypeError("protocol must be openai_responses or openai_chat_completions");
@@ -99,6 +102,7 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
     for (const [id, value] of Object.entries(config.profiles)) { const profile = value as Record<string, unknown>; const protocol = profile.protocol ?? rootProtocol; const existing = routes.get(String(profile.model)); if (existing && existing !== protocol) throw new TypeError(`profile ${id} assigns model ${String(profile.model)} to a conflicting protocol`); routes.set(String(profile.model), protocol); }
   }
   parseDiscordTriggerPolicy(config.discord);
+  validateAuthorityConfig(config.authority);
   if (config.plugins !== undefined && (!Array.isArray(config.plugins) || config.plugins.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof (item as { path?: unknown }).path !== "string"))) throw new TypeError("plugins must contain objects with a path");
   if (config.embedding !== undefined && (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding))) throw new TypeError("embedding must be an object");
   if (config.webUi !== undefined) {

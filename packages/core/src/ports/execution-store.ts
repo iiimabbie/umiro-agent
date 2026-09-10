@@ -7,12 +7,17 @@ import type { Run, RunState, Step, StepState } from "../run/entities.js";
 import type { DeliveryIntent, ModelCallRecord, RunOutput } from "../run/records.js";
 import type { JsonValue } from "./json.js";
 import type { ModelContent } from "../model/contract.js";
+import type { Authority } from "../authorization/authority.js";
+import type { ExecutionContext } from "../identity/execution-context.js";
+import type { PrincipalRole } from "../identity/principal.js";
 
 export interface PendingSteeredInput {
   readonly id: string;
   readonly runId: string;
   readonly turnId: string;
   readonly content: ModelContent;
+  readonly authority: Authority;
+  readonly actorRoles: readonly PrincipalRole[];
   readonly createdAt: string;
 }
 
@@ -33,6 +38,8 @@ export interface ExecutionProgressUpdate {
   readonly waitingReason?: string;
   readonly interruption?: Run["interruption"];
   readonly runUpdatedAt: string;
+  /** Replaces the durable Run context in the same transaction as progress. */
+  readonly runContext?: ExecutionContext;
   readonly step?: {
     readonly id: string;
     readonly expectedRevision: number;

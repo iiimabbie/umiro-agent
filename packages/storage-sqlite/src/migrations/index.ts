@@ -19,8 +19,9 @@ import { CONVERSATION_PREFERENCES_SCHEMA } from "./017-conversation-preferences.
 import { STEERED_INPUTS_SCHEMA } from "./018-steered-inputs.js";
 import { ARTIFACT_TEXT_SCHEMA } from "./019-artifact-text.js";
 import { SEARCH_DOCUMENTS_SCHEMA } from "./020-search-documents.js";
+import { STEERED_INPUT_AUTHORITY_SCHEMA } from "./021-steered-input-authority.js";
 
-const LATEST_VERSION = 20;
+const LATEST_VERSION = 21;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -158,6 +159,12 @@ export function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(SEARCH_DOCUMENTS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(20, new Date().toISOString());
+    })();
+  }
+  if (current.version < 21) {
+    database.transaction(() => {
+      database.exec(STEERED_INPUT_AUTHORITY_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(21, new Date().toISOString());
     })();
   }
 }

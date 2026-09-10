@@ -4,6 +4,7 @@ import { ExecutionStoreConflictError, type ExecutionStore } from "../ports/execu
 import type { JsonObject, JsonValue } from "../ports/json.js";
 import { ToolRegistry, ToolRuntime } from "../tool/index.js";
 import type { ExecutionContext } from "../identity/execution-context.js";
+import { intersectAuthority } from "../authorization/authority.js";
 import { renderContextAssembly, type ContextAssembly } from "../context/index.js";
 import type { Run, Step } from "./entities.js";
 import { RunNotRecoverableError, type RecoveryClaim } from "./recovery.js";
@@ -646,6 +647,7 @@ export class HeadlessRunEngine {
     let usage = restored?.usage ?? ZERO_USAGE;
     const deliveryDestination = restored?.deliveryDestination ?? request.deliveryDestination ?? { kind: "caller" };
     const messages: ModelMessage[] = restored?.messages ?? initialMessages(request);
+    let executionContext = request.context;
     let modelStep = restored?.modelStep ?? this.newStep(runId, sequence++, "model_call");
     if (!restored) {
       const startedAt = this.now();
@@ -697,7 +699,15 @@ export class HeadlessRunEngine {
       else await request.steerControl?.flush();
       const pending = await this.store.listPendingSteeredInputs(runId);
       if (pending.length === 0) return 0;
-      for (const input of pending) messages.push({ role: "user", content: input.content });
+      for (const input of pending) {
+        messages.push({ role: "user", content: input.content });
+        const roles = new Set(input.actorRoles);
+        executionContext = {
+          ...executionContext,
+          actor: { ...executionContext.actor, roles: executionContext.actor.roles.filter(role => roles.has(role)) },
+          authority: intersectAuthority(executionContext.authority, input.authority),
+        };
+      }
       const progressedAt = this.now();
       await this.store.updateExecutionProgress({
         runId,
@@ -706,6 +716,7 @@ export class HeadlessRunEngine {
         runState: "running",
         resumeEligibility: "eligible",
         runUpdatedAt: progressedAt,
+        runContext: executionContext,
         step: { id: modelStep.id, expectedRevision: modelStep.revision, expectedState: "running", state: completeCurrentStep ? "succeeded" : "running", updatedAt: progressedAt },
         checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: progressedAt },
         consumedSteeredInputIds: pending.map(input => input.id),
@@ -807,7 +818,7 @@ export class HeadlessRunEngine {
           const toolResult = call.argumentError
             ? { status: "invalid_input" as const, error: { code: "malformed_tool_arguments", message: call.argumentError, retryable: false } }
             : await this.toolRuntime.execute({
-                toolName: call.name, input: call.input, stepId: toolStep.id, context: request.context,
+                toolName: call.name, input: call.input, stepId: toolStep.id, context: executionContext,
                 ...(this.tools.get(call.name)?.policy.sideEffect === "idempotent"
                   ? { idempotencyKey: `${runId}:${call.id}` }
                   : {}),

@@ -145,7 +145,7 @@ export class InteractiveIngress {
 
   async steer(request: { readonly event: InputEvent; readonly runId: string; readonly userContent: ModelContent }): Promise<{ readonly conversationId: string; readonly turnId: string; readonly duplicate: boolean }> {
     const resolved = await this.identities.resolve(request.event.identity);
-    const result = await this.conversations.steerInputEvent({ event: request.event, actorPrincipalId: resolved.principal.id, runId: request.runId, newTurnId: this.createId("turn"), modelContent: request.userContent, createdAt: this.now() });
+    const result = await this.conversations.steerInputEvent({ event: request.event, actorPrincipalId: resolved.principal.id, actorRoles: resolved.principal.roles, authority: resolved.authority, runId: request.runId, newTurnId: this.createId("turn"), modelContent: request.userContent, createdAt: this.now() });
     return { conversationId: result.conversation.id, turnId: result.turn.id, duplicate: result.duplicate };
   }
 

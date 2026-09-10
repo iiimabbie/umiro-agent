@@ -572,14 +572,14 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: next.sequence, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
       this.insertTurn(turn);
       expectOne(this.database.prepare("UPDATE conversations SET revision=revision+1, updated_at=? WHERE id=? AND revision=? AND state='active'").run(request.createdAt, conversation.id, conversation.revision).changes, `conversation ${conversation.id} changed concurrently`);
-      this.database.prepare("INSERT INTO run_steered_inputs(id,run_id,turn_id,content_json,state,created_at) VALUES (?,?,?,?, 'pending', ?)").run(request.event.id, request.runId, turn.id, json(request.modelContent), request.createdAt);
+      this.database.prepare("INSERT INTO run_steered_inputs(id,run_id,turn_id,content_json,authority_json,actor_roles_json,state,created_at) VALUES (?,?,?,?,?,?, 'pending', ?)").run(request.event.id, request.runId, turn.id, json(request.modelContent), json(request.authority), json(request.actorRoles), request.createdAt);
       return { conversation: { ...this.conversationFromRow(conversation), revision: conversation.revision + 1, updatedAt: request.createdAt }, turn, duplicate: false };
     })();
   }
 
   async listPendingSteeredInputs(runId: string): Promise<readonly PendingSteeredInput[]> {
-    const rows = this.database.prepare("SELECT id,run_id,turn_id,content_json,created_at FROM run_steered_inputs WHERE run_id=? AND state='pending' ORDER BY created_at,id").all(runId) as Array<{ id: string; run_id: string; turn_id: string; content_json: string; created_at: string }>;
-    return rows.map(row => ({ id: row.id, runId: row.run_id, turnId: row.turn_id, content: parseJson<PendingSteeredInput["content"]>(row.content_json), createdAt: row.created_at }));
+    const rows = this.database.prepare("SELECT id,run_id,turn_id,content_json,authority_json,actor_roles_json,created_at FROM run_steered_inputs WHERE run_id=? AND state='pending' ORDER BY created_at,id").all(runId) as Array<{ id: string; run_id: string; turn_id: string; content_json: string; authority_json: string; actor_roles_json: string; created_at: string }>;
+    return rows.map(row => ({ id: row.id, runId: row.run_id, turnId: row.turn_id, content: parseJson<PendingSteeredInput["content"]>(row.content_json), authority: parseJson<PendingSteeredInput["authority"]>(row.authority_json), actorRoles: parseJson<PendingSteeredInput["actorRoles"]>(row.actor_roles_json), createdAt: row.created_at }));
   }
 
   async appendTurn(request: AppendTurnRequest): Promise<void> {
@@ -1416,13 +1416,14 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
       const runUpdate = this.database.prepare(`
         UPDATE runs
-        SET revision = revision + 1, state = ?, waiting_reason = ?, interruption_json = ?, resume_eligibility = ?, updated_at = ?
+        SET revision = revision + 1, state = ?, waiting_reason = ?, interruption_json = ?, resume_eligibility = ?, context_json = COALESCE(?, context_json), updated_at = ?
         WHERE id = ? AND state = ? AND revision = ?
       `).run(
         update.runState,
         update.waitingReason ?? null,
         update.interruption ? json(update.interruption) : null,
         update.resumeEligibility,
+        update.runContext ? json(update.runContext) : null,
         update.runUpdatedAt,
         update.runId,
         update.expectedRunState,
@@ -1462,6 +1463,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           ...(update.step ? { stepId: update.step.id, stepState: update.step.state } : {}),
           ...(update.checkpoint ? { checkpointVersion: update.checkpoint.version } : {}),
           ...(update.clearCheckpoint ? { checkpointCleared: true } : {}),
+          ...(update.runContext ? { authorityNarrowed: true } : {}),
           ...(update.consumedSteeredInputIds?.length ? { steeredInputsConsumed: update.consumedSteeredInputIds.length } : {}),
         },
         update.runUpdatedAt,

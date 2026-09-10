@@ -1,8 +1,9 @@
 import type { Conversation, ConversationCompaction, ConversationHistoryItem, ConversationPreferences, ConversationQueueMode, ConversationState, Turn } from "./entities.js";
 import type { ReasoningEffort } from "../model/contract.js";
-import type { PrincipalId } from "../identity/principal.js";
+import type { PrincipalId, PrincipalRole } from "../identity/principal.js";
 import type { InputEvent } from "../input/event.js";
 import type { ModelContent } from "../model/contract.js";
+import type { Authority } from "../authorization/authority.js";
 
 export interface AppendTurnRequest {
   readonly turn: Turn;
@@ -72,6 +73,9 @@ export interface IngestInputEventResult {
 export interface SteerInputEventRequest {
   readonly event: InputEvent;
   readonly actorPrincipalId: PrincipalId;
+  /** Authority resolved for the participant who supplied this steer. */
+  readonly authority: Authority;
+  readonly actorRoles: readonly PrincipalRole[];
   readonly runId: string;
   readonly newTurnId: string;
   readonly modelContent: ModelContent;
