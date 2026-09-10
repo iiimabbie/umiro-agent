@@ -23,6 +23,7 @@ import { artifactModelContent } from "./artifact-input.js";
 import { ActiveWorkTracker } from "./active-work.js";
 import { SteerGate } from "./steer-gate.js";
 import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
+import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -55,7 +56,10 @@ const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hoste
 const authority = { capabilities: granted, visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
-const store = new SQLiteExecutionStore(paths.sqlite);
+const logger = new JsonLineLogger();
+const pluginHooks = new PluginHookRegistry(logger);
+let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
+const store = observeExecutionStore(new SQLiteExecutionStore(paths.sqlite), { emit: (event, payload) => emitPluginEvent(event, payload) });
 const migratePluginState = async (namespace: string) => {
   const legacy = new FilePluginStateStore(pluginStateDirectory(paths.data, namespace));
   const target = store.pluginState(namespace);
@@ -76,7 +80,6 @@ const migratePluginState = async (namespace: string) => {
 const pluginStateNamespaces = new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)]);
 for (const namespace of pluginStateNamespaces) await migratePluginState(namespace);
 const artifacts = new ArtifactFileService(paths.artifacts, store);
-const logger = new JsonLineLogger();
 const cleanupExpiredPluginState = async (): Promise<void> => {
   const now = new Date().toISOString();
   const removed = (await Promise.all([...pluginStateNamespaces].map(namespace => store.pluginState(namespace).deleteExpired?.(now) ?? 0))).reduce((sum, count) => sum + count, 0);
@@ -93,7 +96,6 @@ const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder, 15_000, 
 const search = new HybridConversationSearch(store, embedder, logger);
 if (embedder) providers.register(new SemanticRecallProvider(store, embedder, () => new Date(), logger));
 const scheduler = new DurableScheduler(store);
-const pluginHooks = new PluginHookRegistry(logger);
 const legacyServices = {
   configDirectory: `${paths.config}/plugin-config`,
   async ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }) {
@@ -253,6 +255,7 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
 }
 host = new PluginHost(tools, providers, authority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, artifacts, discord, legacy: legacyServices }, undefined, logger);
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
+emitPluginEvent = (event, payload) => host.emitHook(event, payload);
 await scheduler.syncPluginJobs(host.listJobs());
 readiness.plugins = true;
 embeddingWorker?.start();
