@@ -6,7 +6,8 @@ import type { DiscordPresenceConfig } from "./trigger-policy.js";
 export type DiscordApprovalAction = "approve" | "deny";
 export interface DiscordApprovalPrompt { readonly approvalId: string; readonly operation: string; readonly details: string; readonly expiresAt: string }
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
-export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "approval"; readonly channelId?: string; readonly messageId?: string }
+export interface DiscordButtonInteraction extends DiscordInteractionContext { readonly buttonSetId: string; readonly buttonId: string }
+export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "approval" | "button"; readonly channelId?: string; readonly messageId?: string }
 export type DiscordAdapterErrorHandler = (error: unknown, context: DiscordAdapterErrorContext) => void;
 
 export function approvalCustomId(action: DiscordApprovalAction, approvalId: string): string {
@@ -18,6 +19,10 @@ export function parseApprovalCustomId(value: string): { action: DiscordApprovalA
   const match = /^umiro:approval:(approve|deny):([A-Za-z0-9._-]{1,64})$/.exec(value);
   return match ? { action: match[1] as DiscordApprovalAction, approvalId: match[2]! } : undefined;
 }
+export function parseButtonCustomId(value: string): { buttonSetId: string; buttonId: string } | undefined {
+  const match = /^umiro:button:([A-Za-z0-9-]{1,64}):([A-Za-z0-9_-]{1,32})$/.exec(value);
+  return match ? { buttonSetId: match[1]!, buttonId: match[2]! } : undefined;
+}
 
 export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginService {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
@@ -25,6 +30,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
+  private buttonHandler?: (interaction: DiscordButtonInteraction) => Promise<{ readonly content: string }>;
   private errorHandler?: DiscordAdapterErrorHandler;
   private readonly messageTimes = new Map<string, number[]>();
   private readonly channelQueues = new Map<string, Promise<void>>();
@@ -33,13 +39,17 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
   onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
+  onButton(handler: NonNullable<typeof this.buttonHandler>): void { this.buttonHandler = handler; }
   onError(handler: DiscordAdapterErrorHandler): void { this.errorHandler = handler; }
 
   async start(token: string, presence?: DiscordPresenceConfig): Promise<void> {
     this.client.on("messageCreate", message => this.enqueueMessage(message));
     this.client.on("interactionCreate", interaction => {
       if (interaction.isChatInputCommand()) void this.handleCommand(interaction).catch(error => this.reportError(error, { event: "command", channelId: interaction.channelId }));
-      else if (interaction.isButton()) void this.handleApproval(interaction).catch(error => this.reportError(error, { event: "approval", channelId: interaction.channelId }));
+      else if (interaction.isButton()) {
+        const event = parseApprovalCustomId(interaction.customId) ? "approval" : "button";
+        void this.handleButton(interaction).catch(error => this.reportError(error, { event, channelId: interaction.channelId }));
+      }
     });
     await this.client.login(token);
     if (!this.client.user) throw new Error("Discord login returned without a bot user");
@@ -110,22 +120,21 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     return this.sendText(input.channelId, input.content, input.signal);
   }
 
-  async sendButtons(input: { readonly channelId: string; readonly content: string; readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger"; readonly actionTool?: string; readonly actionArgs?: Record<string, unknown> }[]; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly buttonSetId: string }> {
+  async sendButtons(input: { readonly buttonSetId: string; readonly channelId: string; readonly content: string; readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger" }[]; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string }> {
     if (input.signal?.aborted) throw input.signal.reason;
     if (input.buttons.length < 1 || input.buttons.length > 25) throw new TypeError("Discord button set must contain 1 to 25 buttons");
     const channel = await this.client.channels.fetch(input.channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${input.channelId}`);
-    const buttonSetId = crypto.randomUUID();
     const styles = { primary: ButtonStyle.Primary, secondary: ButtonStyle.Secondary, success: ButtonStyle.Success, danger: ButtonStyle.Danger } as const;
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
     for (let index = 0; index < input.buttons.length; index += 5) {
       const row = new ActionRowBuilder<ButtonBuilder>();
-      for (const button of input.buttons.slice(index, index + 5)) row.addComponents(new ButtonBuilder().setCustomId(`umiro:button:${buttonSetId}:${button.id}`.slice(0, 100)).setLabel(button.label.slice(0, 80)).setStyle(styles[button.style]));
+      for (const button of input.buttons.slice(index, index + 5)) row.addComponents(new ButtonBuilder().setCustomId(`umiro:button:${input.buttonSetId}:${button.id}`).setLabel(button.label.slice(0, 80)).setStyle(styles[button.style]));
       rows.push(row);
     }
     if (input.signal?.aborted) throw input.signal.reason;
     const sent = await channel.send({ content: input.content.slice(0, 2_000), components: rows });
-    return { messageId: sent.id, buttonSetId };
+    return { messageId: sent.id };
   }
 
   async react(input: { readonly channelId: string; readonly messageId: string; readonly emoji: string; readonly signal?: AbortSignal }): Promise<void> {
@@ -261,9 +270,19 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     } catch (error) { await interaction.editReply({ content: `Command failed: ${error instanceof Error ? error.message : String(error)}` }); }
   }
 
-  private async handleApproval(interaction: ButtonInteraction): Promise<void> {
+  private async handleButton(interaction: ButtonInteraction): Promise<void> {
     const parsed = parseApprovalCustomId(interaction.customId);
-    if (!parsed || !this.approvalHandler) return;
+    if (!parsed) {
+      const button = parseButtonCustomId(interaction.customId);
+      if (!button || !this.buttonHandler) return;
+      await interaction.deferUpdate();
+      try {
+        const result = await this.buttonHandler({ ...button, userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
+        await interaction.followUp({ content: result.content.slice(0, 1900), ephemeral: true });
+      } catch { await interaction.followUp({ content: "Button action failed or is no longer actionable.", ephemeral: true }); }
+      return;
+    }
+    if (!this.approvalHandler) return;
     await interaction.deferUpdate();
     try {
       const result = await this.approvalHandler(parsed.approvalId, parsed.action, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
