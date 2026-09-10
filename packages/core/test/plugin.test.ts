@@ -97,6 +97,23 @@ test("plugin logger is namespaced, redacts secrets, and cannot break startup", a
   assert.deepEqual(records, [{ level: "warn", event: "plugin.logger.seed_failed", message: "continuing", occurredAt: (records[0] as { occurredAt: string }).occurredAt, pluginId: "logger-plugin", data: { token: "[REDACTED]", detail: "[REDACTED] appeared" } }]);
 });
 
+test("Plugin search documents are scoped to the manifest namespace", async () => {
+  const calls: string[] = [];
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, {
+    searchDocumentProjection: {
+      async replaceSearchSource(namespace, sourceId) { calls.push(`${namespace}:replace:${sourceId}`); },
+      async removeSearchSource(namespace, sourceId) { calls.push(`${namespace}:remove:${sourceId}`); },
+    },
+  });
+  const module: PluginModule = {
+    manifest: { schemaVersion: 0, id: "owned", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "owned", permissions: authority, contributes: {} },
+    create: context => ({ contributions: {}, async start() { await context.services?.searchDocuments?.replaceSource("DOC.md", [{ id: "DOC.md", sourceType: "workspace_file", sourceId: "DOC.md", text: "owned", visibility: { kind: "all" } }]); }, async stop() { await context.services?.searchDocuments?.removeSource("DOC.md"); } }),
+  };
+  await host.enable(module);
+  await host.disable("owned");
+  assert.deepEqual(calls, ["owned:replace:DOC.md", "owned:remove:DOC.md"]);
+});
+
 test("plugin health is isolated and reports failed checks without throwing", async () => {
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
   const manifest = (id: string) => ({ schemaVersion: 0 as const, id, version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: id, permissions: authority, contributes: {} });

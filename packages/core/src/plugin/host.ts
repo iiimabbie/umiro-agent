@@ -114,6 +114,7 @@ export class PluginHost {
       if (!options.secrets?.[secret]) throw new TypeError(`plugin ${manifest.id} requires secret ${secret}`);
     }
 
+    const { searchDocumentProjection, ...runtimeServices } = this.services;
     const active: ActivePlugin = {
       manifest,
       instance: await module.create({
@@ -122,7 +123,13 @@ export class PluginHost {
         permissionCeiling: manifest.permissions,
         config,
         ...(this.stateForNamespace ? { state: this.stateForNamespace(manifest.namespace) } : {}),
-        services: this.services,
+        services: {
+          ...runtimeServices,
+          ...(searchDocumentProjection ? { searchDocuments: {
+            replaceSource: (sourceId, documents) => searchDocumentProjection.replaceSearchSource(manifest.namespace, sourceId, documents),
+            removeSource: sourceId => searchDocumentProjection.removeSearchSource(manifest.namespace, sourceId),
+          } } : {}),
+        },
         logger: pluginLogger(this.logger, manifest.id, manifest.namespace, Object.values(options.secrets ?? {})),
         getSecret: name => allowedSecrets.has(name) ? options.secrets?.[name] : undefined,
       }),

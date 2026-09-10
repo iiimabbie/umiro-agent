@@ -5,6 +5,30 @@ export interface SearchHit {
   readonly text: string;
   readonly rank: number;
   readonly semanticScore?: number;
+  readonly documentId?: string;
+  readonly sourceType?: string;
+  readonly sourceId?: string;
+}
+
+export interface SearchDocumentInput {
+  readonly id: string;
+  readonly sourceType: string;
+  readonly sourceId: string;
+  readonly text: string;
+  readonly visibility: VisibilityScope;
+  readonly occurredAt?: string;
+}
+
+/** Plugin-facing facade; namespace is injected by PluginHost and cannot be forged. */
+export interface PluginSearchDocuments {
+  replaceSource(sourceId: string, documents: readonly SearchDocumentInput[]): Promise<void>;
+  removeSource(sourceId: string): Promise<void>;
+}
+
+/** Host/storage port. The namespace boundary is applied before Plugins receive it. */
+export interface SearchDocumentProjection {
+  replaceSearchSource(namespace: string, sourceId: string, documents: readonly SearchDocumentInput[]): Promise<void>;
+  removeSearchSource(namespace: string, sourceId: string): Promise<void>;
 }
 
 export interface EmbeddingJob {

@@ -4,7 +4,7 @@ import type { JsonObject } from "../ports/json.js";
 import type { ToolDefinition } from "../tool/contract.js";
 import type { PluginStateStore } from "./state.js";
 import type { PluginHookDefinition } from "./hooks.js";
-import type { ConversationSearch } from "../search/contract.js";
+import type { ConversationSearch, PluginSearchDocuments, SearchDocumentProjection } from "../search/contract.js";
 import type { SchedulerControl } from "../scheduler/contract.js";
 import type { ChildRunService } from "../delegation/service.js";
 import type { Artifact } from "../artifact/entities.js";
@@ -59,7 +59,7 @@ export interface PluginSetupContext {
   readonly permissionCeiling: Authority;
   readonly config: JsonObject;
   readonly state?: PluginStateStore;
-  readonly services?: PluginHostServices;
+  readonly services?: PluginRuntimeServices;
   /** Namespaced, secret-redacted observability for non-fatal plugin conditions. */
   readonly logger?: PluginLogger;
   getSecret(name: string): string | undefined;
@@ -99,7 +99,8 @@ export interface DiscordPluginService {
   fetchChannelMessages(input: { readonly channelId: string; readonly limit?: number; readonly signal?: AbortSignal }): Promise<readonly { readonly messageId: string; readonly authorId: string; readonly content: string; readonly createdAt: string }[]>;
   setRespondToBots(enabled: boolean): Promise<void>;
 }
-export interface PluginHostServices { readonly conversationSearch?: ConversationSearch; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService; readonly legacy?: LegacyPluginServices }
+export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService; readonly legacy?: LegacyPluginServices }
+export interface PluginHostServices extends Omit<PluginRuntimeServices, "searchDocuments"> { readonly searchDocumentProjection?: SearchDocumentProjection }
 
 export interface PluginEnableOptions {
   readonly config?: JsonObject;

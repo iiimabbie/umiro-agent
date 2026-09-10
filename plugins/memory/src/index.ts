@@ -12,10 +12,11 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
   const config = setup.config as unknown as MemoryConfig; let root = ""; let queue = Promise.resolve();
   const path = () => join(root, "MEMORY.md");
   const read = async () => readFile(path(), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "# MEMORY\n"; throw error; });
+  const publish = async () => { const search = setup.services?.searchDocuments; if (!search) return; const content = await read(); await search.replaceSource("MEMORY.md", [{ id: "MEMORY.md", sourceType: "workspace_file", sourceId: "MEMORY.md", text: content, visibility: { kind: "all" } }]); };
   const serialized = async <T>(operation: () => Promise<T>): Promise<T> => { const previous = queue; let release!: () => void; queue = new Promise<void>(resolve => { release = resolve; }); await previous; try { return await operation(); } finally { release(); } };
   const write = async (content: string) => {
     const normalized = `${content.trim()}\n`; if (normalized.length > (config.characterLimit ?? 100_000)) throw new Error(`MEMORY.md would exceed ${config.characterLimit ?? 100_000} characters`);
-    const temporary = `${path()}.${process.pid}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, normalized, { mode: 0o600 }); await rename(temporary, path());
+    const temporary = `${path()}.${process.pid}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, normalized, { mode: 0o600 }); await rename(temporary, path()); await publish();
   };
   const define = (definition: Omit<ToolDefinition, "execute"> & { execute: (input: JsonObject, context: ToolExecutionContext) => Promise<unknown> }): ToolDefinition => ({ ...definition, async execute(input, context) { try { return ok(await definition.execute(input, context)); } catch (error) { return failed(error); } } });
   const tools: ToolDefinition[] = [
@@ -34,5 +35,5 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       return serialized(async () => { const current = await read(); const text = String(input.text); const count = current.split(text).length - 1; if (count !== 1) throw new Error(count ? "text must match exactly once" : "text not found"); await write(current.replace(text, "").replace(/\n{3,}/g, "\n\n")); return { removed: true }; });
     } }),
   ];
-  return { contributions: { tools }, async start() { const stat = await lstat(config.workspacePath); if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`memory workspace must be a regular directory: ${config.workspacePath}`); root = await realpath(config.workspacePath); } };
+  return { contributions: { tools }, async start() { const stat = await lstat(config.workspacePath); if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`memory workspace must be a regular directory: ${config.workspacePath}`); root = await realpath(config.workspacePath); await publish(); } };
 }

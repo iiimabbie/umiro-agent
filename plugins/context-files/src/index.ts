@@ -66,7 +66,18 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
   const config = context.config as unknown as ContextFilesConfig;
   let workspaceRoot = ""; let writeQueue = Promise.resolve();
   const ownerPath = () => join(workspaceRoot, "OWNER.md");
-  const ownerWrite = async (content: string) => { const normalized = `${content.trim()}\n`; if (normalized.length > 20_000) throw new Error("OWNER.md exceeds 20000 characters"); const temporary = `${ownerPath()}.${process.pid}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, normalized, { mode: 0o600 }); await rename(temporary, ownerPath()); };
+  const publish = async (role: keyof typeof FILES): Promise<void> => {
+    const search = context.services?.searchDocuments; if (!search) return;
+    const path = join(workspaceRoot, FILES[role]);
+    try {
+      const content = await readFile(path, "utf8");
+      await search.replaceSource(FILES[role], [{ id: FILES[role], sourceType: "workspace_file", sourceId: FILES[role], text: content, visibility: { kind: "all" } }]);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") await search.removeSource(FILES[role]);
+      else throw error;
+    }
+  };
+  const ownerWrite = async (content: string) => { const normalized = `${content.trim()}\n`; if (normalized.length > 20_000) throw new Error("OWNER.md exceeds 20000 characters"); const temporary = `${ownerPath()}.${process.pid}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, normalized, { mode: 0o600 }); await rename(temporary, ownerPath()); await publish("owner"); };
   const serial = async <T>(operation: () => Promise<T>): Promise<T> => { const previous = writeQueue; let release!: () => void; writeQueue = new Promise<void>(resolve => { release = resolve; }); await previous; try { return await operation(); } finally { release(); } };
   const result = (output: unknown): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: "confirmed" });
   const failure = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "owner_profile_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
@@ -102,6 +113,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
       if (!stat.isDirectory()) {
         throw new Error(`context workspace must be a regular directory: ${config.workspacePath}`);
       }
+      await Promise.all((Object.keys(FILES) as Array<keyof typeof FILES>).map(role => publish(role)));
     },
   };
 }

@@ -31,6 +31,20 @@ test("indexes durable extracted attachment text through Turn artifact references
   store.close();
 });
 
+test("namespace-scoped Plugin documents are searchable, replaceable, removable, and visibility-aware", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.replaceSearchSource("context-files", "OWNER.md", [{ id: "OWNER.md", sourceType: "workspace_file", sourceId: "OWNER.md", text: "owner prefers concise reports", visibility: { kind: "all" } }]);
+  await store.replaceSearchSource("people", "PEOPLE.md", [{ id: "PEOPLE.md", sourceType: "workspace_file", sourceId: "PEOPLE.md", text: "Alice prefers tea", visibility: { kind: "restricted", principalIds: ["alice"], labels: [], resources: [] } }]);
+  assert.equal((await store.search("concise reports", 10, { kind: "all" }))[0]?.sourceType, "workspace_file");
+  assert.equal((await store.search("tea", 10, { kind: "restricted", principalIds: ["bob"], labels: [], resources: [] })).length, 0);
+  assert.equal((await store.search("tea", 10, { kind: "restricted", principalIds: ["alice"], labels: [], resources: [] }))[0]?.documentId, "PEOPLE.md");
+  await store.replaceSearchSource("context-files", "OWNER.md", [{ id: "OWNER.md", sourceType: "workspace_file", sourceId: "OWNER.md", text: "owner prefers detailed reports", visibility: { kind: "all" } }]);
+  assert.equal((await store.search("concise", 10, { kind: "all" })).length, 0);
+  await store.removeSearchSource("people", "PEOPLE.md");
+  assert.equal((await store.search("tea", 10, { kind: "all" })).length, 0);
+  store.close();
+});
+
 test("search enforces principal and conversation visibility inside SQLite", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.createConversationWithTurn(

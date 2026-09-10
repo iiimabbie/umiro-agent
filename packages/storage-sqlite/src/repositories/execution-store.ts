@@ -45,6 +45,8 @@ import {
   type SteerInputEventResult,
   type PersistedTransportIdentity,
   type SearchHit,
+  type SearchDocumentInput,
+  type SearchDocumentProjection,
   type VisibilityScope,
   type EmbeddingJob,
   type CreateScheduledTrigger,
@@ -278,6 +280,16 @@ function expectOne(changes: number, message: string): void {
   if (changes !== 1) throw new ExecutionStoreConflictError(message);
 }
 
+function searchDocumentVisible(document: VisibilityScope, caller: VisibilityScope): boolean {
+  if (caller.kind === "all" || document.kind === "all") return true;
+  const principals = new Set(caller.principalIds);
+  const labels = new Set(caller.labels);
+  const resources = new Set(caller.resources.map(resource => `${resource.kind}:${resource.id}`));
+  return document.principalIds.some(id => principals.has(id))
+    || document.labels.some(label => labels.has(label))
+    || document.resources.some(resource => resources.has(`${resource.kind}:${resource.id}`));
+}
+
 function artifactFromRow(row: ArtifactRow): Artifact {
   const artifact: Artifact = {
     id: row.id,
@@ -297,7 +309,7 @@ function artifactFromRow(row: ArtifactRow): Artifact {
   return artifact;
 }
 
-export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, ConversationPreferenceStore, DelegationStore, ArtifactStore {
+export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, ConversationPreferenceStore, DelegationStore, ArtifactStore, SearchDocumentProjection {
   private readonly database: Database.Database;
 
   constructor(filename: string) {
@@ -938,21 +950,60 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       principals: [...new Set(visibility.principalIds)],
       conversations: [...new Set(visibility.resources.filter(resource => resource.kind === "conversation").map(resource => resource.id))],
     };
-    if (allowed && allowed.principals.length === 0 && allowed.conversations.length === 0) return [];
+    const noConversationScope = allowed !== undefined && allowed.principals.length === 0 && allowed.conversations.length === 0;
     const filters: string[] = []; const filterValues: string[] = [];
     if (allowed) {
       if (allowed.principals.length) { filters.push(`actor_principal_id IN (${allowed.principals.map(() => "?").join(",")})`); filterValues.push(...allowed.principals); }
       if (allowed.conversations.length) { filters.push(`conversation_id IN (${allowed.conversations.map(() => "?").join(",")})`); filterValues.push(...allowed.conversations); }
     }
     const visibleSql = filters.length ? ` AND (${filters.join(" OR ")})` : "";
-    if ([...normalized].length < 3) {
-      return this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, 0 AS rank
-        FROM conversation_fts WHERE text LIKE ? ESCAPE '\\'${visibleSql} LIMIT ?`).all(`%${normalized.replace(/[\\%_]/g, "\\$&")}%`, ...filterValues, limit) as SearchHit[];
-    }
+    const conversationHits: SearchHit[] = noConversationScope ? [] : [...normalized].length < 3
+      ? this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, 0 AS rank
+        FROM conversation_fts WHERE text LIKE ? ESCAPE '\\'${visibleSql} LIMIT ?`).all(`%${normalized.replace(/[\\%_]/g, "\\$&")}%`, ...filterValues, limit) as SearchHit[]
+      : (() => {
     const ftsQuery = `"${normalized.replace(/"/g, '""')}"`;
     const rows = this.database.prepare(`SELECT turn_id AS turnId, conversation_id AS conversationId, actor_principal_id AS actorPrincipalId, text, bm25(conversation_fts) AS rank
       FROM conversation_fts WHERE conversation_fts MATCH ?${visibleSql} ORDER BY rank LIMIT ?`).all(ftsQuery, ...filterValues, limit) as SearchHit[];
     return rows;
+      })();
+    const escaped = `%${normalized.replace(/[\\%_]/g, "\\$&")}%`;
+    const documentRows = [...normalized].length < 3
+      ? this.database.prepare("SELECT f.namespace, f.document_id, f.source_type, f.source_id, f.text, d.visibility_json FROM search_documents_fts f JOIN search_documents d ON d.namespace=f.namespace AND d.document_id=f.document_id WHERE f.text LIKE ? ESCAPE '\\' LIMIT ?").all(escaped, Math.min(1000, limit * 10)) as Array<{ namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string }>
+      : this.database.prepare("SELECT f.namespace, f.document_id, f.source_type, f.source_id, f.text, d.visibility_json FROM search_documents_fts f JOIN search_documents d ON d.namespace=f.namespace AND d.document_id=f.document_id WHERE search_documents_fts MATCH ? LIMIT ?").all(`"${normalized.replace(/"/g, '""')}"`, Math.min(1000, limit * 10)) as Array<{ namespace: string; document_id: string; source_type: string; source_id: string; text: string; visibility_json: string }>;
+    const documentHits = documentRows.filter(row => searchDocumentVisible(parseJson<VisibilityScope>(row.visibility_json), visibility)).map(row => ({
+      turnId: `document:${row.namespace}:${row.document_id}`,
+      conversationId: `source:${row.source_type}:${row.source_id}`,
+      actorPrincipalId: `namespace:${row.namespace}`,
+      text: row.text,
+      rank: 0,
+      documentId: row.document_id,
+      sourceType: row.source_type,
+      sourceId: row.source_id,
+    } satisfies SearchHit));
+    return [...conversationHits, ...documentHits].slice(0, limit);
+  }
+
+  async replaceSearchSource(namespace: string, sourceId: string, documents: readonly SearchDocumentInput[]): Promise<void> {
+    if (!/^[a-z0-9._-]{1,100}$/i.test(namespace) || !sourceId.trim()) throw new TypeError("invalid search source identity");
+    if (documents.length > 1_000) throw new TypeError("search source has too many documents");
+    this.database.transaction(() => {
+      this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND source_id=?").run(namespace, sourceId);
+      this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_id=?").run(namespace, sourceId);
+      const insertDocument = this.database.prepare("INSERT INTO search_documents(namespace,source_id,document_id,source_type,text,visibility_json,occurred_at) VALUES (?,?,?,?,?,?,?)");
+      const insertFts = this.database.prepare("INSERT INTO search_documents_fts(namespace,document_id,source_type,source_id,text) VALUES (?,?,?,?,?)");
+      for (const document of documents) {
+        if (!/^[a-zA-Z0-9._:-]{1,200}$/.test(document.id) || !document.text.trim() || document.text.length > 200_000) throw new TypeError("invalid search document");
+        insertDocument.run(namespace, sourceId, document.id, document.sourceType.slice(0, 100), document.text, json(document.visibility), document.occurredAt ?? null);
+        insertFts.run(namespace, document.id, document.sourceType.slice(0, 100), sourceId, document.text);
+      }
+    })();
+  }
+
+  async removeSearchSource(namespace: string, sourceId: string): Promise<void> {
+    this.database.transaction(() => {
+      this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND source_id=?").run(namespace, sourceId);
+      this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_id=?").run(namespace, sourceId);
+    })();
   }
 
   async rebuildSearchProjection(): Promise<void> {
