@@ -14,6 +14,8 @@ import {
   type AuthorizationDecisionRecord,
   type CompleteRunWithOutput,
   type Conversation,
+  type ConversationPreferences,
+  type ConversationPreferenceStore,
   type ConversationCompaction,
   type ConversationStore,
   type ConversationIngressStore,
@@ -50,6 +52,7 @@ import {
   type Artifact,
   type ArtifactStore,
   type CreateArtifactRequest,
+  type UpdateConversationPreferencesRequest,
   type ApprovalRequest,
   type ApprovalResolution,
   exactOperationFingerprint,
@@ -282,7 +285,7 @@ function artifactFromRow(row: ArtifactRow): Artifact {
   return artifact;
 }
 
-export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, DelegationStore, ArtifactStore {
+export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, ConversationPreferenceStore, DelegationStore, ArtifactStore {
   private readonly database: Database.Database;
 
   constructor(filename: string) {
@@ -299,6 +302,31 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   pluginState(namespace: string): SQLitePluginStateStore {
     return new SQLitePluginStateStore(this.database, namespace);
+  }
+
+  async getConversationPreferences(transport: string, externalId: string): Promise<ConversationPreferences | undefined> {
+    const row = this.database.prepare("SELECT * FROM conversation_preferences WHERE transport=? AND external_id=?").get(transport, externalId) as { transport: string; external_id: string; revision: number; model: string | null; reasoning_effort: ConversationPreferences["reasoningEffort"] | null; queue_mode: ConversationPreferences["queueMode"] | null; updated_at: string } | undefined;
+    return row ? { transport: row.transport, externalId: row.external_id, revision: row.revision, ...(row.model ? { model: row.model, reasoningEffort: row.reasoning_effort! } : {}), ...(row.queue_mode ? { queueMode: row.queue_mode } : {}), updatedAt: row.updated_at } : undefined;
+  }
+
+  async updateConversationPreferences(request: UpdateConversationPreferencesRequest): Promise<ConversationPreferences> {
+    if (!request.transport.trim() || !request.externalId.trim()) throw new TypeError("conversation preference locator must not be empty");
+    if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) throw new TypeError("expected preference revision must be non-negative");
+    if ((request.model === undefined) !== (request.reasoningEffort === undefined)) throw new TypeError("model and reasoning effort must be set or reset together");
+    if (request.model !== undefined && !request.model.trim()) throw new TypeError("model must not be empty");
+    const next: ConversationPreferences = { transport: request.transport, externalId: request.externalId, revision: request.expectedRevision + 1, ...(request.model !== undefined ? { model: request.model.trim(), reasoningEffort: request.reasoningEffort! } : {}), ...(request.queueMode ? { queueMode: request.queueMode } : {}), updatedAt: request.updatedAt };
+    this.database.transaction(() => {
+      if (request.expectedRevision === 0) {
+        const inserted = this.database.prepare(`INSERT OR IGNORE INTO conversation_preferences(transport,external_id,revision,model,reasoning_effort,queue_mode,updated_at) VALUES (?,?,?,?,?,?,?)`)
+          .run(next.transport, next.externalId, next.revision, next.model ?? null, next.reasoningEffort ?? null, next.queueMode ?? null, next.updatedAt);
+        if (inserted.changes !== 1) throw new ExecutionStoreConflictError(`conversation preferences ${request.transport}:${request.externalId} changed concurrently`);
+      } else {
+        const updated = this.database.prepare(`UPDATE conversation_preferences SET revision=revision+1, model=?, reasoning_effort=?, queue_mode=?, updated_at=? WHERE transport=? AND external_id=? AND revision=?`)
+          .run(next.model ?? null, next.reasoningEffort ?? null, next.queueMode ?? null, next.updatedAt, next.transport, next.externalId, request.expectedRevision);
+        expectOne(updated.changes, `conversation preferences ${request.transport}:${request.externalId} changed concurrently`);
+      }
+    })();
+    return next;
   }
 
   async find(transport: string, externalId: string): Promise<PersistedTransportIdentity | undefined> {

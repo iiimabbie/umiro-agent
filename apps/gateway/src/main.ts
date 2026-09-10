@@ -1,7 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, ToolRuntime, intersectAuthority, type HeadlessRunResult, type JsonObject, type Run, type Step } from "@umiro/core";
+import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, ToolRuntime, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ReasoningEffort, type Run, type Step } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -139,6 +139,22 @@ const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
 if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority: authority, memberAuthority: authority });
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
+const sessionProfile = async (channelId: string) => {
+  const preferences = await store.getConversationPreferences("discord", channelId);
+  return { model: preferences?.model ?? config.model, reasoningEffort: preferences?.reasoningEffort ?? "default" as ReasoningEffort, queueMode: preferences?.queueMode ?? discordPolicy.queueMode ?? "followup" as const, preferences };
+};
+const updateSessionPreferences = async (channelId: string, change: (current: ConversationPreferences | undefined) => Pick<ConversationPreferences, "model" | "reasoningEffort" | "queueMode">) => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await store.getConversationPreferences("discord", channelId);
+    const next = change(current);
+    try {
+      return await store.updateConversationPreferences({ transport: "discord", externalId: channelId, expectedRevision: current?.revision ?? 0, ...(next.model ? { model: next.model, reasoningEffort: next.reasoningEffort! } : {}), ...(next.queueMode ? { queueMode: next.queueMode } : {}), updatedAt: new Date().toISOString() });
+    } catch (error) {
+      if (!(error instanceof ExecutionStoreConflictError) || attempt === 2) throw error;
+    }
+  }
+  throw new Error("conversation preferences changed repeatedly");
+};
 const discord = new DiscordJsAdapter();
 await discord.setRespondToBots(discordPolicy.respondToBots === true);
 const buttonState = store.pluginState("discord-tools");
@@ -225,6 +241,8 @@ const builtinCommands = [
   { name: "stop", description: "Cancel an active Run.", ownerOnly: false, ephemeral: true, options: [{ name: "run_id", description: "Run identifier", type: "string" as const, required: true }] },
   { name: "followup", description: "Send a follow-up turn to this conversation.", ownerOnly: false, ephemeral: true, options: [{ name: "prompt", description: "Follow-up message", type: "string" as const, required: true }] },
   { name: "archive", description: "Archive this conversation and start fresh on the next message.", ownerOnly: true, ephemeral: true },
+  { name: "model", description: "Switch the model for this Discord session.", ownerOnly: true, ephemeral: true, options: [{ name: "name", description: "Model ID, or reset to use the global default.", type: "string" as const, required: true }, { name: "effort", description: "Reasoning effort.", type: "string" as const, required: false, choices: ["default", "low", "medium", "high", "xhigh"].map(value => ({ name: value, value })) }] },
+  { name: "queue", description: "Set followup or steer mode for this Discord session.", ownerOnly: false, ephemeral: true, options: [{ name: "mode", description: "Message handling mode, or reset for the global default.", type: "string" as const, required: true, choices: ["followup", "steer", "reset"].map(value => ({ name: value, value })) }] },
 ];
 const handleCommand = async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
   if (name === "stop") {
@@ -246,7 +264,8 @@ const handleCommand = async (name: string, input: Record<string, string | number
     const streaming = new DiscordStreamingDelivery(commandContext.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
     activeRuns.set(runId, active);
     try {
-      const result = await ingress.handle({ event, model: config.model, maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
+      const profile = await sessionProfile(commandContext.channelId);
+      const result = await ingress.handle({ event, model: profile.model, reasoningEffort: profile.reasoningEffort, maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: commandContext.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runId = id; activeRuns.set(id, active); } });
       if (result.status === "executed") await presentApproval(result.result, commandContext.channelId);
       if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
       await delivery.drain(controller.signal);
@@ -257,6 +276,21 @@ const handleCommand = async (name: string, input: Record<string, string | number
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
     const archived = await store.archiveBoundConversation("discord", commandContext.channelId, new Date().toISOString());
     return archived ? { archived: true, conversationId: archived.id } : { archived: false, reason: "no_active_conversation" };
+  }
+  if (name === "model") {
+    if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
+    const model = String(input.name ?? "").trim();
+    const effort = String(input.effort ?? "default") as ReasoningEffort;
+    if (!model) throw new TypeError("model name is required");
+    if (!["default", "low", "medium", "high", "xhigh"].includes(effort)) throw new TypeError("invalid reasoning effort");
+    const updated = await updateSessionPreferences(commandContext.channelId, current => ({ ...(model === "reset" ? {} : { model, reasoningEffort: effort }), ...(current?.queueMode ? { queueMode: current.queueMode } : {}) }));
+    return { model: updated.model ?? config.model, reasoningEffort: updated.reasoningEffort ?? "default", source: updated.model ? "session" : "global" };
+  }
+  if (name === "queue") {
+    const mode = String(input.mode ?? "");
+    if (mode !== "followup" && mode !== "steer" && mode !== "reset") throw new TypeError("queue mode must be followup, steer, or reset");
+    const updated = await updateSessionPreferences(commandContext.channelId, current => ({ ...(current?.model ? { model: current.model, reasoningEffort: current.reasoningEffort! } : {}), ...(mode === "reset" ? {} : { queueMode: mode }) }));
+    return { queueMode: updated.queueMode ?? discordPolicy.queueMode ?? "followup", source: updated.queueMode ? "session" : "global" };
   }
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);
@@ -309,7 +343,8 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
-  const execution = ingress.handle({ event, model: config.model, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
+  const profile = await sessionProfile(message.channelId);
+  const execution = ingress.handle({ event, model: profile.model, reasoningEffort: profile.reasoningEffort, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), onRunCreated: id => { runKey = id; activeRuns.set(id, active); } });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); }

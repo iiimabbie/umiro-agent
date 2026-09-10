@@ -15,8 +15,9 @@ import { APPROVALS_SCHEMA } from "./013-approvals.js";
 import { OPERATION_ARTIFACTS_SCHEMA } from "./014-operation-artifacts.js";
 import { CONVERSATION_COMPACTIONS_SCHEMA } from "./015-conversation-compactions.js";
 import { PLUGIN_STATE_SCHEMA } from "./016-plugin-state.js";
+import { CONVERSATION_PREFERENCES_SCHEMA } from "./017-conversation-preferences.js";
 
-const LATEST_VERSION = 16;
+const LATEST_VERSION = 17;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -130,6 +131,12 @@ export function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(PLUGIN_STATE_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(16, new Date().toISOString());
+    })();
+  }
+  if (current.version < 17) {
+    database.transaction(() => {
+      database.exec(CONVERSATION_PREFERENCES_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(17, new Date().toISOString());
     })();
   }
 }

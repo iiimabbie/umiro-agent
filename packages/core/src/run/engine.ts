@@ -1,4 +1,4 @@
-import type { ModelContent, ModelMessage, ModelPort, ModelToolCall, ModelUsage } from "../model/contract.js";
+import type { ModelContent, ModelMessage, ModelPort, ModelToolCall, ModelUsage, ReasoningEffort } from "../model/contract.js";
 import type { OperationResult } from "../operation/result.js";
 import { ExecutionStoreConflictError, type ExecutionStore } from "../ports/execution-store.js";
 import type { JsonObject, JsonValue } from "../ports/json.js";
@@ -11,6 +11,7 @@ import { RunNotRecoverableError, type RecoveryClaim } from "./recovery.js";
 export interface HeadlessRunRequest {
   readonly context: ExecutionContext;
   readonly model: string;
+  readonly reasoningEffort?: ReasoningEffort;
   readonly prompt: string;
   /** Optional multimodal user content; when absent, prompt is sent as text. */
   readonly userContent?: ModelContent;
@@ -80,11 +81,11 @@ function validateRunLimits(request: HeadlessRunRequest): void {
   }
 }
 
-function checkpointData(model: string, messages: readonly ModelMessage[], usage: ModelUsage, deliveryDestination: JsonObject): JsonValue {
-  return JSON.parse(JSON.stringify({ version: 1, model, messages, usage, deliveryDestination })) as JsonValue;
+function checkpointData(model: string, messages: readonly ModelMessage[], usage: ModelUsage, deliveryDestination: JsonObject, reasoningEffort?: ReasoningEffort): JsonValue {
+  return JSON.parse(JSON.stringify({ version: 1, model, ...(reasoningEffort ? { reasoningEffort } : {}), messages, usage, deliveryDestination })) as JsonValue;
 }
 
-function restoredCheckpoint(claim: RecoveryClaim): { model: string; messages: ModelMessage[]; usage: ModelUsage; deliveryDestination: JsonObject } {
+function restoredCheckpoint(claim: RecoveryClaim): { model: string; reasoningEffort?: ReasoningEffort; messages: ModelMessage[]; usage: ModelUsage; deliveryDestination: JsonObject } {
   const data = claim.checkpoint.data;
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new RunNotRecoverableError(claim.run.id, "checkpoint payload is invalid");
@@ -92,12 +93,14 @@ function restoredCheckpoint(claim: RecoveryClaim): { model: string; messages: Mo
   const payload = data as Record<string, JsonValue>;
   const model = payload.model;
   const messages = payload.messages;
+  const reasoningEffort = payload.reasoningEffort;
   const usage = payload.usage;
   const deliveryDestination = payload.deliveryDestination;
   const usageRecord = usage && typeof usage === "object" && !Array.isArray(usage)
     ? usage as Record<string, JsonValue>
     : undefined;
   if (payload.version !== 1 || typeof model !== "string" || !Array.isArray(messages)
+    || (reasoningEffort !== undefined && !["default", "low", "medium", "high", "xhigh"].includes(String(reasoningEffort)))
     || !usageRecord || (deliveryDestination !== undefined
       && (!deliveryDestination || typeof deliveryDestination !== "object" || Array.isArray(deliveryDestination)))
     || typeof usageRecord.inputTokens !== "number" || typeof usageRecord.outputTokens !== "number"
@@ -106,6 +109,7 @@ function restoredCheckpoint(claim: RecoveryClaim): { model: string; messages: Mo
   }
   return {
     model,
+    ...(reasoningEffort !== undefined ? { reasoningEffort: reasoningEffort as ReasoningEffort } : {}),
     messages: structuredClone(messages) as ModelMessage[],
     usage: {
       inputTokens: usageRecord.inputTokens,
@@ -183,7 +187,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId,
         version: 1,
-        data: checkpointData(request.model, messages, ZERO_USAGE, deliveryDestination),
+        data: checkpointData(request.model, messages, ZERO_USAGE, deliveryDestination, request.reasoningEffort),
         updatedAt: this.now(),
       },
     });
@@ -228,6 +232,7 @@ export class HeadlessRunEngine {
     return this.execute({
       context: claim.run.context,
       model: checkpoint.model,
+      ...(checkpoint.reasoningEffort ? { reasoningEffort: checkpoint.reasoningEffort } : {}),
       prompt: "",
       ...(request.signal ? { signal: request.signal } : {}),
       ...(request.maxModelTurns !== undefined ? { maxModelTurns: request.maxModelTurns } : {}),
@@ -260,7 +265,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 1,
-        data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination),
+        data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
         updatedAt: this.now(),
       },
     });
@@ -276,6 +281,7 @@ export class HeadlessRunEngine {
       : this.execute({
           context: claim.run.context,
           model: checkpoint.model,
+          ...(checkpoint.reasoningEffort ? { reasoningEffort: checkpoint.reasoningEffort } : {}),
           prompt: "",
           ...(request.signal ? { signal: request.signal } : {}),
           ...(request.maxModelTurns !== undefined ? { maxModelTurns: request.maxModelTurns } : {}),
@@ -383,7 +389,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 1,
-        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination),
+        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
         updatedAt: progressedAt,
       },
     });
@@ -423,7 +429,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 2,
-        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination),
+        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
         updatedAt: this.now(),
       },
     });
@@ -433,7 +439,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 2,
-        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination),
+        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
         updatedAt: this.now(),
       },
       steps: [...claim.steps, { ...operationStep, revision: 1, state: "running" }],
@@ -469,7 +475,7 @@ export class HeadlessRunEngine {
       await this.store.updateExecutionProgress({
         runId: claim.run.id, expectedRunRevision: claim.run.revision, expectedRunState: "running", runState: "waiting",
         waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(),
-        checkpoint: { runId: claim.run.id, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination), updatedAt: this.now() },
+        checkpoint: { runId: claim.run.id, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort), updatedAt: this.now() },
       });
       return { status: "waiting", runId: claim.run.id, reason: "approval_required", approvalId: toolResult.approvalId };
     }
@@ -493,7 +499,7 @@ export class HeadlessRunEngine {
         checkpoint: {
           runId: claim.run.id,
           version: claim.checkpoint.version + 1,
-          data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination),
+          data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
           updatedAt: this.now(),
         },
       });
@@ -541,7 +547,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 1,
-        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination),
+        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
         updatedAt: progressedAt,
       },
     });
@@ -559,7 +565,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 2,
-        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination),
+        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
         updatedAt: this.now(),
       },
     });
@@ -570,7 +576,7 @@ export class HeadlessRunEngine {
         checkpoint: {
           runId: claim.run.id,
           version: claim.checkpoint.version + 2,
-          data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination),
+          data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
           updatedAt: this.now(),
         },
         steps: [...claim.steps, { ...nextStep, revision: 1, state: "running" }],
@@ -580,6 +586,7 @@ export class HeadlessRunEngine {
     return this.execute({
       context: claim.run.context,
       model: checkpoint.model,
+      ...(checkpoint.reasoningEffort ? { reasoningEffort: checkpoint.reasoningEffort } : {}),
       prompt: "",
       ...(request.signal ? { signal: request.signal } : {}),
       ...(request.maxModelTurns !== undefined ? { maxModelTurns: request.maxModelTurns } : {}),
@@ -659,7 +666,7 @@ export class HeadlessRunEngine {
         resumeEligibility: "eligible",
         runUpdatedAt: this.now(),
         step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
       });
       runRevision += 1;
       checkpointVersion += 1;
@@ -686,6 +693,7 @@ export class HeadlessRunEngine {
         assertBudget(true);
         const response = await this.modelPort.generate({
           model: request.model,
+          ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
           messages,
           tools: this.tools.modelDefinitions(),
           ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: Math.max(1, request.maxOutputTokens - usage.outputTokens) } : {}),
@@ -706,7 +714,7 @@ export class HeadlessRunEngine {
           resumeEligibility: "eligible",
           runUpdatedAt: this.now(),
           step: { id: modelStep.id, expectedRevision: 1, expectedState: "running", state: "succeeded", updatedAt: this.now() },
-          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
         });
         runRevision += 1;
         checkpointVersion += 1;
@@ -745,7 +753,7 @@ export class HeadlessRunEngine {
             resumeEligibility: "eligible",
             runUpdatedAt: this.now(),
             step: { id: toolStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
           });
           runRevision += 1;
           checkpointVersion += 1;
@@ -763,7 +771,7 @@ export class HeadlessRunEngine {
             await this.store.updateExecutionProgress({
               runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting",
               waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(),
-              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
             });
             return { status: "waiting", runId, reason: "approval_required", approvalId: toolResult.approvalId };
           }
@@ -783,7 +791,7 @@ export class HeadlessRunEngine {
             ...(toolResult.status === "outcome_unknown" ? { waitingReason: "operation_outcome_unknown" } : {}),
             runUpdatedAt: this.now(),
             step: { id: toolStep.id, expectedRevision: 1, expectedState: "running", state: stepState, updatedAt: this.now() },
-            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
           });
           runRevision += 1;
           checkpointVersion += 1;
@@ -801,7 +809,7 @@ export class HeadlessRunEngine {
           resumeEligibility: "eligible",
           runUpdatedAt: this.now(),
           step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination), updatedAt: this.now() },
+          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
         });
         runRevision += 1;
         checkpointVersion += 1;

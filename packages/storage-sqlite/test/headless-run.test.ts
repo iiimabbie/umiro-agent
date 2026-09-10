@@ -137,6 +137,18 @@ test("runs model to tool to model and persists the final output", async () => {
   }
 });
 
+test("passes the selected session reasoning effort to every model turn", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const efforts: unknown[] = [];
+  const model: ModelPort = { async generate(request) { efforts.push(request.reasoningEffort); return response({ text: "done", assistantMessage: { role: "assistant", content: "done" } }); } };
+  try {
+    const result = await new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() })
+      .run({ context: ownerContext(), model: "selected", reasoningEffort: "high", prompt: "hello" });
+    assert.equal(result.status, "succeeded");
+    assert.deepEqual(efforts, ["high"]);
+  } finally { store.close(); }
+});
+
 test("returns malformed model tool arguments to the model without executing them", async () => {
   const directory = mkdtempSync(join(tmpdir(), "umiro-headless-invalid-tool-"));
   const store = new SQLiteExecutionStore(join(directory, "execution.db"));

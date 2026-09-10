@@ -33,8 +33,11 @@ test("Discord trigger policy protects DMs and bot traffic while Owner remains su
 test("Discord trigger config is strict and empty allowlists retain V1 unrestricted semantics", () => {
   const defaults = parseDiscordTriggerPolicy(undefined);
   assert.equal(defaults.respondToBots, true);
+  assert.equal(defaults.queueMode, "followup");
   assert.equal(decideDiscordIngress({ ...base, botMentioned: true }, defaults, "owner").disposition, "trigger");
   assert.deepEqual(parseDiscordTriggerPolicy({ presence: { status: "dnd", activity: "helping" } }).presence, { status: "dnd", activity: "helping" });
+  assert.equal(parseDiscordTriggerPolicy({ queueMode: "steer" }).queueMode, "steer");
+  assert.throws(() => parseDiscordTriggerPolicy({ queueMode: "parallel" }));
   assert.throws(() => parseDiscordTriggerPolicy({ allowedGuilds: "guild-a" }));
   assert.throws(() => parseDiscordTriggerPolicy({ presence: { status: "away" } }));
   assert.throws(() => parseDiscordTriggerPolicy({ surprise: true }));

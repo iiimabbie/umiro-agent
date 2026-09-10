@@ -1,4 +1,5 @@
-import type { Conversation, ConversationCompaction, ConversationHistoryItem, ConversationState, Turn } from "./entities.js";
+import type { Conversation, ConversationCompaction, ConversationHistoryItem, ConversationPreferences, ConversationQueueMode, ConversationState, Turn } from "./entities.js";
+import type { ReasoningEffort } from "../model/contract.js";
 import type { PrincipalId } from "../identity/principal.js";
 import type { InputEvent } from "../input/event.js";
 
@@ -14,6 +15,21 @@ export interface UpdateConversationStateRequest {
   readonly expectedState: ConversationState;
   readonly state: ConversationState;
   readonly updatedAt: string;
+}
+
+export interface UpdateConversationPreferencesRequest {
+  readonly transport: string;
+  readonly externalId: string;
+  readonly expectedRevision: number;
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly queueMode?: ConversationQueueMode;
+  readonly updatedAt: string;
+}
+
+export interface ConversationPreferenceStore {
+  getConversationPreferences(transport: string, externalId: string): Promise<ConversationPreferences | undefined>;
+  updateConversationPreferences(request: UpdateConversationPreferencesRequest): Promise<ConversationPreferences>;
 }
 
 export interface ConversationStore {

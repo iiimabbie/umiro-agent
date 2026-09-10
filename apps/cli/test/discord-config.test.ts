@@ -16,11 +16,12 @@ test("Discord trigger policy is configurable through the installed CLI path", as
     await exec(process.execPath, [cli, "init"], { env });
     const initialized = JSON.parse(await readFile(join(home, "config", "umiro.json"), "utf8") as string) as { discord: Record<string, unknown> };
     assert.equal(initialized.discord.respondToBots, true);
+    assert.equal(initialized.discord.queueMode, "followup");
     const token = (await exec(process.execPath, [cli, "web", "token"], { env })).stdout.trim();
     assert.match(token, /^[a-f0-9]{64}$/);
-    await exec(process.execPath, [cli, "discord", "configure", "--allowed-guilds", "g1,g2", "--allowed-channels", "c1", "--ambient-channels", "a1,a2", "--ignored-channels", "i1", "--respond-to-bots", "true", "--status", "idle", "--activity", "testing"], { env });
+    await exec(process.execPath, [cli, "discord", "configure", "--allowed-guilds", "g1,g2", "--allowed-channels", "c1", "--ambient-channels", "a1,a2", "--ignored-channels", "i1", "--respond-to-bots", "true", "--queue-mode", "steer", "--status", "idle", "--activity", "testing"], { env });
     const config = JSON.parse(await readFile(join(home, "config", "umiro.json"), "utf8")) as { discord: Record<string, unknown> };
-    assert.deepEqual(config.discord, { ignoredChannels: ["i1"], ambientChannels: ["a1", "a2"], allowedChannels: ["c1"], allowedGuilds: ["g1", "g2"], respondToBots: true, presence: { status: "idle", activity: "testing" } });
+    assert.deepEqual(config.discord, { ignoredChannels: ["i1"], ambientChannels: ["a1", "a2"], allowedChannels: ["c1"], allowedGuilds: ["g1", "g2"], respondToBots: true, queueMode: "steer", presence: { status: "idle", activity: "testing" } });
     const status = await exec(process.execPath, [cli, "discord", "status"], { env });
     assert.deepEqual(JSON.parse(status.stdout), config.discord);
   } finally { await rm(home, { recursive: true, force: true }); }

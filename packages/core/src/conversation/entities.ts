@@ -1,6 +1,7 @@
 import type { PrincipalId } from "../identity/principal.js";
 import type { InputContentBlock } from "../input/event.js";
 import type { ConversationId, TurnId } from "../run/entities.js";
+import type { ReasoningEffort } from "../model/contract.js";
 
 export type ConversationState = "active" | "archived";
 
@@ -9,6 +10,21 @@ export interface Conversation {
   readonly revision: number;
   readonly state: ConversationState;
   readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export type ConversationQueueMode = "followup" | "steer";
+
+/** Durable preferences for a transport conversation locator. Unlike a single
+ * Conversation transcript, these survive archive/new and describe the channel
+ * or DM session itself. */
+export interface ConversationPreferences {
+  readonly transport: string;
+  readonly externalId: string;
+  readonly revision: number;
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly queueMode?: ConversationQueueMode;
   readonly updatedAt: string;
 }
 

@@ -6,11 +6,12 @@ import type { JsonObject } from "../ports/json.js";
 import { HeadlessRunEngine, type HeadlessRunResult } from "../run/engine.js";
 import type { ExecutionStore } from "../ports/execution-store.js";
 import { inputText, type InputEvent } from "./event.js";
-import type { ModelContent } from "../model/contract.js";
+import type { ModelContent, ReasoningEffort } from "../model/contract.js";
 
 export interface InteractiveIngressRequest {
   readonly event: InputEvent;
   readonly model: string;
+  readonly reasoningEffort?: ReasoningEffort;
   readonly userContent?: ModelContent;
   readonly maxContextCharacters: number;
   readonly maxContextTokens?: number;
@@ -122,6 +123,7 @@ export class InteractiveIngress {
       conversationId: ingested.conversation.id,
       turnId: ingested.turn.id,
       model: request.model,
+      ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
       prompt,
       ...(request.userContent ? { userContent: request.userContent } : {}),
       assembledContext,
