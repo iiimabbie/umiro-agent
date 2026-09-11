@@ -20,8 +20,9 @@ test("memory tools apply caller visibility and atomically maintain MEMORY.md", a
     const visibility = { kind: "restricted" as const, principalIds: ["p"], labels: [], resources: [] };
     const context = { execution: { origin: { kind: "interactive" as const, transport: "discord", conversationId: "c" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority: { capabilities: ["memory.search", "memory.write", "memory.remove"], visibility, instructionAuthority: "full" as const } }, operationId: "op", idempotencyKey: "key", signal: new AbortController().signal };
     const search = await tools.get("memory_search")!.execute({ query: "found", limit: 3 }, context);
-    assert.equal(search.ok, true); assert.deepEqual(observed, [{ query: "found", limit: 3, visibility }]);
-    assert.equal((await tools.get("memory_add")!.execute({ content: "- durable fact" }, context)).ok, true);
+    assert.equal(search.ok, true); assert.equal(search.effectStatus, "not_applicable"); assert.deepEqual(observed, [{ query: "found", limit: 3, visibility }]);
+    const added = await tools.get("memory_add")!.execute({ content: "- durable fact" }, context);
+    assert.equal(added.ok, true); assert.equal(added.effectStatus, "confirmed");
     assert.equal((await tools.get("memory_replace")!.execute({ oldText: "durable", newText: "lasting" }, context)).ok, true);
     assert.match(await readFile(join(root, "MEMORY.md"), "utf8"), /lasting fact/);
     assert.equal((await tools.get("memory_remove")!.execute({ text: "- lasting fact" }, context)).ok, true);

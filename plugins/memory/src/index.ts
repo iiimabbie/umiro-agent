@@ -6,7 +6,7 @@ import type { ToolDefinition, ToolExecutionContext, ToolExecutionResult } from "
 
 interface MemoryConfig { readonly workspacePath: string; readonly characterLimit?: number }
 const DEFAULT_CHARACTER_LIMIT = 3_000;
-const ok = (output: unknown): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: "confirmed" });
+const ok = (output: unknown, effectStatus: "not_applicable" | "confirmed"): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus });
 const failed = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "memory_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
 
 export function createPlugin(setup: PluginSetupContext): PluginInstance {
@@ -23,7 +23,7 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
     const temporary = `${path()}.${process.pid}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, normalized, { mode: 0o600 }); await rename(temporary, path()); await publish();
     return currentUsage;
   };
-  const define = (definition: Omit<ToolDefinition, "execute"> & { execute: (input: JsonObject, context: ToolExecutionContext) => Promise<unknown> }): ToolDefinition => ({ ...definition, async execute(input, context) { try { return ok(await definition.execute(input, context)); } catch (error) { return failed(error); } } });
+  const define = (definition: Omit<ToolDefinition, "execute"> & { execute: (input: JsonObject, context: ToolExecutionContext) => Promise<unknown> }): ToolDefinition => ({ ...definition, async execute(input, context) { try { return ok(await definition.execute(input, context), definition.policy.sideEffect === "none" ? "not_applicable" : "confirmed"); } catch (error) { return failed(error); } } });
   const tools: ToolDefinition[] = [
     define({ name: "memory_search", description: "Permission-aware full-text search over durable prior conversation turns.", inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 } } }, policy: { capability: "memory.search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute(input, context) {
       const search = setup.services?.conversationSearch; if (!search) throw new Error("conversation search service is unavailable");
