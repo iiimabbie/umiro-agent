@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExecutionProgressUpdate, ExecutionStore, JsonObject, OperationResult } from "@umiro/core";
+import type { ExecutionProgressUpdate, ExecutionStore, JsonObject, JsonValue, OperationResult } from "@umiro/core";
 
 export type CoreExecutionEventName =
   | "run.started"
@@ -19,10 +19,21 @@ export interface ObservableExecutionStoreOptions {
   readonly createEventId?: () => string;
 }
 
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function boundedAssistantText(value: string): string | undefined {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  return normalized.length <= 300 ? normalized : `${normalized.slice(0, 299).trimEnd()}…`;
+}
+
 /**
  * Publishes read-only Plugin events only after the corresponding durable write
- * succeeds. Payloads deliberately contain identifiers and lifecycle metadata,
- * never prompts, tool arguments, outputs, or error messages.
+ * succeeds. Payloads contain identifiers, lifecycle metadata, delivery routing,
+ * and at most 300 characters of assistant progress text. Prompts, tool arguments,
+ * tool outputs, and error messages are never published.
  */
 export function observeExecutionStore<T extends ExecutionStore>(
   target: T,
@@ -44,15 +55,41 @@ export function observeExecutionStore<T extends ExecutionStore>(
       // Observers are never allowed to alter a committed execution transition.
     }
   };
+  const destinationPayload = async (runId: string, explicit?: JsonObject): Promise<JsonObject> => {
+    if (explicit) return { destination: structuredClone(explicit) };
+    try {
+      const checkpoint = await target.getCheckpoint(runId);
+      const data = checkpoint && isJsonObject(checkpoint.data) ? checkpoint.data : undefined;
+      const destination = isJsonObject(data?.deliveryDestination) ? data.deliveryDestination : undefined;
+      return destination ? { destination: structuredClone(destination) } : {};
+    } catch { return {}; }
+  };
   const stepPayload = async (stepId: string): Promise<JsonObject> => {
-    const step = await target.getStep(stepId);
-    return step ? { stepId: step.id, stepKind: step.kind, stepSequence: step.sequence } : { stepId };
+    try {
+      const step = await target.getStep(stepId);
+      return step ? { runId: step.runId, stepId: step.id, stepKind: step.kind, stepSequence: step.sequence } : { stepId };
+    } catch { return { stepId }; }
+  };
+  const assistantPayload = async (runId: string, stepId: string): Promise<JsonObject> => {
+    try {
+      const calls = await target.listModelCalls(runId);
+      const call = [...calls].reverse().find(candidate => candidate.stepId === stepId);
+      const assistantText = boundedAssistantText(call?.response.text ?? "");
+      return assistantText ? { assistantText } : {};
+    } catch { return {}; }
   };
   const operationPayload = async (operationId: string): Promise<JsonObject> => {
-    const operation = await target.getOperation(operationId);
-    return operation
-      ? { operationId: operation.id, stepId: operation.stepId, tool: operation.kind.startsWith("tool:") ? operation.kind.slice(5) : operation.kind }
-      : { operationId };
+    try {
+      const operation = await target.getOperation(operationId);
+      if (!operation) return { operationId };
+      const step = await target.getStep(operation.stepId).catch(() => undefined);
+      return {
+        operationId: operation.id,
+        stepId: operation.stepId,
+        ...(step ? { runId: step.runId, ...(await destinationPayload(step.runId)) } : {}),
+        tool: operation.kind.startsWith("tool:") ? operation.kind.slice(5) : operation.kind,
+      };
+    } catch { return { operationId }; }
   };
 
   return new Proxy(target, {
@@ -60,23 +97,25 @@ export function observeExecutionStore<T extends ExecutionStore>(
       if (property === "updateExecutionProgress") return async (update: ExecutionProgressUpdate): Promise<void> => {
         await object.updateExecutionProgress(update);
         const step = update.step ? await stepPayload(update.step.id) : undefined;
+        const destination = await destinationPayload(update.runId, update.terminalDelivery?.destination);
         if (update.expectedRunState === "queued" && update.runState === "running") {
-          await publish("run.started", { runId: update.runId, state: "running" });
+          await publish("run.started", { runId: update.runId, ...destination, state: "running" });
         }
         if (step && update.step!.expectedState === "pending" && update.step!.state === "running") {
-          await publish("step.started", { runId: update.runId, ...step, state: "running" });
+          await publish("step.started", { runId: update.runId, ...destination, ...step, state: "running" });
         } else if (step && update.step!.state !== "pending" && update.step!.state !== "running") {
-          await publish("step.completed", { runId: update.runId, ...step, state: update.step!.state });
+          const assistant = step.stepKind === "model_call" ? await assistantPayload(update.runId, update.step!.id) : {};
+          await publish("step.completed", { runId: update.runId, ...destination, ...step, ...assistant, state: update.step!.state });
         }
         if (update.runState === "waiting") {
-          await publish("run.waiting", { runId: update.runId, state: "waiting", ...(update.waitingReason ? { reason: update.waitingReason } : {}) });
+          await publish("run.waiting", { runId: update.runId, ...destination, state: "waiting", ...(update.waitingReason ? { reason: update.waitingReason } : {}) });
         } else if (["failed", "cancelled", "timed_out"].includes(update.runState)) {
-          await publish("run.completed", { runId: update.runId, state: update.runState });
+          await publish("run.completed", { runId: update.runId, ...destination, state: update.runState });
         }
       };
       if (property === "completeRunWithOutput") return async (completion: Parameters<ExecutionStore["completeRunWithOutput"]>[0]): Promise<void> => {
         await object.completeRunWithOutput(completion);
-        await publish("run.completed", { runId: completion.output.runId, state: "succeeded" });
+        await publish("run.completed", { runId: completion.output.runId, ...(await destinationPayload(completion.output.runId, completion.delivery.destination)), state: "succeeded" });
       };
       if (property === "markOperationExecuting") return async (operationId: string, updatedAt: string): Promise<void> => {
         await object.markOperationExecuting(operationId, updatedAt);
