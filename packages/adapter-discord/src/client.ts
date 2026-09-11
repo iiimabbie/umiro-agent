@@ -15,10 +15,9 @@ export function applicationCommandData(commands: readonly DiscordCommandDefiniti
   })) as ApplicationCommandDataResolvable[];
 }
 
-/** Use guild commands for immediate availability; clear global commands so the
- * same command is never exposed in both scopes. */
-export async function syncApplicationCommands(application: DiscordCommandManager, guilds: readonly DiscordCommandManager[], commands: readonly ApplicationCommandDataResolvable[]): Promise<void> {
-  await application.set([]);
+/** Register commands only in guild scopes for immediate availability. Global
+ * commands are intentionally not touched after the one-time migration cleanup. */
+export async function syncApplicationCommands(guilds: readonly DiscordCommandManager[], commands: readonly ApplicationCommandDataResolvable[]): Promise<void> {
   await Promise.all(guilds.map(guild => guild.set(commands)));
 }
 
@@ -82,7 +81,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (presence?.status || presence?.activity) this.client.user.setPresence({ status: presence.status ?? "online", activities: presence.activity ? [{ name: presence.activity, type: ActivityType.Playing }] : [] });
     console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
     if (!this.client.application) throw new Error("Discord login returned without an application");
-    await syncApplicationCommands(this.client.application.commands, [...this.client.guilds.cache.values()].map(guild => guild.commands), applicationCommandData(this.commands));
+    await syncApplicationCommands([...this.client.guilds.cache.values()].map(guild => guild.commands), applicationCommandData(this.commands));
   }
 
   async stop(): Promise<void> { this.client.destroy(); }
