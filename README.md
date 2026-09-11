@@ -9,8 +9,8 @@ Native, self-hosted Discord agent with a durable execution core, persistent memo
 - Discord message, thread, DM, delivery, identity, and slash-command adapter
 - Persistent conversations, Runs, tool evidence, crash recovery, and deduplication in SQLite
 - Shared `SOUL.md`, `AGENT.md`, and `MEMORY.md` context for one consistent bot personality
-- Context, memory/search, scheduler, Subagent, host, and Discord-tool built-in plugins installed by default
-- Optional external plugins for People, Soul Guardian, Coder profiles, and other domain capabilities
+- 隨 release 出貨的內掛：context-files、memory/search、scheduler、subagent、host-tools、discord-tools
+- 需另外安裝的外掛：People、Soul Guardian、Coder profile 與其他 domain capabilities
 - Permission-aware FTS and optional Gemini semantic search
 - Durable cron and one-shot reminders that execute as normal agent Runs
 - GitHub plugin installation and lifecycle commands
@@ -129,7 +129,7 @@ pnpm build
 
 The repository is a pnpm workspace. `@umiro/core` is protocol-neutral and does not depend on Discord, SQLite, or individual plugins. The gateway is the composition root that connects adapters, storage, model providers, and enabled plugin contributions.
 
-The project distinguishes three layers: Core is not a plugin; built-in plugins live under this repository's `plugins/`, ship with every release, and may be disabled but not removed; external plugins are installed separately and may be independently updated or removed. Both plugin kinds use the same manifest, permissions, lifecycle, and runtime.
+For Plugin ownership, Core is not a Plugin; 內掛 use the `builtin:<id>` source, are owned by the release, and may be disabled but not removed; 外掛 are installed separately and may be independently updated or removed. Both Plugin kinds use the same manifest, permissions, lifecycle, and runtime. A checkout under `plugins/umiro-plugins` does not change an external Plugin into an 內掛; that directory is an external repository submodule. Adapters and Composition are separate system layers, not Plugin kinds.
 
 ```text
 apps/cli                  installation and lifecycle CLI
@@ -138,6 +138,6 @@ packages/core             domain contracts and execution runtime
 packages/adapter-discord  official Discord adapter
 packages/model-openai     OpenAI-compatible model adapter
 packages/storage-sqlite   durable storage and projections
-plugins/*                 built-in plugins shipped with the release
+plugins/*                 內掛（built-in Plugins）隨 release 出貨
 templates/workspace       safe first-run workspace files
 ```
