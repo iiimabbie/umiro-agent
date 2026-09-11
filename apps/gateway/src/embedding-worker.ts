@@ -3,7 +3,11 @@ import type { VisibilityScope } from "@umiro/core/authorization";
 import { NOOP_LOGGER, type StructuredLogger } from "@umiro/core/observability";
 import { createHash } from "node:crypto";
 
-export interface TextEmbedder { readonly model: string; embed(text: string, signal?: AbortSignal): Promise<readonly number[]> }
+export interface TextEmbedder {
+  readonly model: string;
+  embed(text: string, signal?: AbortSignal): Promise<readonly number[]>;
+  embedMany?(texts: readonly string[], signal?: AbortSignal): Promise<readonly (readonly number[])[]>;
+}
 
 type Fetcher = typeof fetch;
 
@@ -43,15 +47,26 @@ export class OpenAICompatibleEmbedder implements TextEmbedder {
     this.model = `openai-compatible:${endpointIdentity}:${apiModel}`;
   }
   async embed(text: string, signal?: AbortSignal): Promise<readonly number[]> {
+    return (await this.request(text, signal))[0]!;
+  }
+  async embedMany(texts: readonly string[], signal?: AbortSignal): Promise<readonly (readonly number[])[]> {
+    if (!texts.length) return [];
+    return this.request(texts, signal);
+  }
+  private async request(input: string | readonly string[], signal?: AbortSignal): Promise<readonly (readonly number[])[]> {
     const response = await this.fetcher(`${this.baseUrl.replace(/\/$/, "")}/embeddings`, {
       method: "POST",
       signal: signal ?? AbortSignal.timeout(30_000),
       headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-      body: JSON.stringify({ model: this.apiModel, input: text }),
+      body: JSON.stringify({ model: this.apiModel, input }),
     });
     if (!response.ok) throw new Error(`embedding API failed with status ${response.status}`);
-    const data = await response.json() as { data?: Array<{ embedding?: unknown }> };
-    return embeddingVector(data.data?.[0]?.embedding);
+    const data = await response.json() as { data?: Array<{ index?: unknown; embedding?: unknown }> };
+    if (!Array.isArray(data.data)) throw new Error("embedding API returned no vectors");
+    const expected = typeof input === "string" ? 1 : input.length;
+    const ordered = [...data.data].sort((left, right) => (typeof left.index === "number" ? left.index : 0) - (typeof right.index === "number" ? right.index : 0));
+    if (ordered.length !== expected) throw new Error(`embedding API returned ${ordered.length} vectors for ${expected} inputs`);
+    return ordered.map(item => embeddingVector(item.embedding));
   }
 }
 
@@ -69,16 +84,36 @@ export class EmbeddingWorker {
       if (!this.prepared) { await this.store.prepareEmbeddingModel(this.embedder.model); this.prepared = true; }
       const now = new Date(); const stale = new Date(now.getTime() - 5 * 60_000).toISOString();
       const jobs = await this.store.claimEmbeddingJobs(20, now.toISOString(), stale);
+      if (jobs.length && this.embedder.embedMany) {
+        let vectors: readonly (readonly number[])[];
+        try { vectors = await this.embedder.embedMany(jobs.map(job => job.text), signal); }
+        catch (error) {
+          for (const job of jobs) await this.fail(job, error);
+          return 0;
+        }
+        if (vectors.length !== jobs.length) {
+          const error = new Error(`embedder returned ${vectors.length} vectors for ${jobs.length} jobs`);
+          for (const job of jobs) await this.fail(job, error);
+          return 0;
+        }
+        for (let index = 0; index < jobs.length; index++) {
+          const job = jobs[index]!;
+          try { await this.store.completeEmbeddingJob(job.documentKey, job.contentHash, this.embedder.model, vectors[index]!, new Date().toISOString()); completed++; }
+          catch (error) { await this.fail(job, error); }
+        }
+        return completed;
+      }
       for (const job of jobs) {
         try { const vector = await this.embedder.embed(job.text, signal); await this.store.completeEmbeddingJob(job.documentKey, job.contentHash, this.embedder.model, vector, new Date().toISOString()); completed++; }
-        catch (error) {
-          const delay = Math.min(3_600_000, 15_000 * 2 ** Math.max(0, job.attempts - 1));
-          report(this.logger, { level: "warn", event: "embedding.job.failed", message: "Embedding job failed and will be retried", occurredAt: new Date().toISOString(), data: { model: this.embedder.model, documentKey: job.documentKey, attempts: job.attempts, retryDelayMs: delay, errorName: errorName(error) } });
-          await this.store.failEmbeddingJob(job.documentKey, job.contentHash, `Embedding request failed (${errorName(error)})`, new Date(Date.now() + delay).toISOString(), new Date().toISOString());
-        }
+        catch (error) { await this.fail(job, error); }
       }
       return completed;
     } finally { this.running = false; }
+  }
+  private async fail(job: { readonly documentKey: string; readonly contentHash: string; readonly attempts: number }, error: unknown): Promise<void> {
+    const delay = Math.min(3_600_000, 15_000 * 2 ** Math.max(0, job.attempts - 1));
+    report(this.logger, { level: "warn", event: "embedding.job.failed", message: "Embedding job failed and will be retried", occurredAt: new Date().toISOString(), data: { model: this.embedder.model, documentKey: job.documentKey, attempts: job.attempts, retryDelayMs: delay, errorName: errorName(error) } });
+    await this.store.failEmbeddingJob(job.documentKey, job.contentHash, `Embedding request failed (${errorName(error)})`, new Date(Date.now() + delay).toISOString(), new Date().toISOString());
   }
 }
 

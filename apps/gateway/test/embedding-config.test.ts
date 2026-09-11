@@ -38,3 +38,14 @@ test("OpenAI-compatible embedder calls the configured endpoint", async () => {
   assert.equal((requestInit?.headers as Record<string, string>).authorization, "Bearer token");
   assert.deepEqual(JSON.parse(String(requestInit?.body)), { model: "mine", input: "hello" });
 });
+
+test("OpenAI-compatible embedder batches inputs and restores response index order", async () => {
+  let requestBody: unknown;
+  const fetcher = (async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ index: 1, embedding: [0, 1] }, { index: 0, embedding: [1, 0] }] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const embedder = new OpenAICompatibleEmbedder("mine", "https://embed.example/v1", undefined, fetcher);
+  assert.deepEqual(await embedder.embedMany(["first", "second"]), [[1, 0], [0, 1]]);
+  assert.deepEqual(requestBody, { model: "mine", input: ["first", "second"] });
+});

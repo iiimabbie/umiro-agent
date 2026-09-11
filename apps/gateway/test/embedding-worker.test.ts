@@ -17,6 +17,26 @@ test("embedding worker drains durable jobs and hybrid search returns semantic ev
   store.close();
 });
 
+test("embedding worker uses one batch request for a claimed projection page", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  for (let index = 0; index < 3; index++) {
+    await store.createConversationWithTurn(
+      { id: `c${index}`, revision: 0, state: "active", createdAt: "now", updatedAt: "now" },
+      { id: `t${index}`, conversationId: `c${index}`, sequence: 0, actorPrincipalId: "p", inputEventId: `e${index}`, content: [{ type: "text", text: `document ${index}` }], createdAt: "now" },
+    );
+  }
+  const batches: string[][] = [];
+  const embedder = {
+    model: "batch",
+    async embed() { throw new Error("single embedding path must not run"); },
+    async embedMany(texts: readonly string[]) { batches.push([...texts]); return texts.map((_text, index) => [index, 1]); },
+  };
+  assert.equal(await new EmbeddingWorker(store, embedder).drain(), 3);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0]?.length, 3);
+  store.close();
+});
+
 test("embedding failures are observable, redacted, and safely degrade to FTS", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.createConversationWithTurn(
