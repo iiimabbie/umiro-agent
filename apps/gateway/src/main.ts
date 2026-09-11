@@ -1,7 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, ToolRuntime, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ModelCapability, type ReasoningEffort, type Run, type Step } from "@umiro/core";
+import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -27,7 +27,7 @@ import { observeExecutionStore, type CoreExecutionEventName } from "./execution-
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 import { discordRuntimeContextProvider } from "./discord-context.js";
-import { ButtonActionCoordinator, createButtonActionCheckpoint } from "./button-action-coordinator.js";
+import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -203,6 +203,27 @@ const discord = new DiscordJsAdapter();
 await discord.setRespondToBots(discordPolicy.respondToBots === true);
 const buttonState = store.pluginState("discord-tools");
 const buttonActions = new ButtonActionCoordinator(store, tools);
+interface DurableButtonResult { readonly status: "completed" | "failed"; readonly text: string }
+interface DurableButtonRecord {
+  readonly buttonSetId: string; readonly channelId: string; content?: string; readonly creatorPrincipalId?: string;
+  readonly allowedUserIds: string[]; readonly createdAt: string; readonly expiresAt: string; usedButtonIds: string[];
+  buttonResults?: Record<string, DurableButtonResult>;
+  readonly buttons: Array<{ id: string; label?: string; actionTool: string; actionArgs: JsonObject; disableAllOnComplete?: boolean }>;
+}
+const buttonText = (value: unknown): string => {
+  if (typeof value === "string") return value.trim() || "Completed.";
+  if (value === undefined || value === null) return "Completed.";
+  const rendered = JSON.stringify(value, null, 2);
+  return rendered.length <= 500 ? `\`\`\`json\n${rendered}\n\`\`\`` : `\`\`\`json\n${rendered.slice(0, 497)}...\n\`\`\``;
+};
+const renderButtonRecord = (record: DurableButtonRecord): string => {
+  const sections = record.buttons.flatMap(button => {
+    const result = record.buttonResults?.[button.id]; if (!result) return [];
+    return [`${result.status === "completed" ? "☑️" : "❌"} **${button.label ?? button.actionTool}**\n${result.text.slice(0, 500)}`];
+  });
+  const allComplete = record.buttons.every(button => record.usedButtonIds.includes(button.id));
+  return [record.content ?? "", ...(sections.length ? ["", ...sections] : []), ...(allComplete ? ["", "狀態：**已完成**"] : [])].join("\n").slice(0, 2_000);
+};
 const discordPluginService = Object.assign(discord, {
   async createButtonSet(input: {
     readonly channelId: string;
@@ -210,7 +231,7 @@ const discordPluginService = Object.assign(discord, {
     readonly allowedUserIds: readonly string[];
     readonly expiresInMinutes?: number;
     readonly creatorPrincipalId?: string;
-    readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger"; readonly actionTool: string; readonly actionArgs: JsonObject }[];
+    readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger"; readonly actionTool: string; readonly actionArgs: JsonObject; readonly disableAllOnComplete?: boolean }[];
     readonly signal?: AbortSignal;
   }): Promise<{ readonly messageId: string; readonly buttonSetId: string; readonly expiresAt: string }> {
     if (input.allowedUserIds.length === 0) throw new Error("allowedUserIds is required");
@@ -220,7 +241,7 @@ const discordPluginService = Object.assign(discord, {
     const minutes = input.expiresInMinutes ?? 1_440;
     if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 10_080) throw new TypeError("button expiry must be between 1 and 10080 minutes");
     const expiresAt = new Date(Date.parse(createdAt) + minutes * 60_000).toISOString();
-    const record = { buttonSetId, channelId: input.channelId, creatorPrincipalId: input.creatorPrincipalId, allowedUserIds: [...input.allowedUserIds], buttons: input.buttons.map(button => ({ id: button.id, actionTool: button.actionTool, actionArgs: button.actionArgs })), createdAt, expiresAt, usedButtonIds: [] as string[] };
+    const record: DurableButtonRecord = { buttonSetId, channelId: input.channelId, content: input.content, ...(input.creatorPrincipalId ? { creatorPrincipalId: input.creatorPrincipalId } : {}), allowedUserIds: [...input.allowedUserIds], buttons: input.buttons.map(button => ({ id: button.id, label: button.label, actionTool: button.actionTool, actionArgs: button.actionArgs, ...(button.disableAllOnComplete ? { disableAllOnComplete: true } : {}) })), createdAt, expiresAt, usedButtonIds: [] };
     await buttonState.writeAtomic(`buttons/${buttonSetId}.json`, new TextEncoder().encode(JSON.stringify(record)), { expiresAt });
     try {
       const sent = await discord.sendButtons({ buttonSetId, channelId: input.channelId, content: input.content, buttons: input.buttons.map(button => ({ id: button.id, label: button.label, style: button.style })), ...(input.signal ? { signal: input.signal } : {}) });
@@ -235,7 +256,7 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     const key = `buttons/${interaction.buttonSetId}.json`;
     const current = await buttonState.readVersioned(key);
     if (!current) throw new Error("button set is unavailable or expired");
-    const record = JSON.parse(new TextDecoder().decode(current.value)) as { channelId: string; allowedUserIds: string[]; expiresAt: string; usedButtonIds: string[]; buttons: Array<{ id: string; actionTool: string; actionArgs: JsonObject }> };
+    const record = JSON.parse(new TextDecoder().decode(current.value)) as DurableButtonRecord;
     if (record.channelId !== interaction.channelId) throw new Error("button channel does not match");
     if (Date.parse(record.expiresAt) <= Date.now()) { await buttonState.remove(key); throw new Error("button set expired"); }
     if (record.allowedUserIds.length > 0 && !record.allowedUserIds.includes(interaction.userId)) throw new Error("button user is not allowed");
@@ -244,22 +265,24 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     if (!action) throw new Error("button action does not exist");
     const actionDefinition = tools.get(action.actionTool);
     if (!actionDefinition) throw new Error("button action tool is unavailable");
+    record.content ??= interaction.messageContent;
     record.usedButtonIds.push(interaction.buttonId);
     const claimed = await buttonState.compareAndSwap(key, current.version, new TextEncoder().encode(JSON.stringify(record)), { expiresAt: record.expiresAt });
     if (!claimed.updated) throw new Error("button was already claimed");
     const resolved = await identities.resolve({ transport: "discord", externalId: interaction.userId, principalId: null });
-    const now = new Date().toISOString(); const runId = crypto.randomUUID(); const stepId = crypto.randomUUID();
     const execution = { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive" as const, transport: "discord", conversationId: interaction.channelId } };
-    const run: Run = { id: runId, revision: 0, state: "queued", context: execution, resumeEligibility: "eligible", createdAt: now, updatedAt: now };
-    const step: Step = { id: stepId, runId, revision: 0, sequence: 0, kind: "operation", state: "pending", createdAt: now, updatedAt: now };
-    await store.createRunWithStep(run, step);
-    await store.updateExecutionProgress({ runId, expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: now, step: { id: stepId, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: now } });
-    const result = await new ToolRuntime(tools, store).execute({ toolName: action.actionTool, input: action.actionArgs, stepId, runId, context: execution, idempotencyKey: `button:${interaction.buttonSetId}:${interaction.buttonId}` });
-    const terminal = result.status === "succeeded" ? "succeeded" : result.status === "approval_required" ? "waiting" : "failed";
-    const updatedAt = new Date().toISOString();
-    await store.updateExecutionProgress({ runId, expectedRunRevision: 1, expectedRunState: "running", runState: terminal, ...(terminal === "waiting" ? { waitingReason: "approval_required" } : {}), resumeEligibility: terminal === "waiting" ? "manual_review" : "not_applicable", runUpdatedAt: updatedAt, ...(terminal === "waiting" ? { checkpoint: { runId, version: 1, data: createButtonActionCheckpoint(action.actionTool, action.actionArgs), updatedAt } } : { step: { id: stepId, expectedRevision: 1, expectedState: "running" as const, state: terminal === "succeeded" ? "succeeded" as const : "failed" as const, updatedAt } }) });
-    if (result.status === "approval_required") await presentApprovalId(result.approvalId, interaction.channelId);
-    return { content: result.status === "succeeded" ? `Action completed: ${action.actionTool}` : result.status === "approval_required" ? `Approval required: ${result.approvalId}` : `Action ${result.status}` };
+    const result = await buttonActions.startAndExecute({ toolName: action.actionTool, toolInput: action.actionArgs, context: execution, idempotencyKey: `button:${interaction.buttonSetId}:${interaction.buttonId}` });
+    let finalized: DurableButtonRecord | undefined;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const latest = await buttonState.readVersioned(key); if (!latest) throw new Error("button set disappeared during execution");
+      const next = JSON.parse(new TextDecoder().decode(latest.value)) as DurableButtonRecord;
+      if (result.status === "succeeded" && action.disableAllOnComplete) next.usedButtonIds = next.buttons.map(button => button.id);
+      next.buttonResults = { ...(next.buttonResults ?? {}), [interaction.buttonId]: { status: result.status === "succeeded" ? "completed" : "failed", text: result.status === "succeeded" ? buttonText(result.output) : `Action ${result.status}` } };
+      const saved = await buttonState.compareAndSwap(key, latest.version, new TextEncoder().encode(JSON.stringify(next)), { expiresAt: next.expiresAt });
+      if (saved.updated) { finalized = next; break; }
+    }
+    if (!finalized) throw new Error("button result changed repeatedly");
+    return { messageContent: renderButtonRecord(finalized), disableButtonIds: finalized.usedButtonIds };
 });
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);

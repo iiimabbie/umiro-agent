@@ -119,6 +119,8 @@ export interface DiscordPluginService {
       readonly style: "primary" | "secondary" | "success" | "danger";
       readonly actionTool: string;
       readonly actionArgs: JsonObject;
+      /** A successful all-items action makes every button in the set unavailable. */
+      readonly disableAllOnComplete?: boolean;
     }[];
     readonly signal?: AbortSignal;
   }) => Promise<{ readonly messageId: string; readonly buttonSetId: string; readonly expiresAt: string }>;

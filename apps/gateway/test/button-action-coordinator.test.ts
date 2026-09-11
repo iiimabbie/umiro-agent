@@ -32,11 +32,32 @@ test("button approval resumes its exact operation without a model cursor", async
 
     const coordinator = new ButtonActionCoordinator(store, tools, () => at);
     assert.equal(await coordinator.handles(pending.approvalId), true);
-    assert.deepEqual(await coordinator.resolveAndExecute(pending.approvalId, "approve", context), { approvalState: "approved", runId: "run", status: "succeeded" });
+    assert.deepEqual(await coordinator.resolveAndExecute(pending.approvalId, "approve", context), { approvalState: "approved", runId: "run", status: "succeeded", output: { value: "one" } });
     assert.equal(executions, 1);
     assert.equal((await store.getRun(run.id))?.state, "succeeded");
     assert.equal((await store.getApproval(pending.approvalId))?.state, "consumed");
     assert.equal((await store.getOperation("operation"))?.state, "succeeded");
     assert.equal(await store.getCheckpoint(run.id), undefined);
+  } finally { store.close(); }
+});
+
+test("a button click records and consumes exact approval before returning", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const tools = new ToolRegistry();
+  let executions = 0;
+  tools.register({
+    name: "test.button", description: "one-click approved button action", inputSchema: { type: "object", additionalProperties: false, required: ["value"], properties: { value: { type: "string" } } },
+    policy: { capability: "test.button", tier: "privileged", interactionRequirement: "interactive_required", approvalRequirement: "required", sideEffect: "idempotent" },
+    async execute(input) { executions += 1; return { ok: true, output: input, effectStatus: "confirmed" }; },
+  });
+  try {
+    const coordinator = new ButtonActionCoordinator(store, tools, () => at);
+    const result = await coordinator.startAndExecute({ toolName: "test.button", toolInput: { value: "one" }, context, idempotencyKey: "button:set:approve" });
+    assert.equal(result.status, "succeeded");
+    assert.ok(result.approvalId);
+    assert.deepEqual(result.output, { value: "one" });
+    assert.equal(executions, 1);
+    assert.equal((await store.getRun(result.runId))?.state, "succeeded");
+    assert.equal((await store.getApproval(result.approvalId))?.state, "consumed");
   } finally { store.close(); }
 });

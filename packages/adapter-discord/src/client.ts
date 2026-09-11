@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, ComponentType, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
@@ -24,7 +24,7 @@ export async function syncApplicationCommands(guilds: readonly DiscordCommandMan
 export type DiscordApprovalAction = "approve" | "deny";
 export interface DiscordApprovalPrompt { readonly approvalId: string; readonly operation: string; readonly details: string; readonly expiresAt: string }
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
-export interface DiscordButtonInteraction extends DiscordInteractionContext { readonly buttonSetId: string; readonly buttonId: string }
+export interface DiscordButtonInteraction extends DiscordInteractionContext { readonly buttonSetId: string; readonly buttonId: string; readonly messageContent: string }
 export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "approval" | "button"; readonly channelId?: string; readonly messageId?: string }
 export type DiscordAdapterErrorHandler = (error: unknown, context: DiscordAdapterErrorContext) => void;
 
@@ -57,7 +57,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
   private autocompleteHandler?: (name: string, option: string, value: string, context: DiscordInteractionContext) => Promise<readonly { readonly name: string; readonly value: string }[]>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
-  private buttonHandler?: (interaction: DiscordButtonInteraction) => Promise<{ readonly content: string }>;
+  private buttonHandler?: (interaction: DiscordButtonInteraction) => Promise<{ readonly messageContent?: string; readonly ephemeralContent?: string; readonly disableButtonIds?: readonly string[] }>;
   private errorHandler?: DiscordAdapterErrorHandler;
   private readonly messageTimes = new Map<string, number[]>();
   private readonly channelQueues = new Map<string, Promise<void>>();
@@ -361,8 +361,24 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       if (!button || !this.buttonHandler) return;
       await interaction.deferUpdate();
       try {
-        const result = await this.buttonHandler({ ...button, userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
-        await interaction.followUp({ content: result.content.slice(0, 1900), ephemeral: true });
+        const result = await this.buttonHandler({ ...button, userId: interaction.user.id, channelId: interaction.channelId, messageContent: interaction.message.content, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
+        if (result.disableButtonIds?.length || result.messageContent !== undefined) {
+          const disabled = new Set(result.disableButtonIds);
+          const components = interaction.message.components.flatMap(row => {
+            if (row.type !== ComponentType.ActionRow) return [];
+            const updated = new ActionRowBuilder<ButtonBuilder>();
+            for (const component of row.components) {
+              if (component.type !== ComponentType.Button) continue;
+              const button = ButtonBuilder.from(component);
+              const id = component.customId ? parseButtonCustomId(component.customId)?.buttonId : undefined;
+              if (id && disabled.has(id)) button.setDisabled(true);
+              updated.addComponents(button);
+            }
+            return [updated];
+          });
+          await interaction.editReply({ ...(result.messageContent !== undefined ? { content: result.messageContent.slice(0, 2_000) } : {}), components });
+        }
+        if (result.ephemeralContent) await interaction.followUp({ content: result.ephemeralContent.slice(0, 1_900), ephemeral: true });
       } catch { await interaction.followUp({ content: "Button action failed or is no longer actionable.", ephemeral: true }); }
       return;
     }

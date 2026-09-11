@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ActionRow, ButtonStyle, ComponentType } from "discord.js";
 import { DiscordJsAdapter, type DiscordAdapterErrorContext } from "../src/client.js";
 
 function message(id: string) {
@@ -87,4 +88,23 @@ test("steer rejected after the active Run is sealed falls back to the channel qu
   releaseFirst();
   await secondHandled;
   assert.deepEqual(handled, ["first", "second"]);
+});
+
+test("a durable button result edits the original message and disables completed actions", async () => {
+  const adapter = new DiscordJsAdapter();
+  adapter.onButton(async interaction => {
+    assert.equal(interaction.messageContent, "original");
+    return { messageContent: "original\n\n☑️ **Approve SOUL.md**\nupdated", disableButtonIds: ["approve"] };
+  });
+  let edited: Record<string, unknown> | undefined;
+  const ActionRowForTest = ActionRow as unknown as new (data: Record<string, unknown>) => unknown;
+  const row = new ActionRowForTest({ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, custom_id: "umiro:button:set:approve", label: "Approve SOUL.md", style: ButtonStyle.Success }] });
+  const interaction = {
+    customId: "umiro:button:set:approve", channelId: "channel", guildId: "guild", user: { id: "owner" }, message: { content: "original", components: [row] },
+    async deferUpdate() {}, async editReply(value: Record<string, unknown>) { edited = value; }, async followUp() { throw new Error("successful actions must not create a second message"); },
+  };
+  await (adapter as unknown as { handleButton(value: unknown): Promise<void> }).handleButton(interaction);
+  assert.equal(edited?.content, "original\n\n☑️ **Approve SOUL.md**\nupdated");
+  const components = edited?.components as Array<{ toJSON(): { components: Array<{ disabled?: boolean }> } }>;
+  assert.equal(components[0]!.toJSON().components[0]!.disabled, true);
 });
