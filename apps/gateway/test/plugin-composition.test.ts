@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PluginModule } from "@umiro/core/plugin";
-import { orderPluginEnableEntries } from "../src/plugin-composition.js";
+import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "../src/plugin-composition.js";
 
 function plugin(id: string, tools: readonly string[] = [], requiredTools: readonly string[] = []): PluginModule {
   return {
@@ -37,4 +37,10 @@ test("plugin enable order rejects cyclic tool dependencies", () => {
     { configured: "b", module: plugin("b", ["tool_b"], ["tool_a"]) },
   ];
   assert.throws(() => orderPluginEnableEntries(entries), /cyclic plugin tool dependencies: a, b/);
+});
+
+test("plugin secret injection includes only declared non-blank environment values", () => {
+  const module = plugin("secret-user");
+  const manifest = { ...module.manifest, requiredSecrets: ["OWNER_ID", "OPTIONAL_KEY"] };
+  assert.deepEqual(pluginSecretsFromEnvironment(manifest, { OWNER_ID: "123", OPTIONAL_KEY: "  ", UNDECLARED: "hidden" }), { OWNER_ID: "123" });
 });

@@ -7,7 +7,7 @@ import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, c
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
-import { orderPluginEnableEntries, pluginStateDirectory } from "./plugin-composition.js";
+import { orderPluginEnableEntries, pluginSecretsFromEnvironment, pluginStateDirectory } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedder, type EmbeddingConfig } from "./embedding-config.js";
@@ -27,6 +27,7 @@ import { observeExecutionStore, type CoreExecutionEventName } from "./execution-
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 import { discordRuntimeContextProvider } from "./discord-context.js";
+import { ButtonActionCoordinator, createButtonActionCheckpoint } from "./button-action-coordinator.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -201,6 +202,7 @@ const updateSessionPreferences = async (channelId: string, change: (current: Con
 const discord = new DiscordJsAdapter();
 await discord.setRespondToBots(discordPolicy.respondToBots === true);
 const buttonState = store.pluginState("discord-tools");
+const buttonActions = new ButtonActionCoordinator(store, tools);
 const discordPluginService = Object.assign(discord, {
   async createButtonSet(input: {
     readonly channelId: string;
@@ -254,7 +256,8 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     await store.updateExecutionProgress({ runId, expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: now, step: { id: stepId, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: now } });
     const result = await new ToolRuntime(tools, store).execute({ toolName: action.actionTool, input: action.actionArgs, stepId, runId, context: execution, idempotencyKey: `button:${interaction.buttonSetId}:${interaction.buttonId}` });
     const terminal = result.status === "succeeded" ? "succeeded" : result.status === "approval_required" ? "waiting" : "failed";
-    await store.updateExecutionProgress({ runId, expectedRunRevision: 1, expectedRunState: "running", runState: terminal, ...(terminal === "waiting" ? { waitingReason: "approval_required" } : {}), resumeEligibility: terminal === "waiting" ? "manual_review" : "not_applicable", runUpdatedAt: new Date().toISOString(), ...(terminal === "waiting" ? {} : { step: { id: stepId, expectedRevision: 1, expectedState: "running" as const, state: terminal === "succeeded" ? "succeeded" as const : "failed" as const, updatedAt: new Date().toISOString() } }) });
+    const updatedAt = new Date().toISOString();
+    await store.updateExecutionProgress({ runId, expectedRunRevision: 1, expectedRunState: "running", runState: terminal, ...(terminal === "waiting" ? { waitingReason: "approval_required" } : {}), resumeEligibility: terminal === "waiting" ? "manual_review" : "not_applicable", runUpdatedAt: updatedAt, ...(terminal === "waiting" ? { checkpoint: { runId, version: 1, data: createButtonActionCheckpoint(action.actionTool, action.actionArgs), updatedAt } } : { step: { id: stepId, expectedRevision: 1, expectedState: "running" as const, state: terminal === "succeeded" ? "succeeded" as const : "failed" as const, updatedAt } }) });
     if (result.status === "approval_required") await presentApprovalId(result.approvalId, interaction.channelId);
     return { content: result.status === "succeeded" ? `Action completed: ${action.actionTool}` : result.status === "approval_required" ? `Approval required: ${result.approvalId}` : `Action ${result.status}` };
 });
@@ -309,7 +312,11 @@ async function presentApproval(result: HeadlessRunResult, channelId: string): Pr
   await presentApprovalId(result.approvalId, channelId);
 }
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
-for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
+for (let index = 0; index < modules.length; index++) {
+  const module = modules[index]!;
+  const secrets = pluginSecretsFromEnvironment(module.manifest, process.env);
+  await host.enable(module, { config: configured[index]!.config ?? {}, secrets });
+}
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
 await scheduler.syncPluginJobs(host.listJobs());
 readiness.plugins = true;
@@ -384,6 +391,10 @@ discord.onAutocomplete(async (name: string, option: string, value: string, conte
 });
 const handleApproval = async (approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => {
   const resolved = await identities.resolve({ transport: "discord", externalId: interaction.userId, principalId: null });
+  if (await buttonActions.handles(approvalId)) {
+    const outcome = await buttonActions.resolveAndExecute(approvalId, action, { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive", transport: "discord", conversationId: interaction.channelId } });
+    return { content: `Approval ${outcome.approvalState}; action ${outcome.status}.` };
+  }
   const outcome = await approvalRuns.resolveAndResume(approvalId, action, { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive", transport: "discord", conversationId: interaction.channelId } });
   if (outcome.status === "resumed") {
     await presentApproval(outcome.result, interaction.channelId);

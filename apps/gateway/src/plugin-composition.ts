@@ -1,9 +1,16 @@
 import { join } from "node:path";
 import type { CoreConfig, SecretSource } from "@umiro/core/config";
-import type { PluginHost, PluginModule } from "@umiro/core/plugin";
+import type { PluginHost, PluginManifestV0, PluginModule } from "@umiro/core/plugin";
 import { loadPluginModule } from "./plugin-loader.js";
 
 export interface PluginEnableEntry<T> { readonly configured: T; readonly module: PluginModule }
+
+export function pluginSecretsFromEnvironment(manifest: PluginManifestV0, environment: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries((manifest.requiredSecrets ?? []).flatMap(name => {
+    const value = environment[name];
+    return value?.trim() ? [[name, value]] : [];
+  }));
+}
 
 /** Resolve manifest-declared tool dependencies without making the user's
  * plugins.json order part of the Plugin API. Registration still fails closed
