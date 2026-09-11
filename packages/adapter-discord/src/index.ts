@@ -150,6 +150,11 @@ export class DiscordDeliveryWorker {
         const text = intent.payload.text;
         if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
         const artifactIds = intent.payload.artifactIds;
+        if ((!text.trim() || text.trim() === "NO_REPLY") && !(Array.isArray(artifactIds) && artifactIds.length)) {
+          await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", channelId: intent.destination.channelId, skipped: "no_reply" });
+          delivered++;
+          continue;
+        }
         let sent: { readonly messageId: string };
         if (Array.isArray(artifactIds) && artifactIds.length) {
           if (!this.transport.sendFiles || !this.artifacts) throw new Error("Discord artifact delivery is unavailable");

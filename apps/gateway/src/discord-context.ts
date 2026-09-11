@@ -32,3 +32,24 @@ export const discordRuntimeContextProvider: ContextProvider = {
     return [{ id: `discord.runtime:${request.runId}`, providerId: "discord.runtime", role: "transport-context", content: JSON.stringify(content), source: { kind: "discord-adapter", ref: request.inputEvent.id }, influence: "information", instructionAuthority: "none", retention: "essential" }];
   },
 };
+
+/** Host-owned Discord response contract. Tool calls such as discord_react may
+ * still be used before selecting the no-text outcome. */
+export const discordOutputPolicyProvider: ContextProvider = {
+  id: "discord.output-policy",
+  role: "runtime-policy",
+  priority: 6,
+  async load(request) {
+    if (request.inputEvent?.identity.transport !== "discord") return [];
+    return [{
+      id: `discord.output-policy:${request.runId}`,
+      providerId: "discord.output-policy",
+      role: "runtime-policy",
+      content: "Choose the appropriate Discord interaction: reply with text, use a reaction tool and then reply with text, use only a reaction tool, or do nothing. When no text should be sent, your final response must be exactly NO_REPLY.",
+      source: { kind: "host-policy", ref: "discord-output" },
+      influence: "instruction",
+      instructionAuthority: "scoped",
+      retention: "essential",
+    }];
+  },
+};

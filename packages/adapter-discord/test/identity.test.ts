@@ -63,6 +63,17 @@ test("chunks long Discord output and records every delivered message", async () 
   assert.deepEqual(evidence, { transport: "discord", messageId: "m1", messageIds: chunks.map((_chunk, index) => `m${index + 1}`), channelId: "c" });
 });
 
+test("marks an explicit no-reply outcome delivered without sending text", async () => {
+  let evidence: Record<string, unknown> | undefined;
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [{ id: "silent", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "NO_REPLY" }, state: "pending", createdAt: "now" }]; },
+    async markDeliveryDelivered(_id, _at, value) { evidence = value; },
+    async markDeliveryFailed() {},
+  }, { async sendText() { throw new Error("no-reply must not send a message"); } });
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.deepEqual(evidence, { transport: "discord", channelId: "c", skipped: "no_reply" });
+});
+
 test("delivers durable artifacts before marking the intent delivered", async () => {
   const events: string[] = [];
   const worker = new DiscordDeliveryWorker({

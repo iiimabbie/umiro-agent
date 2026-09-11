@@ -24,7 +24,7 @@ import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
-import { discordRuntimeContextProvider } from "./discord-context.js";
+import { discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 
 const paths = umiroPaths();
@@ -65,6 +65,7 @@ const { ownerAuthority, memberAuthority } = resolveRuntimeAuthorities(config.aut
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
 providers.register(discordRuntimeContextProvider);
+providers.register(discordOutputPolicyProvider);
 const logger = new JsonLineLogger();
 const pluginHooks = new PluginHookRegistry(logger);
 let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
