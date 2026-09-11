@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Script } from "node:vm";
 import { CONFIG_EXPLANATIONS, ControlPanelServer, validateControlConfig } from "../src/control-panel.js";
 
 test("model capabilities are explicit and reject unknown values", () => {
@@ -49,6 +50,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.match(html, /<script src="app\.js"><\/script>/);
     assert.doesNotMatch(html, /src="\/app\.js"/);
     const script = await (await fetch(`${endpoint}/app.js`)).text();
+    assert.doesNotThrow(() => new Script(script));
     assert.match(script, /new URL\('\.',location\.href\)/);
     assert.ok(script.includes("replace(/^\\/+/,''"));
     assert.equal((await fetch(`${endpoint}/api/config`)).status, 401);
