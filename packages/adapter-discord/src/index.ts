@@ -81,6 +81,54 @@ export interface DiscordTextTransport {
   sendFiles?(channelId: string, files: readonly { readonly path: string; readonly name?: string }[], signal?: AbortSignal): Promise<{ readonly messageId: string }>;
 }
 
+interface FenceState { readonly marker: string; readonly opener: string }
+
+function updateFenceState(text: string, initial: FenceState | undefined): FenceState | undefined {
+  let state = initial;
+  for (const line of text.split("\n")) {
+    const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!match) continue;
+    const marker = match[1]!;
+    const rest = match[2]!;
+    if (!state) state = { marker, opener: line.trimStart() };
+    else if (marker[0] === state.marker[0] && marker.length >= state.marker.length && !rest.trim()) state = undefined;
+  }
+  return state;
+}
+
+function chunkCut(text: string, limit: number): number {
+  if (text.length <= limit) return text.length;
+  const newline = text.lastIndexOf("\n", limit - 1);
+  return newline >= Math.floor(limit / 2) ? newline + 1 : limit;
+}
+
+/** Split Discord text at a hard UTF-16 code-unit limit while keeping fenced
+ * code blocks syntactically valid in every chunk. */
+export function chunkDiscordText(text: string, limit = 2_000): readonly string[] {
+  if (!Number.isSafeInteger(limit) || limit < 8) throw new TypeError("Discord message limit is too small");
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  let carriedFence: FenceState | undefined;
+  while (remaining.length) {
+    const prefix = carriedFence ? `${carriedFence.opener}\n` : "";
+    let cut = chunkCut(remaining, limit - prefix.length);
+    let body = remaining.slice(0, cut);
+    let endFence = updateFenceState(body, carriedFence);
+    let suffix = endFence ? `\n${endFence.marker}` : "";
+    while (prefix.length + body.length + suffix.length > limit) {
+      cut = chunkCut(remaining, limit - prefix.length - suffix.length);
+      body = remaining.slice(0, cut);
+      endFence = updateFenceState(body, carriedFence);
+      suffix = endFence ? `\n${endFence.marker}` : "";
+    }
+    chunks.push(prefix + body + suffix);
+    remaining = remaining.slice(cut);
+    carriedFence = endFence;
+  }
+  return chunks;
+}
+
 export class DiscordDeliveryWorker {
   constructor(
     private readonly store: Pick<ExecutionStore, "listPendingDeliveries" | "markDeliveryDelivered" | "markDeliveryFailed">,
@@ -113,7 +161,14 @@ export class DiscordDeliveryWorker {
             files.push({ path: artifact.location, ...(artifact.filename ? { name: artifact.filename } : {}) });
           }
           sent = await this.transport.sendFiles(intent.destination.channelId, files, signal);
-        } else sent = await this.transport.sendText(intent.destination.channelId, text, signal);
+        } else {
+          const messageIds: string[] = [];
+          for (const chunk of chunkDiscordText(text)) messageIds.push((await this.transport.sendText(intent.destination.channelId, chunk, signal)).messageId);
+          sent = { messageId: messageIds[0]! };
+          await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", messageId: sent.messageId, messageIds, channelId: intent.destination.channelId });
+          delivered++;
+          continue;
+        }
         await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", messageId: sent.messageId, channelId: intent.destination.channelId });
         delivered++;
       } catch (error) {

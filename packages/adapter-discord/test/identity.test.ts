@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IdentityMappingStore, PersistedTransportIdentity } from "@umiro/core/identity";
-import { DiscordDeliveryWorker, DiscordIdentityResolver, toInputEvent } from "../src/index.js";
+import { chunkDiscordText, DiscordDeliveryWorker, DiscordIdentityResolver, toInputEvent } from "../src/index.js";
 
 class MemoryMappings implements IdentityMappingStore {
   readonly rows = new Map<string, PersistedTransportIdentity>();
@@ -43,6 +43,24 @@ test("delivers pending Discord output and records confirmation", async () => {
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
   assert.deepEqual(sent, ["c:hello"]);
   assert.deepEqual(marked, ["d"]);
+});
+
+test("chunks long Discord output and records every delivered message", async () => {
+  const sent: string[] = [];
+  let evidence: Record<string, unknown> | undefined;
+  const text = `前言\n\`\`\`ts\n${"const value = 1;\n".repeat(160)}\`\`\`\n結尾`;
+  const chunks = chunkDiscordText(text);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every(chunk => chunk.length <= 2_000));
+  assert.ok(chunks.every(chunk => (chunk.match(/```/g)?.length ?? 0) % 2 === 0));
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [{ id: "long", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text }, state: "pending", createdAt: "now" }]; },
+    async markDeliveryDelivered(_id, _at, value) { evidence = value; },
+    async markDeliveryFailed() {},
+  }, { async sendText(_channelId, chunk) { sent.push(chunk); return { messageId: `m${sent.length}` }; } });
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.deepEqual(sent, chunks);
+  assert.deepEqual(evidence, { transport: "discord", messageId: "m1", messageIds: chunks.map((_chunk, index) => `m${index + 1}`), channelId: "c" });
 });
 
 test("delivers durable artifacts before marking the intent delivered", async () => {
