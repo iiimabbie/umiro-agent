@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
@@ -93,6 +93,29 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
 
   async stop(): Promise<void> { this.client.destroy(); }
   identity(): { readonly id: string; readonly tag: string } | undefined { return this.client.user ? { id: this.client.user.id, tag: this.client.user.tag } : undefined; }
+
+  async listChannels(channelIds: readonly string[]): Promise<readonly { readonly id: string; readonly name: string; readonly guildId: string; readonly guildName: string; readonly kind: "direct" | "channel" | "forum" | "thread"; readonly parentId?: string; readonly parentName?: string }[]> {
+    const supported = new Set<ChannelType>([ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]);
+    const result = new Map<string, { id: string; name: string; guildId: string; guildName: string; kind: "direct" | "channel" | "forum" | "thread"; parentId?: string; parentName?: string }>();
+    await Promise.all([...new Set(channelIds)].map(async id => {
+      try {
+        const channel = await this.client.channels.fetch(id, { force: true });
+        if (!channel) return;
+        if (channel.isDMBased()) {
+          const recipient = "recipient" in channel ? channel.recipient : undefined;
+          result.set(id, { id, name: recipient?.globalName ?? recipient?.username ?? "私訊", guildId: "", guildName: "Discord 私訊", kind: "direct" });
+          return;
+        }
+        if (!("name" in channel) || !("guild" in channel) || !supported.has(channel.type)) return;
+        const thread = channel.type === ChannelType.PublicThread || channel.type === ChannelType.PrivateThread || channel.type === ChannelType.AnnouncementThread;
+        const forum = channel.type === ChannelType.GuildForum || channel.type === ChannelType.GuildMedia;
+        const parent = "parent" in channel ? channel.parent : undefined;
+        const parentId = "parentId" in channel ? channel.parentId : undefined;
+        result.set(id, { id, name: channel.name, guildId: channel.guild.id, guildName: channel.guild.name, kind: thread ? "thread" : forum ? "forum" : "channel", ...(parentId ? { parentId } : {}), ...(parent?.name ? { parentName: parent.name } : {}) });
+      } catch { /* deleted or inaccessible bound channels fall back to their stable ID in the UI */ }
+    }));
+    return [...result.values()].sort((left, right) => left.guildName.localeCompare(right.guildName) || (left.parentName ?? "").localeCompare(right.parentName ?? "") || left.name.localeCompare(right.name));
+  }
 
   private enqueueMessage(message: Message): void {
     void this.normalize(message).then(async envelope => {

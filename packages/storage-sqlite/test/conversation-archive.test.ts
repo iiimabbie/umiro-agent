@@ -12,12 +12,16 @@ test("archiving keeps canonical turns and the next ingress starts a new conversa
   try {
     const first = await store.ingestInputEvent({ event: event("e1"), actorPrincipalId: "owner", newConversationId: "c1", newTurnId: "t1", newRunId: "r1", createdAt: "2026-09-09T00:00:00.000Z" });
     assert.equal(first.conversationCreated, true);
+    assert.deepEqual(await store.getConversationBinding("c1"), { transport: "discord", externalId: "channel", kind: "channel" });
+    assert.equal(await store.getConversationBinding("missing"), undefined);
+    assert.deepEqual(await store.listConversationBindings("discord"), [{ transport: "discord", externalId: "channel", kind: "channel", conversationId: "c1" }]);
     assert.equal((await store.archiveBoundConversation("discord", "channel", "2026-09-09T00:01:00.000Z"))?.state, "archived");
     assert.equal((await store.listTurns("c1")).length, 1);
     const second = await store.ingestInputEvent({ event: event("e2"), actorPrincipalId: "owner", newConversationId: "c2", newTurnId: "t2", newRunId: "r2", createdAt: "2026-09-09T00:02:00.000Z" });
     assert.equal(second.conversationCreated, true);
     assert.equal(second.conversation.id, "c2");
     assert.equal((await store.getConversation("c1"))?.state, "archived");
+    assert.deepEqual(await store.listConversationBindings("discord"), [{ transport: "discord", externalId: "channel", kind: "channel", conversationId: "c2" }]);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 

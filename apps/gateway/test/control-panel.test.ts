@@ -43,7 +43,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
   let pluginAction: unknown; let approvalAction: unknown; let runLimit: unknown; let runId: unknown; const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
   const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, workspaceFiles: ["AGENT.md"], secrets: () => ({ DISCORD_TOKEN: true, LLM_API_KEY: false }), models: async () => ["gemma4", "gpt-5"], audit: (event, data) => audits.push({ event, data }), schedules: {
     async list() { return schedules; }, async create(input) { created = input; return { id: "new", ...input }; }, async setEnabled(id, value) { enabled = [id, value]; return { id, enabled: value }; }, async update(id, input) { updatedSchedule = [id, input]; return { id, ...input }; }, async remove(id) { removed = id; return true; },
-  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
+  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, channels: { async list() { return [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
   try {
     const html = await (await fetch(`${endpoint}/`)).text();
@@ -57,6 +57,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
     const schema = await (await fetch(`${endpoint}/api/schema`, { headers })).json(); assert.deepEqual(schema, CONFIG_EXPLANATIONS);
     assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: true, LLM_API_KEY: false });
     assert.deepEqual(await (await fetch(`${endpoint}/api/models`, { headers })).json(), ["gemma4", "gpt-5"]);
+    assert.deepEqual(await (await fetch(`${endpoint}/api/channels`, { headers })).json(), [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]);
     assert.deepEqual(await (await fetch(`${endpoint}/api/workspace`, { headers })).json(), ["AGENT.md"]);
     const updated = { model: "new-model", discord: { allowedGuilds: ["g"] }, webUi: { enabled: true, host: "127.0.0.1", port: 4000 }, plugins: [] };
     assert.equal((await fetch(`${endpoint}/api/config`, { method: "PUT", headers, body: JSON.stringify(updated) })).status, 200);
@@ -75,7 +76,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "configure", source: "builtin:memory", config: { limit: 10 } }) })).status, 200);
     assert.deepEqual(pluginAction, ["configure", "builtin:memory", undefined, { limit: 10 }]);
     assert.deepEqual(await (await fetch(`${endpoint}/api/runtime`, { headers })).json(), { status: "running", bot: { tag: "dev" } });
-    assert.deepEqual(await (await fetch(`${endpoint}/api/runs?limit=30`, { headers })).json(), [{ id: "run-1", state: "succeeded" }]); assert.equal(runLimit, 30);
+    assert.deepEqual(await (await fetch(`${endpoint}/api/runs?limit=30`, { headers })).json(), [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]); assert.equal(runLimit, 30);
     assert.deepEqual(await (await fetch(`${endpoint}/api/runs/run-1`, { headers })).json(), { run: { id: "run-1" } }); assert.equal(runId, "run-1");
     assert.equal((await fetch(`${endpoint}/api/runs/missing`, { headers })).status, 404);
     assert.equal((await fetch(`${endpoint}/api/runs?limit=0`, { headers })).status, 400);

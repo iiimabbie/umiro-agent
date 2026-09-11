@@ -436,6 +436,20 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return row?.present === 1;
   }
 
+  async getConversationBinding(conversationId: string): Promise<{ readonly transport: string; readonly externalId: string; readonly kind: "direct" | "channel" | "thread" } | undefined> {
+    const row = this.database.prepare("SELECT transport, external_id, kind FROM conversation_bindings WHERE conversation_id = ?")
+      .get(conversationId) as { transport: string; external_id: string; kind: "direct" | "channel" | "thread" } | undefined;
+    return row ? { transport: row.transport, externalId: row.external_id, kind: row.kind } : undefined;
+  }
+
+  async listConversationBindings(transport?: string): Promise<readonly { readonly transport: string; readonly externalId: string; readonly kind: "direct" | "channel" | "thread"; readonly conversationId: string }[]> {
+    const rows = (transport
+      ? this.database.prepare("SELECT transport, external_id, kind, conversation_id FROM conversation_bindings WHERE transport = ? ORDER BY external_id").all(transport)
+      : this.database.prepare("SELECT transport, external_id, kind, conversation_id FROM conversation_bindings ORDER BY transport, external_id").all()
+    ) as Array<{ transport: string; external_id: string; kind: "direct" | "channel" | "thread"; conversation_id: string }>;
+    return rows.map(row => ({ transport: row.transport, externalId: row.external_id, kind: row.kind, conversationId: row.conversation_id }));
+  }
+
   async ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult> {
     if (!request.newRunId) throw new TypeError("triggered Turns require a Run ID");
     const newRunId = request.newRunId;
