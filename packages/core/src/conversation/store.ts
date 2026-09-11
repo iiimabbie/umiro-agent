@@ -42,6 +42,7 @@ export interface ConversationStore {
   getConversation(conversationId: string): Promise<Conversation | undefined>;
   getTurn(turnId: string): Promise<Turn | undefined>;
   getTurnByInputEventId(inputEventId: string): Promise<Turn | undefined>;
+  getHistoryItem(turnId: string): Promise<ConversationHistoryItem | undefined>;
   listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]>;
   listRecentHistory(conversationId: string, beforeSequence: number, limit: number): Promise<readonly ConversationHistoryItem[]>;
   refreshConversationCompaction(request: {
@@ -101,7 +102,7 @@ export interface SteerInputEventResult {
   readonly duplicate: boolean;
 }
 
-export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns" | "listRecentHistory" | "refreshConversationCompaction"> {
+export interface ConversationIngressStore extends Pick<ConversationStore, "getHistoryItem" | "listTurns" | "listRecentHistory" | "refreshConversationCompaction"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
   hasConversationBinding(transport: string, externalId: string): Promise<boolean>;
   /** Records only when an active binding already exists; never creates a Conversation or Run. */

@@ -109,6 +109,9 @@ export class InteractiveIngress {
       maxCharacters: Math.min(12_000, Math.max(2_000, Math.floor(request.maxContextCharacters / 3))),
       updatedAt: this.now(),
     });
+    const replyTarget = ingested.turn.replyToTurnId
+      ? await this.conversations.getHistoryItem(ingested.turn.replyToTurnId)
+      : undefined;
     const assembledContext = await this.contexts.assemble({
       runId: primaryRunId,
       execution,
@@ -116,6 +119,7 @@ export class InteractiveIngress {
       inputEvent: request.event,
       recentTurns: await this.conversations.listTurns(ingested.conversation.id, 12),
       recentHistory: await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, historyLimit),
+      ...(replyTarget ? { replyTarget } : {}),
       ...(conversationCompaction ? { conversationCompaction } : {}),
       maxCharacters: request.maxContextCharacters,
       ...(request.maxContextTokens !== undefined ? { maxTokens: request.maxContextTokens } : {}),

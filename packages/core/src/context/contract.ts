@@ -39,6 +39,9 @@ export interface ContextRequest {
   readonly inputEvent?: InputEvent;
   readonly recentTurns?: readonly Turn[];
   readonly recentHistory?: readonly ConversationHistoryItem[];
+  /** Canonical Turn referenced by the current transport reply, even when it
+   * falls outside the recent-history window. */
+  readonly replyTarget?: ConversationHistoryItem;
   readonly conversationCompaction?: ConversationCompaction;
   readonly signal?: AbortSignal;
 }

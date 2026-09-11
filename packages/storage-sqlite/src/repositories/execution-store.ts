@@ -60,6 +60,7 @@ import {
   type ApprovalRequest,
   type ApprovalResolution,
   type PendingSteeredInput,
+  type InputEvent,
   exactOperationFingerprint,
 } from "@umiro/core";
 import { migrate } from "../migrations/index.js";
@@ -466,6 +467,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           updatedAt: request.createdAt,
         };
         const initialTurns = request.initialTurns ?? [];
+        const replyToTurnId = this.resolveReplyToTurnId(conversation.id, request.event, initialTurns);
         const turn: Turn = {
           id: request.newTurnId,
           conversationId: conversation.id,
@@ -475,6 +477,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           inputEventId: request.event.id,
           primaryRunId: newRunId,
           content: structuredClone(request.event.content),
+          ...(replyToTurnId ? { replyToTurnId } : {}),
           createdAt: request.createdAt,
         };
         this.database.prepare(`
@@ -502,6 +505,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       if (!row || row.state !== "active") throw new Error(`bound Conversation is missing or archived: ${binding.conversation_id}`);
       const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
         .get(row.id) as { sequence: number };
+      const replyToTurnId = this.resolveReplyToTurnId(row.id, request.event);
       const turn: Turn = {
         id: request.newTurnId,
         conversationId: row.id,
@@ -511,6 +515,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         inputEventId: request.event.id,
         primaryRunId: newRunId,
         content: structuredClone(request.event.content),
+        ...(replyToTurnId ? { replyToTurnId } : {}),
         createdAt: request.createdAt,
       };
       this.insertTurn(turn);
@@ -547,6 +552,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       if (!row || row.state !== "active") return undefined;
       const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
         .get(row.id) as { sequence: number };
+      const replyToTurnId = this.resolveReplyToTurnId(row.id, request.event);
       const turn: Turn = {
         id: request.newTurnId,
         conversationId: row.id,
@@ -555,6 +561,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
         inputEventId: request.event.id,
         content: structuredClone(request.event.content),
+        ...(replyToTurnId ? { replyToTurnId } : {}),
         createdAt: request.createdAt,
       };
       this.insertTurn(turn);
@@ -582,7 +589,8 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const conversation = this.database.prepare("SELECT * FROM conversations WHERE id=?").get(run.conversation_id) as ConversationRow | undefined;
       if (!conversation || conversation.state !== "active") throw new ExecutionStoreConflictError("steered input conversation is not active");
       const next = this.database.prepare("SELECT COALESCE(MAX(sequence)+1,0) AS sequence FROM turns WHERE conversation_id=?").get(conversation.id) as { sequence: number };
-      const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: next.sequence, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
+      const replyToTurnId = this.resolveReplyToTurnId(conversation.id, request.event);
+      const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: next.sequence, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), ...(replyToTurnId ? { replyToTurnId } : {}), createdAt: request.createdAt };
       this.insertTurn(turn);
       expectOne(this.database.prepare("UPDATE conversations SET revision=revision+1, updated_at=? WHERE id=? AND revision=? AND state='active'").run(request.createdAt, conversation.id, conversation.revision).changes, `conversation ${conversation.id} changed concurrently`);
       this.database.prepare("INSERT INTO run_steered_inputs(id,run_id,turn_id,content_json,authority_json,actor_roles_json,state,created_at) VALUES (?,?,?,?,?,?, 'pending', ?)").run(request.event.id, request.runId, turn.id, json(request.modelContent), json(request.authority), json(request.actorRoles), request.createdAt);
@@ -658,6 +666,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return row ? this.turnFromRow(row) : undefined;
   }
 
+  async getHistoryItem(turnId: string): Promise<ConversationHistoryItem | undefined> {
+    const row = this.database.prepare("SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id WHERE t.id=?")
+      .get(turnId) as (TurnRow & { assistant_text: string | null }) | undefined;
+    return row ? { turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}) } : undefined;
+  }
+
   async listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]> {
     const rows = (limit === undefined
       ? this.database.prepare("SELECT * FROM turns WHERE conversation_id = ? ORDER BY sequence").all(conversationId)
@@ -691,6 +705,26 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       VALUES (?, ?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET through_sequence=excluded.through_sequence, source_hash=excluded.source_hash, summary=excluded.summary, updated_at=excluded.updated_at`)
       .run(request.conversationId, throughSequence, digest, summary, request.updatedAt);
     return { conversationId: request.conversationId, throughSequence, sourceHash: digest, summary, updatedAt: request.updatedAt };
+  }
+
+  /** Resolve a transport reply to a canonical Turn in the same Conversation.
+   * Adapter event IDs use `<transport>:<external message id>`; the starter
+   * prefix is retained for conversations created by older releases. Delivery
+   * evidence is also checked so replies to the bot's own messages point at the
+   * originating Turn rather than becoming an unanchored question. */
+  private resolveReplyToTurnId(conversationId: string, event: InputEvent, initialTurns: readonly { readonly id: string; readonly inputEventId: string }[] = []): string | undefined {
+    const externalId = event.replyToExternalId;
+    if (!externalId) return undefined;
+    const candidates = [`${event.conversation.transport}:${externalId}`, `${event.conversation.transport}:starter:${externalId}`];
+    const seeded = initialTurns.find(turn => candidates.includes(turn.inputEventId));
+    if (seeded) return seeded.id;
+    const placeholders = candidates.map(() => "?").join(",");
+    const turn = this.database.prepare(`SELECT id FROM turns WHERE conversation_id=? AND input_event_id IN (${placeholders}) ORDER BY sequence DESC LIMIT 1`)
+      .get(conversationId, ...candidates) as { id: string } | undefined;
+    if (turn) return turn.id;
+    const delivery = this.database.prepare(`SELECT r.turn_id AS turnId FROM delivery_intents d JOIN runs r ON r.id=d.run_id WHERE r.conversation_id=? AND d.state='delivered' AND json_extract(d.delivery_evidence_json, '$.transport')=? AND json_extract(d.delivery_evidence_json, '$.messageId')=? ORDER BY d.delivered_at DESC LIMIT 1`)
+      .get(conversationId, event.conversation.transport, externalId) as { turnId: string | null } | undefined;
+    return delivery?.turnId ?? undefined;
   }
 
   private insertTurn(turn: Turn): void {

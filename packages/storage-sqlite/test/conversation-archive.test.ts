@@ -37,6 +37,16 @@ test("thread starter seed is inserted once before the triggering Turn", async ()
   } finally { store.close(); }
 });
 
+test("resolves Discord replies to a canonical Turn, including replies to bot deliveries", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  try {
+    const first = await store.ingestInputEvent({ event: { ...event("discord:one"), content: [{ type: "text", text: "原始問題" }] }, actorPrincipalId: "member", newConversationId: "c", newTurnId: "t1", newRunId: "r1", createdAt: "2026-09-09T00:00:00.000Z" });
+    const second = await store.ingestInputEvent({ event: { ...event("discord:two"), replyToExternalId: "one", content: [{ type: "text", text: "這則呢" }] }, actorPrincipalId: "member", newConversationId: "unused", newTurnId: "t2", newRunId: "r2", createdAt: "2026-09-09T00:01:00.000Z" });
+    assert.equal(second.turn.replyToTurnId, first.turn.id);
+    assert.deepEqual(await store.getHistoryItem(first.turn.id), { turn: first.turn });
+  } finally { store.close(); }
+});
+
 test("session model and queue preferences survive conversation archive", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   try {
