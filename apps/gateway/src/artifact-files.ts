@@ -9,6 +9,18 @@ export interface IncomingAttachment { readonly url: string; readonly filename: s
 export class ArtifactFileService {
   constructor(private readonly root: string, private readonly store: ArtifactStore, private readonly maxBytes = 25 * 1024 * 1024, private readonly now = () => new Date().toISOString()) {}
 
+  async read(input: { readonly artifactId: string; readonly principalId: PrincipalId }): Promise<{ readonly bytes: Uint8Array; readonly filename?: string; readonly mediaType: string } | undefined> {
+    const artifact = await this.store.getArtifact(input.artifactId);
+    if (!artifact || !this.store.canAccessArtifact(artifact, input.principalId, artifact.visibility)) return undefined;
+    try {
+      const bytes = new Uint8Array(await readFile(artifact.location));
+      return { bytes, ...(artifact.filename ? { filename: artifact.filename } : {}), mediaType: artifact.mediaType };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
   async importDiscord(attachment: IncomingAttachment, ownerPrincipalId: PrincipalId, sourceMessageId: string): Promise<Artifact> {
     const url = new URL(attachment.url);
     if (url.protocol !== "https:" || !["cdn.discordapp.com", "media.discordapp.net"].includes(url.hostname)) throw new Error("untrusted Discord attachment URL");

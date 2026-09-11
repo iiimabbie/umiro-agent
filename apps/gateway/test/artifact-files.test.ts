@@ -19,6 +19,36 @@ test("Artifact service stores plugin-produced bytes with durable metadata", asyn
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Artifact service reads accessible bytes without revealing missing or inaccessible records", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-artifact-read-"));
+  const location = join(root, "stored.txt");
+  await writeFile(location, "attachment contents");
+  const rows = new Map<string, Artifact>();
+  const artifact: Artifact = { id: "stored", ownerPrincipalId: "owner", visibility: "shared", mediaType: "text/plain", filename: "stored.txt", size: 19, sha256: "a".repeat(64), location, state: "stored", createdAt: "now", updatedAt: "now" };
+  rows.set(artifact.id, artifact);
+  const service = new ArtifactFileService(root, {
+    async createArtifact({ artifact: created }) { rows.set(created.id, created); },
+    async getArtifact(id) { return rows.get(id); },
+    async listArtifacts() { return [...rows.values()]; },
+    async updateArtifactState() {}, async deleteArtifact() {},
+    canAccessArtifact(candidate, principalId, visibility) { return candidate.state !== "deleted" && visibility === candidate.visibility && (candidate.visibility !== "private" || candidate.ownerPrincipalId === principalId); },
+  });
+  try {
+    const accessible = await service.read({ artifactId: "stored", principalId: "member" });
+    assert.equal(new TextDecoder().decode(accessible?.bytes), "attachment contents");
+    assert.deepEqual(accessible && { ...accessible, bytes: [...accessible.bytes] }, { bytes: [...new TextEncoder().encode("attachment contents")], filename: "stored.txt", mediaType: "text/plain" });
+
+    rows.set("private", { ...artifact, id: "private", visibility: "private" });
+    rows.set("deleted", { ...artifact, id: "deleted", state: "deleted" });
+    rows.set("lost", { ...artifact, id: "lost", location: join(root, "missing.txt") });
+    assert.equal(await service.read({ artifactId: "private", principalId: "member" }), undefined);
+    assert.equal(await service.read({ artifactId: "deleted", principalId: "owner" }), undefined);
+    assert.equal(await service.read({ artifactId: "missing", principalId: "owner" }), undefined);
+    assert.equal(await service.read({ artifactId: "lost", principalId: "owner" }), undefined);
+    assert.equal(new TextDecoder().decode((await service.read({ artifactId: "private", principalId: "owner" }))?.bytes), "attachment contents");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("Artifact service backfills durable text for artifacts created by older releases", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-artifact-backfill-"));
   const location = join(root, "legacy.txt");
