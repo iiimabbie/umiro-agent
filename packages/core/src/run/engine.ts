@@ -936,7 +936,7 @@ export class HeadlessRunEngine {
           id: this.createId("delivery"),
           runId,
           destination: deliveryDestination,
-          payload: { text: `這次處理${cancelled ? "已取消" : "失敗"}（${category}）。Run：${runId}` },
+          payload: { text: cancelled ? "這次處理已取消。" : "這次處理失敗，請稍後再試。" },
           state: "pending",
           createdAt: this.now(),
         },

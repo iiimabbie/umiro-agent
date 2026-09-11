@@ -42,6 +42,13 @@ export function parseButtonCustomId(value: string): { buttonSetId: string; butto
   return match ? { buttonSetId: match[1]!, buttonId: match[2]! } : undefined;
 }
 
+function commandReplyContent(name: string, result: Record<string, unknown>): string {
+  if (name === "model" && typeof result.model === "string") return `已切換模型：${result.model}`;
+  if (name === "queue" && typeof result.queueMode === "string") return `訊息模式已設定為：${result.queueMode}`;
+  if (name === "archive") return result.archived === true ? "這個對話已封存。" : "目前沒有可封存的對話。";
+  return "指令已完成。";
+}
+
 export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginService {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
@@ -304,8 +311,8 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     try {
       const input = Object.fromEntries(interaction.options.data.flatMap(option => option.value === undefined ? [] : [[option.name, option.value]])) as Record<string, string | number | boolean>;
       const result = await this.commandHandler(interaction.commandName, input, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
-      await interaction.editReply({ content: JSON.stringify(result).slice(0, 1900) });
-    } catch (error) { await interaction.editReply({ content: `Command failed: ${error instanceof Error ? error.message : String(error)}` }); }
+      await interaction.editReply({ content: commandReplyContent(interaction.commandName, result) });
+    } catch { await interaction.editReply({ content: "指令執行失敗，請稍後再試。" }); }
   }
 
   private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {

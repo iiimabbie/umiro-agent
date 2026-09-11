@@ -373,7 +373,8 @@ test("fails a Run when the model exceeds input or output token ceilings", async 
         assert.equal((await store.listModelCalls("run-1")).length, 1);
         const failures = await store.listPendingDeliveries();
         assert.equal(failures.length, 1);
-        assert.match(String(failures[0]?.payload.text), /token budget exceeded/);
+        assert.equal(failures[0]?.payload.text, "這次處理失敗，請稍後再試。");
+        assert.doesNotMatch(String(failures[0]?.payload.text), /run-1|token budget exceeded/);
       } finally { store.close(); }
     });
   }
