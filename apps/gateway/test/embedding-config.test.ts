@@ -25,6 +25,12 @@ test("an explicitly configured credential must exist", () => {
   );
 });
 
+test("recall tuning is bounded for provider-specific score distributions", () => {
+  assert.ok(createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", recallLimit: 3, minSimilarity: 0.42 }, {}));
+  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", recallLimit: 0 }, {}), /recallLimit/);
+  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", minSimilarity: 1.1 }, {}), /minSimilarity/);
+});
+
 test("OpenAI-compatible embedder calls the configured endpoint", async () => {
   let requestUrl = "";
   let requestInit: RequestInit | undefined;

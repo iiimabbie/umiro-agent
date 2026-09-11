@@ -40,6 +40,8 @@ export const CONFIG_EXPLANATIONS = {
   "embedding.model": { label: "Embedding model", description: "啟用 embedding 時使用的模型 ID，不可寫死為內建模型。", defaultValue: null, risk: "更換模型或維度會觸發 projection 重建。", restartRequired: true },
   "embedding.baseUrl": { label: "Embedding API URL", description: "OpenAI-compatible embedding endpoint 的基底 URL。", defaultValue: null, risk: "內容會傳送到此 endpoint；只能使用信任的服務。", restartRequired: true },
   "embedding.apiKeyEnv": { label: "Embedding credential 變數", description: "secrets.env 中存放 API key 的環境變數名稱；不是 key 本身。", defaultValue: null, risk: "變數不存在時 daemon 會 fail fast。", restartRequired: true },
+  "embedding.recallLimit": { label: "跨對話記憶筆數", description: "每輪自動注入最多幾筆其他 Conversation 的向量搜尋結果。", defaultValue: 5, risk: "調高會佔用更多 context，也可能引入不相關記憶。", restartRequired: true },
+  "embedding.minSimilarity": { label: "跨對話記憶門檻", description: "0–1 的向量相似度下限；不同 provider／model 的分數分佈不同，可依實際 recall 調整。", defaultValue: 0.55, risk: "調低會提高 recall，但可能注入不相關資料；調高可能漏掉應記得的對話。", restartRequired: true },
   "discord.ignoredChannels": { label: "完全忽略頻道", description: "不記錄、不回覆；精確比對 channel/thread ID，優先級最高。", defaultValue: [], risk: "列入後該頻道的訊息完全不進入記憶。", restartRequired: true },
   "discord.ambientChannels": { label: "Ambient 頻道", description: "不需 mention 即觸發；仍必須通過 guild/channel scope。", defaultValue: [], risk: "會提高觸發頻率、模型用量與誤回覆機率。", restartRequired: true },
   "discord.allowedChannels": { label: "允許頻道", description: "所有人（包含 Owner）在伺服器內可使用的 channel/thread ID；空陣列表示不以此項限制。", defaultValue: [], risk: "空陣列不代表拒絕全部；需配合 allowedGuilds 理解範圍。", restartRequired: true },

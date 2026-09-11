@@ -2,8 +2,8 @@ import { GeminiEmbedder, OpenAICompatibleEmbedder, type TextEmbedder } from "./e
 
 export type EmbeddingConfig =
   | { readonly provider: "disabled" }
-  | { readonly provider: "gemini"; readonly model: string; readonly apiKeyEnv?: string }
-  | { readonly provider: "openai-compatible"; readonly model: string; readonly baseUrl: string; readonly apiKeyEnv?: string };
+  | { readonly provider: "gemini"; readonly model: string; readonly apiKeyEnv?: string; readonly recallLimit?: number; readonly minSimilarity?: number }
+  | { readonly provider: "openai-compatible"; readonly model: string; readonly baseUrl: string; readonly apiKeyEnv?: string; readonly recallLimit?: number; readonly minSimilarity?: number };
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} is required`);
@@ -24,6 +24,8 @@ export function createConfiguredEmbedder(raw: unknown, environment: NodeJS.Proce
   const config = raw as Record<string, unknown>;
   const provider = requiredString(config.provider, "embedding.provider");
   if (provider === "disabled") return undefined;
+  if (config.recallLimit !== undefined && (!Number.isSafeInteger(config.recallLimit) || Number(config.recallLimit) < 1 || Number(config.recallLimit) > 20)) throw new TypeError("embedding.recallLimit must be between 1 and 20");
+  if (config.minSimilarity !== undefined && (typeof config.minSimilarity !== "number" || !Number.isFinite(config.minSimilarity) || config.minSimilarity < 0 || config.minSimilarity > 1)) throw new TypeError("embedding.minSimilarity must be between 0 and 1");
   const model = requiredString(config.model, "embedding.model");
   if (provider === "gemini") {
     const apiKeyEnv = config.apiKeyEnv === undefined ? "GOOGLE_API_KEY" : requiredString(config.apiKeyEnv, "embedding.apiKeyEnv");

@@ -104,7 +104,7 @@ if (extractionBackfill.failed > 0) logger.write({ level: "warn", event: "artifac
 const embedder = createConfiguredEmbedder(config.embedding);
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);
-if (embedder) providers.register(new SemanticRecallProvider(store, embedder, () => new Date(), logger));
+if (embedder) providers.register(new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }));
 const scheduler = new DurableScheduler(store);
 const legacyServices = {
   configDirectory: `${paths.config}/plugin-config`,
