@@ -27,3 +27,26 @@ test("memory tools apply caller visibility and atomically maintain MEMORY.md", a
     assert.equal((await tools.get("memory_remove")!.execute({ text: "- lasting fact" }, context)).ok, true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("memory writes report bounded usage and reject oversized content", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-memory-limit-"));
+  try {
+    await writeFile(join(root, "MEMORY.md"), "# MEMORY\n");
+    const plugin = createPlugin({
+      pluginId: "memory", namespace: "memory", config: { workspacePath: root, characterLimit: 40 },
+      permissionCeiling: { capabilities: ["memory.write"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined,
+    });
+    await plugin.start?.();
+    const tool = new Map(plugin.contributions.tools?.map(item => [item.name, item])).get("memory_add")!;
+    const context = { execution: { origin: { kind: "interactive" as const, transport: "test", conversationId: "c" }, actor: { id: "p", kind: "human" as const, roles: ["member" as const] }, authority: { capabilities: ["memory.write"], visibility: { kind: "all" as const }, instructionAuthority: "none" as const } }, operationId: "op", idempotencyKey: "key", signal: new AbortController().signal };
+    const result = await tool.execute({ content: "- short fact" }, context);
+    assert.equal(result.ok, true);
+    const output = result.output as { usage: { chars: number; limit: number; percent: number } };
+    assert.equal(output.usage.limit, 40);
+    assert.equal(output.usage.percent, Math.round(output.usage.chars / 40 * 100));
+    const rejected = await tool.execute({ content: "x".repeat(100) }, context);
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error?.message ?? "", /character limit/);
+    assert.match(rejected.error?.message ?? "", /\[\d+\/40 chars, \d+%\]/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
