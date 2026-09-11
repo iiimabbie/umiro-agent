@@ -56,6 +56,26 @@ test("embedding failures are observable, redacted, and safely degrade to FTS", a
   store.close();
 });
 
+test("a superseded projection job does not abort the embedding worker", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.createConversationWithTurn(
+    { id: "c", revision: 0, state: "active", createdAt: "now", updatedAt: "now" },
+    { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "p", inputEventId: "e", content: [{ type: "text", text: "stale projection" }], createdAt: "now" },
+  );
+  const embedder = {
+    model: "superseded",
+    async embed() {
+      // Rebuilding while the provider call is in flight removes/reseeds the
+      // claimed job, so completion of the old hash must be treated as stale.
+      await store.rebuildSearchProjection();
+      return [1, 0];
+    },
+  };
+  assert.equal(await new EmbeddingWorker(store, embedder).drain(), 0);
+  assert.equal((await store.claimEmbeddingJobs(10, "now", "before"))[0]?.documentKey, "turn:t");
+  store.close();
+});
+
 test("embedding rate limiter spaces provider calls and prioritizes foreground recall", async () => {
   let now = 0; let timerId = 0;
   const timers = new Map<number, { at: number; callback: () => void }>();

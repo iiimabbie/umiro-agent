@@ -1,5 +1,6 @@
 import type { ConversationSearch, EmbeddingProjection, SearchHit } from "@umiro/core/search";
 import type { VisibilityScope } from "@umiro/core/authorization";
+import { ExecutionStoreConflictError } from "@umiro/core/ports";
 import { NOOP_LOGGER, type StructuredLogger } from "@umiro/core/observability";
 import { createHash } from "node:crypto";
 
@@ -207,7 +208,14 @@ export class EmbeddingWorker {
   private async fail(job: { readonly documentKey: string; readonly contentHash: string; readonly attempts: number }, error: unknown): Promise<void> {
     const delay = Math.min(3_600_000, 15_000 * 2 ** Math.max(0, job.attempts - 1));
     report(this.logger, { level: "warn", event: "embedding.job.failed", message: "Embedding job failed and will be retried", occurredAt: new Date().toISOString(), data: { model: this.embedder.model, documentKey: job.documentKey, attempts: job.attempts, retryDelayMs: delay, errorName: errorName(error) } });
-    await this.store.failEmbeddingJob(job.documentKey, job.contentHash, `Embedding request failed (${errorName(error)})`, new Date(Date.now() + delay).toISOString(), new Date().toISOString());
+    try {
+      await this.store.failEmbeddingJob(job.documentKey, job.contentHash, `Embedding request failed (${errorName(error)})`, new Date(Date.now() + delay).toISOString(), new Date().toISOString());
+    } catch (failure) {
+      // A newer projection may have replaced this job while the provider call
+      // was in flight. Its fresh pending job owns the document now; the stale
+      // worker must not abort the whole background cycle trying to update it.
+      if (!(failure instanceof ExecutionStoreConflictError)) throw failure;
+    }
   }
 }
 
