@@ -683,7 +683,9 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   async getHistoryItem(turnId: string): Promise<ConversationHistoryItem | undefined> {
     const row = this.database.prepare("SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id WHERE t.id=?")
       .get(turnId) as (TurnRow & { assistant_text: string | null }) | undefined;
-    return row ? { turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}) } : undefined;
+    if (!row) return undefined;
+    const toolEvidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
+    return { turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}), ...(toolEvidence ? { toolEvidence } : {}) };
   }
 
   async listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]> {
@@ -697,7 +699,10 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("history limit must be between 1 and 100");
     const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id
       WHERE t.conversation_id = ? AND t.sequence < ? ORDER BY t.sequence DESC LIMIT ?`).all(conversationId, beforeSequence, limit) as Array<TurnRow & { assistant_text: string | null }>;
-    return rows.reverse().map(row => ({ turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}) }));
+    return rows.reverse().map(row => {
+      const toolEvidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
+      return { turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}), ...(toolEvidence ? { toolEvidence } : {}) };
+    });
   }
 
   async refreshConversationCompaction(request: { readonly conversationId: string; readonly beforeSequence: number; readonly retainRecent: number; readonly maxCharacters: number; readonly updatedAt: string }): Promise<ConversationCompaction | undefined> {

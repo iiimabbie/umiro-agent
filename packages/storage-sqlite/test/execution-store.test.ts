@@ -435,6 +435,8 @@ test("tool call and result evidence is searchable, rebuildable, bounded, and red
     assert.match(liveHit?.text ?? "", /Tool: test\.echo[\s\S]*Outcome: succeeded/);
     assert.doesNotMatch(liveHit?.text ?? "", new RegExp(secret));
     assert.ok((liveHit?.text.length ?? Infinity) < 15_000);
+    assert.match((await database.store.getHistoryItem("turn-1"))?.toolEvidence ?? "", /sunny evidence/);
+    assert.doesNotMatch((await database.store.getHistoryItem("turn-1"))?.toolEvidence ?? "", new RegExp(secret));
 
     await database.store.completeRunWithOutput({
       output: { id: "output-tool-search", runId: "run-1", text: "工具查詢完成", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, createdAt: at },

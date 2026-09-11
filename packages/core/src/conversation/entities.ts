@@ -46,6 +46,8 @@ export interface Turn {
 export interface ConversationHistoryItem {
   readonly turn: Turn;
   readonly assistantText?: string;
+  /** Bounded, redacted evidence from tools used by this Turn's Run. */
+  readonly toolEvidence?: string;
 }
 
 /** A rebuildable, lossy projection of canonical conversation turns that fell

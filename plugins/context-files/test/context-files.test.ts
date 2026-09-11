@@ -21,10 +21,11 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.equal((await add.execute({ content: "稱呼：主人" }, {} as never) as { ok: boolean }).ok, true);
   assert.match(await (await import("node:fs/promises")).readFile(join(root, "OWNER.md"), "utf8"), /稱呼：主人/);
   assert.equal((await replace.execute({ oldText: "稱呼：主人", newText: "稱呼：Owner" }, {} as never) as { ok: boolean }).ok, true);
-  const history = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, conversationCompaction: { conversationId: "c", throughSequence: 3, sourceHash: "abc", summary: "先前談過授權邊界", updatedAt: "now" }, recentHistory: [{ turn: { id: "t", conversationId: "c", sequence: 4, actorPrincipalId: "user", inputEventId: "e", content: [{ type: "text", text: "我叫小明" }], createdAt: "now" }, assistantText: "記住了" }] });
+  const history = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, conversationCompaction: { conversationId: "c", throughSequence: 3, sourceHash: "abc", summary: "先前談過授權邊界", updatedAt: "now" }, recentHistory: [{ turn: { id: "t", conversationId: "c", sequence: 4, actorPrincipalId: "user", inputEventId: "e", content: [{ type: "text", text: "我叫小明" }], createdAt: "now" }, assistantText: "記住了", toolEvidence: "Tool: discord_fetch_message\nResult: fetched message" }] });
   assert.deepEqual(history.map(block => block.id), ["context.conversation_history:compacted", "context.conversation_history:recent"]);
   assert.match(history[0]?.content ?? "", /先前談過授權邊界/);
   assert.match(history[1]?.content ?? "", /我叫小明[\s\S]*記住了/);
+  assert.match(history[1]?.content ?? "", /tool-evidence trust="untrusted-data"[\s\S]*fetched message/);
   const reply = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, replyTarget: { turn: { id: "reply-turn", conversationId: "c", sequence: 1, actorPrincipalId: "user", inputEventId: "e-reply", content: [{ type: "text", text: "被回覆的內容" }], createdAt: "now" }, assistantText: "原本的回答" } });
   assert.match(reply[0]?.content ?? "", /discord-reply-target[\s\S]*被回覆的內容[\s\S]*原本的回答/);
   const fetchedReply = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, inputEvent: { metadata: { replyToMessageId: "discord-message-1", replyAuthorId: "member-1", replyToContent: "尚未入庫的被回覆訊息" } } as never });
