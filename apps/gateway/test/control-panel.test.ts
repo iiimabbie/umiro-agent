@@ -45,6 +45,12 @@ test("localhost control panel authenticates config and fixed workspace file oper
   }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
   try {
+    const html = await (await fetch(`${endpoint}/`)).text();
+    assert.match(html, /<script src="app\.js"><\/script>/);
+    assert.doesNotMatch(html, /src="\/app\.js"/);
+    const script = await (await fetch(`${endpoint}/app.js`)).text();
+    assert.match(script, /new URL\('\.',location\.href\)/);
+    assert.ok(script.includes("replace(/^\\/+/,''"));
     assert.equal((await fetch(`${endpoint}/api/config`)).status, 401);
     const schema = await (await fetch(`${endpoint}/api/schema`, { headers })).json(); assert.deepEqual(schema, CONFIG_EXPLANATIONS);
     assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: true, LLM_API_KEY: false });
