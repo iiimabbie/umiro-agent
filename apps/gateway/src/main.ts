@@ -336,7 +336,13 @@ const handleCommand = async (name: string, input: Record<string, string | number
 };
 discord.onCommand([...host.listCommands(), ...builtinCommands], (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => activeWork.track(handleCommand(name, input, commandContext)));
 discord.onAutocomplete(async (name: string, option: string, value: string, context: DiscordInteractionContext) => {
-  if (name !== "model" || option !== "name" || context.userId !== ownerDiscordId) return [];
+  const pluginCommand = host.listCommands().find(command => command.name === name);
+  if (name !== "model") {
+    if (!pluginCommand || (pluginCommand.ownerOnly !== false && context.userId !== ownerDiscordId)) return [];
+    try { return await host.autocompleteCommand(name, option, value, context); }
+    catch (error) { logger.write({ level: "debug", event: "plugin.command.autocomplete_failed", message: "Plugin command autocomplete failed", occurredAt: new Date().toISOString(), data: { command: name, errorType: error instanceof Error ? error.name : "unknown" } }); return []; }
+  }
+  if (option !== "name" || context.userId !== ownerDiscordId) return [];
   try {
     const needle = value.trim().toLowerCase();
     return (await modelCatalog.listConversationModels()).filter(model => model.toLowerCase().includes(needle)).slice(0, 25).map(model => ({ name: model.slice(0, 100), value: model }));

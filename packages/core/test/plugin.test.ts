@@ -27,6 +27,18 @@ test("one plugin entry composes hooks, jobs and commands and removes them on dis
   assert.deepEqual(host.listCommands(), []);
 });
 
+test("plugin command autocomplete is validated and dispatched through the host", async () => {
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  const manifest = { schemaVersion: 0 as const, id: "complete", version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: "complete", permissions: authority, contributes: { commands: ["complete"] } };
+  await host.enable({ manifest, create: () => ({ contributions: { commands: [{ name: "complete", description: "Complete", options: [{ name: "name", description: "Name", type: "string", autocomplete: true }], async autocomplete(option, value, context) { assert.equal(option, "name"); return [{ name: `${value}-${context?.userId}`, value: `${value}-id` }]; }, async execute() { return {}; } }] } }) });
+  assert.deepEqual(await host.autocompleteCommand("complete", "name", "abc", { userId: "owner" }), [{ name: "abc-owner", value: "abc-id" }]);
+  await host.disable("complete");
+  assert.deepEqual(await host.autocompleteCommand("complete", "name", "abc"), []);
+
+  const invalid = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  await assert.rejects(invalid.enable({ manifest, create: () => ({ contributions: { commands: [{ name: "complete", description: "Complete", options: [{ name: "name", description: "Name", type: "string", autocomplete: true }], async execute() { return {}; } }] } }) }), /without a handler/);
+});
+
 test("skill contributions are manifest-bound and cannot reference missing tools", async () => {
   const module: PluginModule = {
     manifest: { schemaVersion: 0, id: "skill-plugin", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "skill-plugin", permissions: authority, contributes: { skills: ["skill-plugin.workflow"] } },

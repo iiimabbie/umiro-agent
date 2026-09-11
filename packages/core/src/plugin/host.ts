@@ -254,6 +254,7 @@ export class PluginHost {
   runJob(id: string, signal?: AbortSignal) { return this.jobs.run(id, signal); }
   listCommands() { return this.commands.list(); }
   executeCommand(name: string, input: import("../ports/json.js").JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) { return this.commands.execute(name, input, context); }
+  autocompleteCommand(name: string, option: string, value: string, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) { return this.commands.complete(name, option, value, context); }
   listSkills() { return this.skills.list(); }
   getSkill(id: string) { return this.skills.get(id); }
   listSubagentProfiles() { return this.subagentProfiles.list(); }

@@ -17,7 +17,19 @@ export class PluginJobRegistry extends ContributionRegistry<PluginJobDefinition>
 
 export class PluginCommandRegistry extends ContributionRegistry<PluginCommandDefinition> {
   constructor() { super(value => value.name, "command"); }
+  override register(pluginId: string, command: PluginCommandDefinition): void {
+    const autocomplete = command.options?.filter(option => option.autocomplete) ?? [];
+    if (autocomplete.some(option => option.type !== "string" || option.choices?.length)) throw new TypeError(`plugin command ${command.name} autocomplete requires a string option without static choices`);
+    if (autocomplete.length > 0 && !command.autocomplete) throw new TypeError(`plugin command ${command.name} declares autocomplete without a handler`);
+    super.register(pluginId, command);
+  }
   async execute(name: string, input: JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }): Promise<JsonObject> { const command = this.get(name); if (!command) throw new Error(`plugin command not found: ${name}`); return command.execute(input, context); }
+  async complete(name: string, option: string, value: string, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }): Promise<readonly { readonly name: string; readonly value: string }[]> {
+    const command = this.get(name); if (!command?.autocomplete) return [];
+    const choices = await command.autocomplete(option, value, context);
+    if (choices.length > 25 || choices.some(choice => !choice.name.trim() || choice.name.length > 100 || !choice.value.trim() || choice.value.length > 100)) throw new TypeError(`plugin command ${name} returned invalid autocomplete choices`);
+    return choices;
+  }
 }
 
 export class SkillRegistry extends ContributionRegistry<SkillDefinition> {
