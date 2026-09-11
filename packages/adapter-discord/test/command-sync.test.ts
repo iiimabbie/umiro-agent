@@ -11,7 +11,7 @@ function recorder(scope: string, calls: { scope: string; commands: readonly Appl
   };
 }
 
-test("command sync bulk-overwrites global and every current guild scope", async () => {
+test("command sync publishes to guilds and clears global commands", async () => {
   const calls: { scope: string; commands: readonly ApplicationCommandDataResolvable[] }[] = [];
   const commands = applicationCommandData([
     { name: "models", description: "Select a model", options: [{ name: "name", description: "Model name", type: "string", required: true }] },
@@ -21,7 +21,9 @@ test("command sync bulk-overwrites global and every current guild scope", async 
   await syncApplicationCommands(recorder("global", calls), [recorder("guild-a", calls), recorder("guild-b", calls)], commands);
 
   assert.deepEqual(calls.map(call => call.scope).sort(), ["global", "guild-a", "guild-b"]);
-  for (const call of calls) assert.deepEqual(call.commands, commands);
+  assert.deepEqual(calls.find(call => call.scope === "global")?.commands, []);
+  assert.deepEqual(calls.find(call => call.scope === "guild-a")?.commands, commands);
+  assert.deepEqual(calls.find(call => call.scope === "guild-b")?.commands, commands);
 });
 
 test("empty command manifest clears stale commands in every scope", async () => {

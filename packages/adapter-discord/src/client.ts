@@ -1,9 +1,9 @@
-import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 
-type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
+type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; autocomplete?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
 type DiscordCommandManager = { set(commands: readonly ApplicationCommandDataResolvable[]): Promise<unknown> };
 
 export function applicationCommandData(commands: readonly DiscordCommandDefinition[]): readonly ApplicationCommandDataResolvable[] {
@@ -11,14 +11,14 @@ export function applicationCommandData(commands: readonly DiscordCommandDefiniti
   return commands.map(command => ({
     name: command.name,
     description: command.description,
-    options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [],
+    options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.autocomplete ? { autocomplete: true } : {}), ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [],
   })) as ApplicationCommandDataResolvable[];
 }
 
-/** Bulk overwrite both scopes so commands left behind by an older release cannot
- * remain visible in a guild after this adapter becomes authoritative. */
+/** Use guild commands for immediate availability; clear global commands so the
+ * same command is never exposed in both scopes. */
 export async function syncApplicationCommands(application: DiscordCommandManager, guilds: readonly DiscordCommandManager[], commands: readonly ApplicationCommandDataResolvable[]): Promise<void> {
-  await application.set(commands);
+  await application.set([]);
   await Promise.all(guilds.map(guild => guild.set(commands)));
 }
 
@@ -49,6 +49,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private steerHandler?: (message: DiscordMessageEnvelope) => Promise<boolean>;
   private commands: readonly DiscordCommandDefinition[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
+  private autocompleteHandler?: (name: string, option: string, value: string, context: DiscordInteractionContext) => Promise<readonly { readonly name: string; readonly value: string }[]>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
   private buttonHandler?: (interaction: DiscordButtonInteraction) => Promise<{ readonly content: string }>;
   private errorHandler?: DiscordAdapterErrorHandler;
@@ -61,6 +62,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
    * event was durably accepted by the active Run. */
   onSteer(handler: (message: DiscordMessageEnvelope) => Promise<boolean>): void { this.steerHandler = handler; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
+  onAutocomplete(handler: NonNullable<typeof this.autocompleteHandler>): void { this.autocompleteHandler = handler; }
   onApproval(handler: NonNullable<typeof this.approvalHandler>): void { this.approvalHandler = handler; }
   onButton(handler: NonNullable<typeof this.buttonHandler>): void { this.buttonHandler = handler; }
   onError(handler: DiscordAdapterErrorHandler): void { this.errorHandler = handler; }
@@ -68,7 +70,8 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   async start(token: string, presence?: DiscordPresenceConfig): Promise<void> {
     this.client.on("messageCreate", message => this.enqueueMessage(message));
     this.client.on("interactionCreate", interaction => {
-      if (interaction.isChatInputCommand()) void this.handleCommand(interaction).catch(error => this.reportError(error, { event: "command", channelId: interaction.channelId }));
+      if (interaction.isAutocomplete()) void this.handleAutocomplete(interaction).catch(error => this.reportError(error, { event: "command", channelId: interaction.channelId }));
+      else if (interaction.isChatInputCommand()) void this.handleCommand(interaction).catch(error => this.reportError(error, { event: "command", channelId: interaction.channelId }));
       else if (interaction.isButton()) {
         const event = parseApprovalCustomId(interaction.customId) ? "approval" : "button";
         void this.handleButton(interaction).catch(error => this.reportError(error, { event, channelId: interaction.channelId }));
@@ -304,6 +307,13 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       const result = await this.commandHandler(interaction.commandName, input, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
       await interaction.editReply({ content: JSON.stringify(result).slice(0, 1900) });
     } catch (error) { await interaction.editReply({ content: `Command failed: ${error instanceof Error ? error.message : String(error)}` }); }
+  }
+
+  private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+    if (!this.autocompleteHandler) return;
+    const option = interaction.options.getFocused(true);
+    const choices = await this.autocompleteHandler(interaction.commandName, option.name, String(option.value), { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
+    await interaction.respond(choices.slice(0, 25));
   }
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
