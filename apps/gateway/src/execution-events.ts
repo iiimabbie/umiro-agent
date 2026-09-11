@@ -8,7 +8,9 @@ export type CoreExecutionEventName =
   | "step.started"
   | "step.completed"
   | "tool.started"
-  | "tool.completed";
+  | "tool.completed"
+  | "delivery.completed"
+  | "delivery.failed";
 
 export interface CoreExecutionEventSink {
   emit(event: CoreExecutionEventName, payload: JsonObject): Promise<void>;
@@ -91,6 +93,20 @@ export function observeExecutionStore<T extends ExecutionStore>(
       };
     } catch { return { operationId }; }
   };
+  const deliveryPayload = async (deliveryId: string): Promise<JsonObject> => {
+    try {
+      const delivery = await target.getDeliveryIntent(deliveryId);
+      if (!delivery) return { deliveryId };
+      return {
+        deliveryId: delivery.id,
+        runId: delivery.runId,
+        destination: structuredClone(delivery.destination),
+        state: delivery.state,
+        ...(delivery.attempts !== undefined ? { attempts: delivery.attempts } : {}),
+        ...(delivery.nextAttemptAt ? { nextAttemptAt: delivery.nextAttemptAt } : {}),
+      };
+    } catch { return { deliveryId }; }
+  };
 
   return new Proxy(target, {
     get(object, property, receiver) {
@@ -124,6 +140,14 @@ export function observeExecutionStore<T extends ExecutionStore>(
       if (property === "recordOperationOutcome") return async (operationId: string, result: OperationResult, updatedAt: string): Promise<void> => {
         await object.recordOperationOutcome(operationId, result, updatedAt);
         await publish("tool.completed", { ...(await operationPayload(operationId)), state: result.outcome, effectStatus: result.effectStatus });
+      };
+      if (property === "markDeliveryDelivered") return async (deliveryId: string, deliveredAt: string, evidence?: JsonObject): Promise<void> => {
+        await object.markDeliveryDelivered(deliveryId, deliveredAt, evidence);
+        await publish("delivery.completed", await deliveryPayload(deliveryId));
+      };
+      if (property === "markDeliveryFailed") return async (deliveryId: string, error: string, nextAttemptAt: string, occurredAt: string): Promise<void> => {
+        await object.markDeliveryFailed(deliveryId, error, nextAttemptAt, occurredAt);
+        await publish("delivery.failed", { ...(await deliveryPayload(deliveryId)), willRetry: true });
       };
       const value = Reflect.get(object, property, receiver) as unknown;
       return typeof value === "function" ? value.bind(object) : value;

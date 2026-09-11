@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ExecutionStore, JsonObject, ModelCallRecord, Operation, OperationResult, RunCheckpoint, Step } from "@umiro/core";
+import type { DeliveryIntent, ExecutionStore, JsonObject, ModelCallRecord, Operation, OperationResult, RunCheckpoint, Step } from "@umiro/core";
 import { observeExecutionStore } from "../src/execution-events.js";
 
 test("durable execution transitions publish bounded versioned Plugin events", async () => {
@@ -69,4 +69,38 @@ test("Plugin event sink failure cannot roll back a committed transition", async 
   await store.updateExecutionProgress({ runId: "run-2", expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: "now" });
   assert.equal(committed, true);
   assert.equal(progressCommitted, true);
+});
+
+test("delivery outcomes publish routing without payload, evidence, or errors", async () => {
+  const deliveries = new Map<string, DeliveryIntent>([
+    ["delivery-ok", { id: "delivery-ok", runId: "run-ok", destination: { kind: "discord", channelId: "channel-ok" }, payload: { text: "must-not-leak" }, state: "pending" as const, createdAt: "before" }],
+    ["delivery-retry", { id: "delivery-retry", runId: "run-retry", destination: { kind: "discord", channelId: "channel-retry" }, payload: { text: "also-secret" }, state: "pending" as const, createdAt: "before", attempts: 0 }],
+  ]);
+  const target = {
+    async getDeliveryIntent(id: string) { return deliveries.get(id); },
+    async markDeliveryDelivered(id: string, deliveredAt: string) {
+      const delivery = deliveries.get(id)!;
+      deliveries.set(id, { ...delivery, state: "delivered", deliveredAt });
+    },
+    async markDeliveryFailed(id: string, _error: string, nextAttemptAt: string) {
+      const delivery = deliveries.get(id)!;
+      deliveries.set(id, { ...delivery, attempts: (delivery.attempts ?? 0) + 1, nextAttemptAt });
+    },
+  } as unknown as ExecutionStore;
+  const events: Array<{ event: string; payload: JsonObject }> = [];
+  const store = observeExecutionStore(target, { async emit(event, payload) { events.push({ event, payload }); } }, { now: () => "2026-09-10T00:00:00.000Z", createEventId: () => "event-delivery" });
+
+  await store.markDeliveryDelivered("delivery-ok", "delivered-at", { messageId: "must-not-leak" });
+  await store.markDeliveryFailed("delivery-retry", "must-not-leak", "retry-at", "failed-at");
+
+  assert.deepEqual(events.map(item => item.event), ["delivery.completed", "delivery.failed"]);
+  assert.deepEqual(events[0]?.payload, {
+    schemaVersion: 1, eventId: "event-delivery", occurredAt: "2026-09-10T00:00:00.000Z", producer: "core.execution-store",
+    deliveryId: "delivery-ok", runId: "run-ok", destination: { kind: "discord", channelId: "channel-ok" }, state: "delivered",
+  });
+  assert.deepEqual(events[1]?.payload, {
+    schemaVersion: 1, eventId: "event-delivery", occurredAt: "2026-09-10T00:00:00.000Z", producer: "core.execution-store",
+    deliveryId: "delivery-retry", runId: "run-retry", destination: { kind: "discord", channelId: "channel-retry" }, state: "pending", attempts: 1, nextAttemptAt: "retry-at", willRetry: true,
+  });
+  assert.doesNotMatch(JSON.stringify(events), /must-not-leak|also-secret/);
 });
