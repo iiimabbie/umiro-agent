@@ -917,6 +917,13 @@ export class HeadlessRunEngine {
       if (caught instanceof ExecutionStoreConflictError) throw caught;
       const message = caught instanceof Error ? caught.message : String(caught);
       const cancelled = request.signal?.aborted === true;
+      const category = message.includes("model turn limit exceeded")
+        ? "model turn limit reached"
+        : message.includes("tool call budget exceeded")
+          ? "tool call limit reached"
+          : message.includes("token budget exceeded")
+            ? "token budget exceeded"
+            : cancelled ? "run cancelled" : "processing error";
       await this.store.updateExecutionProgress({
         runId,
         expectedRunRevision: runRevision,
@@ -925,6 +932,14 @@ export class HeadlessRunEngine {
         resumeEligibility: "ineligible",
         runUpdatedAt: this.now(),
         clearCheckpoint: true,
+        terminalDelivery: {
+          id: this.createId("delivery"),
+          runId,
+          destination: deliveryDestination,
+          payload: { text: `這次處理${cancelled ? "已取消" : "失敗"}（${category}）。Run：${runId}` },
+          state: "pending",
+          createdAt: this.now(),
+        },
       });
       return { status: cancelled ? "cancelled" : "failed", runId, error: message };
     } finally {

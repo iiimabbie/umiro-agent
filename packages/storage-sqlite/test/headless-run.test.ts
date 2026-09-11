@@ -371,6 +371,9 @@ test("fails a Run when the model exceeds input or output token ceilings", async 
         if (scenario.name === "output") assert.equal(requestedOutput, 5);
         assert.equal((await store.getRun("run-1"))?.state, "failed");
         assert.equal((await store.listModelCalls("run-1")).length, 1);
+        const failures = await store.listPendingDeliveries();
+        assert.equal(failures.length, 1);
+        assert.match(String(failures[0]?.payload.text), /token budget exceeded/);
       } finally { store.close(); }
     });
   }

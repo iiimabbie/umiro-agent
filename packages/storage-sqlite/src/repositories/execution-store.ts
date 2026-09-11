@@ -1371,7 +1371,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (delivery.state !== "pending" || delivery.deliveredAt !== undefined) throw new TypeError("new intermediate delivery must be pending");
     this.database.transaction(() => {
       const run = this.database.prepare("SELECT state FROM runs WHERE id=?").get(delivery.runId) as { state: RunState } | undefined;
-      if (!run || (run.state !== "running" && run.state !== "waiting")) throw new ExecutionStoreConflictError(`Run ${delivery.runId} is not active for intermediate delivery`);
+      if (!run || !["running", "waiting", "failed", "cancelled"].includes(run.state)) throw new ExecutionStoreConflictError(`Run ${delivery.runId} cannot accept an intermediate or terminal delivery`);
       this.database.prepare("INSERT INTO delivery_intents(id,run_id,destination_json,payload_json,state,created_at,delivered_at) VALUES (?,?,?,?, 'pending', ?, NULL)").run(delivery.id, delivery.runId, json(delivery.destination), json(delivery.payload), delivery.createdAt);
       this.insertAudit("delivery.created", "delivery", delivery.id, delivery.runId, { state: "pending", intermediate: true }, delivery.createdAt);
     })();
@@ -1609,6 +1609,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
       if (update.checkpoint) this.saveCheckpoint(update.checkpoint);
       if (update.clearCheckpoint) this.database.prepare("DELETE FROM checkpoints WHERE run_id = ?").run(update.runId);
+      if (update.terminalDelivery) {
+        if (update.runState !== "failed" && update.runState !== "cancelled") throw new TypeError("terminal delivery requires a failed or cancelled Run");
+        if (update.terminalDelivery.runId !== update.runId || update.terminalDelivery.state !== "pending" || update.terminalDelivery.deliveredAt !== undefined) throw new TypeError("terminal delivery does not match the Run transition");
+        this.database.prepare("INSERT INTO delivery_intents(id,run_id,destination_json,payload_json,state,created_at,delivered_at) VALUES (?,?,?,?, 'pending', ?, NULL)").run(update.terminalDelivery.id, update.runId, json(update.terminalDelivery.destination), json(update.terminalDelivery.payload), update.terminalDelivery.createdAt);
+        this.insertAudit("delivery.created", "delivery", update.terminalDelivery.id, update.runId, { state: "pending", terminal: true }, update.terminalDelivery.createdAt);
+      }
       if (update.consumedSteeredInputIds?.length) {
         const unique = [...new Set(update.consumedSteeredInputIds)];
         const consume = this.database.prepare("UPDATE run_steered_inputs SET state='consumed', consumed_at=? WHERE id=? AND run_id=? AND state='pending'");

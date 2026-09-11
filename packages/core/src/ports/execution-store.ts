@@ -49,6 +49,9 @@ export interface ExecutionProgressUpdate {
   };
   readonly checkpoint?: RunCheckpoint;
   readonly clearCheckpoint?: boolean;
+  /** For terminal failures/cancellation, persist the user-facing delivery in
+   * the same transaction as the Run transition. */
+  readonly terminalDelivery?: DeliveryIntent;
   /** Pending steered inputs become consumed in the same transaction as the
    * checkpoint that first contains them. */
   readonly consumedSteeredInputIds?: readonly string[];
