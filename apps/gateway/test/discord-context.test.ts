@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { discordOutputPolicyProvider, discordRuntimeContextProvider } from "../src/discord-context.js";
+import { createCurrentTimeContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "../src/discord-context.js";
 
 test("Discord thread context exposes its parent Forum as trusted transport metadata", async () => {
   const blocks = await discordRuntimeContextProvider.load({
@@ -24,4 +24,11 @@ test("Discord output policy defines an explicit no-text response", async () => {
   });
   assert.match(blocks[0]?.content ?? "", /exactly NO_REPLY/);
   assert.equal(blocks[0]?.instructionAuthority, "scoped");
+});
+
+test("current time context is available to every Run with an explicit timezone", async () => {
+  const provider = createCurrentTimeContextProvider(() => new Date("2026-09-12T01:02:03.000Z"), "Asia/Taipei");
+  const blocks = await provider.load({ runId: "scheduled", execution: {} as never, prompt: "today?" });
+  assert.match(blocks[0]?.content ?? "", /2026-09-12T01:02:03\.000Z \(Asia\/Taipei:/);
+  assert.equal(blocks[0]?.retention, "essential");
 });

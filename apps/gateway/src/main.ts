@@ -24,7 +24,7 @@ import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
-import { discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
+import { createCurrentTimeContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 
 const paths = umiroPaths();
@@ -64,6 +64,7 @@ const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hoste
 const { ownerAuthority, memberAuthority } = resolveRuntimeAuthorities(config.authority, granted, [...(discordPolicy.allowedChannels ?? []), ...(discordPolicy.ambientChannels ?? [])]);
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
+providers.register(createCurrentTimeContextProvider());
 providers.register(discordRuntimeContextProvider);
 providers.register(discordOutputPolicyProvider);
 const logger = new JsonLineLogger();
@@ -328,7 +329,7 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   if (trigger.jobRef.startsWith("plugin:")) { await host.runJob(trigger.jobRef.slice("plugin:".length), signal); return; }
   if (trigger.jobRef !== "agent.prompt" || typeof trigger.input.prompt !== "string") throw new Error(`unsupported scheduled job: ${trigger.jobRef}`);
   const execution = { origin: { kind: "schedule" as const, scheduleId: trigger.id }, actor: { id: trigger.creatorPrincipalId, kind: trigger.creatorRoles.includes("system") ? "system" as const : "human" as const, roles: trigger.creatorRoles }, authority: intersectAuthority(trigger.authority, ownerAuthority) };
-  const prompt = `[Authoritative current time: ${new Date().toISOString()}]\n[Scheduled task: ${trigger.name}; originally due ${occurrence.scheduledFor}]\n\n${trigger.input.prompt}`;
+  const prompt = `[Scheduled task: ${trigger.name}; originally due ${occurrence.scheduledFor}]\n\n${trigger.input.prompt}`;
   const assembledContext = await contextEngine.assemble({ runId: occurrence.runId, execution, prompt, maxCharacters: 100_000, maxTokens: contextMaxTokens, ...(signal ? { signal } : {}) });
   const result = await engine.run({ runId: occurrence.runId, context: execution, model: typeof trigger.input.model === "string" ? trigger.input.model : config.model, prompt, assembledContext, ...(trigger.destination ? { deliveryDestination: trigger.destination } : {}), ...(signal ? { signal } : {}) });
   if (result.status !== "succeeded") throw new Error(`scheduled Run ${result.runId} ended ${result.status}`);
@@ -423,13 +424,14 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const controller = new AbortController();
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
-  const userContent = await artifactModelContent(message.content, importedArtifacts, profile.capabilities.includes("vision"));
+  const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}`;
+  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"));
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
   if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasConversation(event))) {
     try {
       const starter = await discord.fetchThreadStarter({ threadId: message.threadId, signal: controller.signal });
       if (starter && starter.messageId !== message.messageId) {
-        const starterIdentity = await identities.resolve({ transport: "discord", externalId: starter.authorId, principalId: null });
+        const starterIdentity = await identities.resolve({ transport: "discord", externalId: starter.authorId, principalId: null, displayName: starter.authorName });
         initialTurns.push({
           id: `turn:discord-starter:${starter.messageId}`,
           actorPrincipalId: starterIdentity.principal.id,
@@ -463,7 +465,7 @@ discord.onSteer(async message => {
     const artifactIds: string[] = [];
     for (const attachment of message.attachments ?? []) { const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId); imported.push(artifact); artifactIds.push(artifact.id); }
     const event = toInputEvent(message, artifactIds);
-    const modelContent = await artifactModelContent(`[Discord user ${message.authorName ?? message.authorId} (${message.authorId}) added:]\n${message.content}`, imported, profile.capabilities.includes("vision"));
+    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}`, imported, profile.capabilities.includes("vision"));
     await ingress.steer({ event, runId: activeSession.runId, userContent: modelContent });
   });
   if (!accepted) return false;

@@ -45,7 +45,9 @@ export interface Turn {
 
 export interface ConversationHistoryItem {
   readonly turn: Turn;
+  readonly actorDisplayName?: string;
   readonly assistantText?: string;
+  readonly assistantCreatedAt?: string;
   /** Bounded, redacted evidence from tools used by this Turn's Run. */
   readonly toolEvidence?: string;
 }

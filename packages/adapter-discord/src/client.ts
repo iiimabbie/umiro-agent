@@ -1,5 +1,5 @@
 import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, ComponentType, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
-import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
+import { normalizeDiscordMentions, type DiscordMessageEnvelope, type DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 
@@ -299,7 +299,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       botMentioned: this.client.user ? message.mentions.users.has(this.client.user.id) : false,
       replyToBot: this.client.user ? replyAuthorId === this.client.user.id : false,
       authorName: message.author.globalName ?? message.author.username,
-      content: message.content,
+      content: normalizeDiscordMentions(message.content, new Map([...message.mentions.users.values()].map(user => [user.id, user.globalName ?? user.username]))),
       createdAt: message.createdAt.toISOString(),
       mentionedUserIds: [...message.mentions.users.keys()],
       ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}),

@@ -31,6 +31,14 @@ function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
 }
 
+function historySpeaker(item: { readonly turn: { readonly actorPrincipalId: string; readonly actorIdentity?: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly primaryRunId?: string; readonly createdAt: string; readonly content: readonly ({ readonly type: string; readonly text?: string })[] }; readonly actorDisplayName?: string }): string {
+  const text = item.turn.content.filter(block => block.type === "text").map(block => block.text ?? "").join("\n");
+  const externalId = item.turn.actorIdentity?.externalId;
+  const speaker = item.actorDisplayName ?? externalId ?? item.turn.actorPrincipalId;
+  const identity = externalId ? `<@${externalId}>(${speaker})` : `${speaker} [principal:${item.turn.actorPrincipalId}]`;
+  return `${item.turn.primaryRunId ? "" : "[context] "}[msg:${item.turn.inputEventId} ${item.turn.createdAt}] ${identity}: ${text}`;
+}
+
 function provider(
   role: "soul" | "agent" | "owner" | "memory",
   config: ContextFilesConfig,
@@ -126,7 +134,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
     const compacted = request.conversationCompaction;
     if (compacted) blocks.push({ id: "context.conversation_history:compacted", providerId: "context.conversation_history", role: "conversation-history", content: `<conversation-history-compaction through-sequence="${compacted.throughSequence}" trust="untrusted-data">\n${compacted.summary}\n</conversation-history-compaction>`, source: { kind: "conversation-compaction", ref: compacted.conversationId, metadata: { throughSequence: compacted.throughSequence, sourceHash: compacted.sourceHash } }, influence: "information" as const, instructionAuthority: "none" as const, parentSourceRef: compacted.sourceHash });
     const items = request.recentHistory ?? [];
-    if (items.length) { const lines = items.flatMap(item => { const user = item.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n"); return [`User (${item.turn.actorPrincipalId}): ${user}`, ...(item.assistantText ? [`Assistant: ${item.assistantText}`] : []), ...(item.toolEvidence ? [`<tool-evidence trust="untrusted-data">\n${item.toolEvidence}\n</tool-evidence>`] : [])]; }); blocks.push({ id: "context.conversation_history:recent", providerId: "context.conversation_history", role: "conversation-history", content: `<conversation-history>\n${lines.join("\n")}\n</conversation-history>`, source: { kind: "conversation", ref: items[0]!.turn.conversationId }, influence: "information" as const, instructionAuthority: "none" as const }); }
+    if (items.length) { const lines = items.flatMap(item => [historySpeaker(item), ...(item.assistantText ? [`Assistant${item.assistantCreatedAt ? ` [${item.assistantCreatedAt}]` : ""}: ${item.assistantText}`] : []), ...(item.toolEvidence ? [`<tool-evidence trust="untrusted-data">\n${item.toolEvidence}\n</tool-evidence>`] : [])]); blocks.push({ id: "context.conversation_history:recent", providerId: "context.conversation_history", role: "conversation-history", content: `<conversation-history trust="untrusted-data">\n${lines.join("\n")}\n</conversation-history>`, source: { kind: "conversation", ref: items[0]!.turn.conversationId }, influence: "information" as const, instructionAuthority: "none" as const }); }
     const reply = request.replyTarget;
     if (reply) { const user = reply.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n"); blocks.push({ id: "context.conversation_history:reply-target", providerId: "context.conversation_history", role: "conversation-history", content: `<discord-reply-target trust="untrusted-data" turn-id="${reply.turn.id}">\n${user}${reply.assistantText ? `\nAssistant reply: ${reply.assistantText}` : ""}${reply.toolEvidence ? `\n<tool-evidence trust="untrusted-data">\n${reply.toolEvidence}\n</tool-evidence>` : ""}\n</discord-reply-target>`, source: { kind: "conversation-turn", ref: reply.turn.id }, influence: "information" as const, instructionAuthority: "none" as const }); }
     else {

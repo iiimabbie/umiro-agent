@@ -391,9 +391,10 @@ test("rolls back run completion when the output cannot be persisted", async () =
 test("completed assistant output joins the turn search and embedding projections", async () => {
   const database = fixture();
   try {
+    await database.store.findOrCreate({ transport: "discord", externalId: "123456789012345678", principalId: "owner", displayName: "小明" }, at);
     await database.store.createConversationWithTurn(
       { id: "conversation-1", revision: 0, state: "active", createdAt: at, updatedAt: at },
-      { id: "turn-1", conversationId: "conversation-1", sequence: 0, actorPrincipalId: "owner", inputEventId: "event-1", primaryRunId: "run-1", content: [{ type: "text", text: "使用者問題" }], createdAt: at },
+      { id: "turn-1", conversationId: "conversation-1", sequence: 0, actorPrincipalId: "owner", actorIdentity: { transport: "discord", externalId: "123456789012345678" }, inputEventId: "event-1", primaryRunId: "run-1", content: [{ type: "text", text: "使用者問題" }], createdAt: at },
     );
     await database.store.createRunWithStep(run(), step());
     await database.store.updateExecutionProgress({ runId: "run-1", expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: at });
@@ -403,6 +404,8 @@ test("completed assistant output joins the turn search and embedding projections
       expectedRunRevision: 1, runUpdatedAt: at,
     });
     assert.equal((await database.store.search("最小權限", 10, { kind: "all" }))[0]?.turnId, "turn-1");
+    assert.equal((await database.store.getHistoryItem("turn-1"))?.actorDisplayName, "小明");
+    assert.equal((await database.store.getHistoryItem("turn-1"))?.assistantCreatedAt, at);
     const [job] = await database.store.claimEmbeddingJobs(10, "2026-09-08T12:01:00.000Z", "2026-09-08T11:00:00.000Z");
     assert.match(job?.text ?? "", /使用者問題[\s\S]*最小權限/);
     await database.store.rebuildSearchProjection();

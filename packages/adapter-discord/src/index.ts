@@ -29,12 +29,19 @@ export interface DiscordMessageEnvelope {
   readonly attachments?: readonly { readonly id: string; readonly url: string; readonly filename: string; readonly size: number; readonly mediaType?: string }[];
 }
 
+export function normalizeDiscordMentions(content: string, users: ReadonlyMap<string, string>): string {
+  return content.replace(/<@!?(\d{2,32})>/g, (raw, id: string) => {
+    const name = users.get(id);
+    return name ? `<@${id}>(${name})` : raw;
+  });
+}
+
 /** Converts Discord wire data into the Core's transport-neutral Input Event. */
 export function toInputEvent(message: DiscordMessageEnvelope, artifactIds: readonly string[] = []): InputEvent {
   return {
     id: `discord:${message.messageId}`,
     occurredAt: message.createdAt,
-    identity: { transport: "discord", externalId: message.authorId, principalId: null },
+    identity: { transport: "discord", externalId: message.authorId, principalId: null, ...(message.authorName ? { displayName: message.authorName } : {}) },
     conversation: { transport: "discord", externalId: message.threadId ?? message.channelId, kind: message.threadId ? "thread" : (message.guildId ? "channel" : "direct") },
     content: [{ type: "text", text: message.content }, ...artifactIds.map(artifactId => ({ type: "artifact_reference" as const, artifactId }))],
     ...(message.replyToMessageId ? { replyToExternalId: message.replyToMessageId } : {}),
@@ -67,6 +74,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
       transport: "discord",
       externalId: identity.externalId,
       principalId: owner ? "owner" : (identity.principalId ?? this.createPrincipalId()),
+      ...(identity.displayName ? { displayName: identity.displayName } : {}),
     }, this.now());
     return {
       principal: { id: mapped.principalId, kind: "human", roles: owner ? ["owner"] : ["member"], identities: [{ transport: "discord", externalId: identity.externalId }], ...(mapped.displayName ? { displayName: mapped.displayName } : {}) },

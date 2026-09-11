@@ -17,6 +17,8 @@ export interface TransportIdentity {
   readonly externalId: string;
   /** Null means the adapter must map the identity to a guest Principal. */
   readonly principalId: PrincipalId | null;
+  /** Adapter-supplied display metadata. Never grants authority. */
+  readonly displayName?: string;
 }
 
 export interface ResolvedIdentity {

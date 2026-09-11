@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IdentityMappingStore, PersistedTransportIdentity } from "@umiro/core/identity";
-import { chunkDiscordText, DiscordDeliveryWorker, DiscordIdentityResolver, toInputEvent } from "../src/index.js";
+import { chunkDiscordText, DiscordDeliveryWorker, DiscordIdentityResolver, normalizeDiscordMentions, toInputEvent } from "../src/index.js";
 
 class MemoryMappings implements IdentityMappingStore {
   readonly rows = new Map<string, PersistedTransportIdentity>();
@@ -9,7 +9,11 @@ class MemoryMappings implements IdentityMappingStore {
   async findOrCreate(identity: PersistedTransportIdentity) {
     const key = `${identity.transport}:${identity.externalId}`;
     const existing = this.rows.get(key);
-    if (existing) return existing;
+    if (existing) {
+      const updated = { ...existing, ...(identity.displayName ? { displayName: identity.displayName } : {}) };
+      this.rows.set(key, updated);
+      return updated;
+    }
     this.rows.set(key, identity);
     return identity;
   }
@@ -26,10 +30,17 @@ test("maps Discord messages and preserves stable principals", async () => {
   assert.equal(first.principal.id, "member-1");
   assert.equal(second.principal.id, "member-1");
   assert.deepEqual((await resolver.resolve({ transport: "discord", externalId: "1", principalId: null })).principal.roles, ["owner"]);
-  const event = toInputEvent({ messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum", authorId: "2", content: "hi", createdAt: "2026-01-01T00:00:00Z" });
+  const named = await resolver.resolve({ transport: "discord", externalId: "2", principalId: null, displayName: "小明" });
+  assert.equal(named.principal.displayName, "小明");
+  const event = toInputEvent({ messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum", authorId: "2", authorName: "小明", content: "hi", createdAt: "2026-01-01T00:00:00Z" });
   assert.equal(event.conversation.kind, "thread");
   assert.equal(event.content[0]?.type, "text");
+  assert.equal(event.identity.displayName, "小明");
   assert.deepEqual(event.metadata, { messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum" });
+});
+
+test("normalizes known Discord user mentions while retaining stable IDs", () => {
+  assert.equal(normalizeDiscordMentions("嗨 <@123456789012345678> 和 <@!223456789012345678>", new Map([["123456789012345678", "小明"], ["223456789012345678", "小美"]])), "嗨 <@123456789012345678>(小明) 和 <@223456789012345678>(小美)");
 });
 
 test("delivers pending Discord output and records confirmation", async () => {

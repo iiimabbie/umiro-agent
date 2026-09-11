@@ -2,6 +2,19 @@ import type { ContextProvider } from "@umiro/core";
 
 function string(value: unknown): string | undefined { return typeof value === "string" && value ? value : undefined; }
 
+export function createCurrentTimeContextProvider(now: () => Date = () => new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"): ContextProvider {
+  return {
+    id: "runtime.current-time",
+    role: "runtime-context",
+    priority: 4,
+    async load(request) {
+      const instant = now();
+      const local = new Intl.DateTimeFormat("en-CA", { timeZone, dateStyle: "full", timeStyle: "long", hour12: false }).format(instant);
+      return [{ id: `runtime.current-time:${request.runId}`, providerId: "runtime.current-time", role: "runtime-context", content: `Current datetime: ${instant.toISOString()} (${timeZone}: ${local})`, source: { kind: "host-clock", ref: timeZone }, influence: "information", instructionAuthority: "none", retention: "essential" }];
+    },
+  };
+}
+
 /** Trusted adapter metadata for destination-sensitive Discord tools. Message
  * text remains untrusted and cannot override these transport facts. */
 export const discordRuntimeContextProvider: ContextProvider = {

@@ -681,11 +681,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   }
 
   async getHistoryItem(turnId: string): Promise<ConversationHistoryItem | undefined> {
-    const row = this.database.prepare("SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id WHERE t.id=?")
-      .get(turnId) as (TurnRow & { assistant_text: string | null }) | undefined;
+    const row = this.database.prepare("SELECT t.*, o.text AS assistant_text, o.created_at AS assistant_created_at, i.display_name AS actor_display_name FROM turns t LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id LEFT JOIN transport_identities i ON i.transport=t.actor_transport AND i.external_id=t.actor_external_id WHERE t.id=?")
+      .get(turnId) as (TurnRow & { assistant_text: string | null; assistant_created_at: string | null; actor_display_name: string | null }) | undefined;
     if (!row) return undefined;
     const toolEvidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
-    return { turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}), ...(toolEvidence ? { toolEvidence } : {}) };
+    return { turn: this.turnFromRow(row), ...(row.actor_display_name ? { actorDisplayName: row.actor_display_name } : {}), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}), ...(row.assistant_created_at ? { assistantCreatedAt: row.assistant_created_at } : {}), ...(toolEvidence ? { toolEvidence } : {}) };
   }
 
   async listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]> {
@@ -697,11 +697,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   async listRecentHistory(conversationId: string, beforeSequence: number, limit: number): Promise<readonly ConversationHistoryItem[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("history limit must be between 1 and 100");
-    const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id
-      WHERE t.conversation_id = ? AND t.sequence < ? ORDER BY t.sequence DESC LIMIT ?`).all(conversationId, beforeSequence, limit) as Array<TurnRow & { assistant_text: string | null }>;
+    const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text, o.created_at AS assistant_created_at, i.display_name AS actor_display_name FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id LEFT JOIN transport_identities i ON i.transport=t.actor_transport AND i.external_id=t.actor_external_id
+      WHERE t.conversation_id = ? AND t.sequence < ? ORDER BY t.sequence DESC LIMIT ?`).all(conversationId, beforeSequence, limit) as Array<TurnRow & { assistant_text: string | null; assistant_created_at: string | null; actor_display_name: string | null }>;
     return rows.reverse().map(row => {
       const toolEvidence = row.primary_run_id ? this.toolEvidenceForRun(row.primary_run_id) : "";
-      return { turn: this.turnFromRow(row), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}), ...(toolEvidence ? { toolEvidence } : {}) };
+      return { turn: this.turnFromRow(row), ...(row.actor_display_name ? { actorDisplayName: row.actor_display_name } : {}), ...(row.assistant_text ? { assistantText: row.assistant_text } : {}), ...(row.assistant_created_at ? { assistantCreatedAt: row.assistant_created_at } : {}), ...(toolEvidence ? { toolEvidence } : {}) };
     });
   }
 
