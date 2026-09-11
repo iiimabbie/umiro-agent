@@ -430,10 +430,18 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     })();
   }
 
-  async hasConversationBinding(transport: string, externalId: string): Promise<boolean> {
-    const row = this.database.prepare("SELECT 1 AS present FROM conversation_bindings WHERE transport = ? AND external_id = ?")
+  async hasConversationScope(transport: string, externalId: string): Promise<boolean> {
+    const row = this.database.prepare("SELECT 1 AS present FROM conversation_scopes WHERE transport = ? AND external_id = ?")
       .get(transport, externalId) as { present: number } | undefined;
     return row?.present === 1;
+  }
+
+  async listConversationScopes(transport?: string): Promise<readonly { readonly transport: string; readonly externalId: string; readonly kind: "direct" | "channel" | "thread" }[]> {
+    const rows = (transport
+      ? this.database.prepare("SELECT transport, external_id, kind FROM conversation_scopes WHERE transport = ? ORDER BY external_id").all(transport)
+      : this.database.prepare("SELECT transport, external_id, kind FROM conversation_scopes ORDER BY transport, external_id").all()
+    ) as Array<{ transport: string; external_id: string; kind: "direct" | "channel" | "thread" }>;
+    return rows.map(row => ({ transport: row.transport, externalId: row.external_id, kind: row.kind }));
   }
 
   async getConversationBinding(conversationId: string): Promise<{ readonly transport: string; readonly externalId: string; readonly kind: "direct" | "channel" | "thread" } | undefined> {
@@ -471,8 +479,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       const binding = this.database.prepare(`
         SELECT conversation_id FROM conversation_bindings WHERE transport = ? AND external_id = ?
       `).get(request.event.conversation.transport, request.event.conversation.externalId) as { conversation_id: string } | undefined;
+      const boundRow = binding
+        ? this.database.prepare("SELECT * FROM conversations WHERE id = ?").get(binding.conversation_id) as ConversationRow | undefined
+        : undefined;
 
-      if (!binding) {
+      if (!binding || !boundRow || boundRow.state !== "active") {
         const conversation: Conversation = {
           id: request.newConversationId,
           revision: 0,
@@ -500,6 +511,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         this.database.prepare(`
           INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at)
           VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, conversation_id=excluded.conversation_id, created_at=excluded.created_at
         `).run(
           request.event.conversation.transport,
           request.event.conversation.externalId,
@@ -507,6 +519,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           conversation.id,
           request.createdAt,
         );
+        this.database.prepare(`
+          INSERT INTO conversation_scopes(transport, external_id, kind, created_at, last_seen_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, last_seen_at=excluded.last_seen_at
+        `).run(request.event.conversation.transport, request.event.conversation.externalId, request.event.conversation.kind, request.createdAt, request.createdAt);
         for (const [sequence, seed] of initialTurns.entries()) {
           this.insertTurn({ ...seed, conversationId: conversation.id, sequence });
         }
@@ -514,9 +531,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         return { conversation, turn, duplicate: false, conversationCreated: true };
       }
 
-      const row = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
-        .get(binding.conversation_id) as ConversationRow | undefined;
-      if (!row || row.state !== "active") throw new Error(`bound Conversation is missing or archived: ${binding.conversation_id}`);
+      const row = boundRow!;
       const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
         .get(row.id) as { sequence: number };
       const replyToTurnId = this.resolveReplyToTurnId(row.id, request.event);
@@ -533,6 +548,8 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         createdAt: request.createdAt,
       };
       this.insertTurn(turn);
+      this.database.prepare("UPDATE conversation_scopes SET kind=?, last_seen_at=? WHERE transport=? AND external_id=?")
+        .run(request.event.conversation.kind, request.createdAt, request.event.conversation.transport, request.event.conversation.externalId);
       const update = this.database.prepare(`
         UPDATE conversations SET revision = revision + 1, updated_at = ?
         WHERE id = ? AND revision = ? AND state = 'active'
@@ -560,10 +577,24 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       }
       const binding = this.database.prepare("SELECT conversation_id FROM conversation_bindings WHERE transport = ? AND external_id = ?")
         .get(request.event.conversation.transport, request.event.conversation.externalId) as { conversation_id: string } | undefined;
-      if (!binding) return undefined;
-      const row = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
-        .get(binding.conversation_id) as ConversationRow | undefined;
-      if (!row || row.state !== "active") return undefined;
+      const boundRow = binding
+        ? this.database.prepare("SELECT * FROM conversations WHERE id = ?").get(binding.conversation_id) as ConversationRow | undefined
+        : undefined;
+      if (!binding || !boundRow || boundRow.state !== "active") {
+        const scope = this.database.prepare("SELECT 1 AS present FROM conversation_scopes WHERE transport = ? AND external_id = ?")
+          .get(request.event.conversation.transport, request.event.conversation.externalId) as { present: number } | undefined;
+        if (!scope) return undefined;
+        const conversation: Conversation = { id: request.newConversationId, revision: 0, state: "active", createdAt: request.createdAt, updatedAt: request.createdAt };
+        const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: 0, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
+        this.database.prepare("INSERT INTO conversations(id, revision, state, created_at, updated_at) VALUES (?, 0, 'active', ?, ?)").run(conversation.id, conversation.createdAt, conversation.updatedAt);
+        this.database.prepare("INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, conversation_id=excluded.conversation_id, created_at=excluded.created_at")
+          .run(request.event.conversation.transport, request.event.conversation.externalId, request.event.conversation.kind, conversation.id, request.createdAt);
+        this.database.prepare("UPDATE conversation_scopes SET kind=?, last_seen_at=? WHERE transport=? AND external_id=?")
+          .run(request.event.conversation.kind, request.createdAt, request.event.conversation.transport, request.event.conversation.externalId);
+        this.insertTurn(turn);
+        return { conversation, turn, duplicate: false, conversationCreated: true };
+      }
+      const row = boundRow!;
       const next = this.database.prepare("SELECT COALESCE(MAX(sequence) + 1, 0) AS sequence FROM turns WHERE conversation_id = ?")
         .get(row.id) as { sequence: number };
       const replyToTurnId = this.resolveReplyToTurnId(row.id, request.event);
@@ -579,6 +610,8 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         createdAt: request.createdAt,
       };
       this.insertTurn(turn);
+      this.database.prepare("UPDATE conversation_scopes SET kind=?, last_seen_at=? WHERE transport=? AND external_id=?")
+        .run(request.event.conversation.kind, request.createdAt, request.event.conversation.transport, request.event.conversation.externalId);
       const update = this.database.prepare("UPDATE conversations SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'")
         .run(request.createdAt, row.id, row.revision);
       expectOne(update.changes, `conversation ${row.id} changed concurrently`);
@@ -649,7 +682,6 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         WHERE id = ? AND revision = ? AND state = ?
       `).run(request.state, request.updatedAt, request.conversationId, request.expectedRevision, request.expectedState);
       expectOne(update.changes, `conversation ${request.conversationId} changed concurrently`);
-      this.database.prepare("DELETE FROM conversation_bindings WHERE conversation_id = ?").run(request.conversationId);
     })();
   }
 
@@ -660,7 +692,6 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       if (row.state !== "active") throw new ExecutionStoreConflictError(`conversation ${row.id} is not active`);
       const update = this.database.prepare("UPDATE conversations SET revision = revision + 1, state = 'archived', updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'").run(archivedAt, row.id, row.revision);
       expectOne(update.changes, `conversation ${row.id} changed concurrently`);
-      this.database.prepare("DELETE FROM conversation_bindings WHERE transport = ? AND external_id = ?").run(transport, externalId);
       return { ...this.conversationFromRow(row), revision: row.revision + 1, state: "archived" as const, updatedAt: archivedAt };
     })();
   }

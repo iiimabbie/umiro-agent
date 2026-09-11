@@ -104,8 +104,9 @@ export interface SteerInputEventResult {
 
 export interface ConversationIngressStore extends Pick<ConversationStore, "getHistoryItem" | "listTurns" | "listRecentHistory" | "refreshConversationCompaction"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
-  hasConversationBinding(transport: string, externalId: string): Promise<boolean>;
-  /** Records only when an active binding already exists; never creates a Conversation or Run. */
+  /** True only after this transport location has triggered the agent at least once. */
+  hasConversationScope(transport: string, externalId: string): Promise<boolean>;
+  /** Records only inside an established scope; may open a fresh Conversation after archive, but never creates a Run. */
   observeInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult | undefined>;
   /** Atomically appends a canonical Turn and queues it for an already-running Run. */
   steerInputEvent(request: SteerInputEventRequest): Promise<SteerInputEventResult>;

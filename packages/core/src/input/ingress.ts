@@ -150,7 +150,7 @@ export class InteractiveIngress {
   }
 
   async hasConversation(event: InputEvent): Promise<boolean> {
-    return this.conversations.hasConversationBinding(event.conversation.transport, event.conversation.externalId);
+    return this.conversations.hasConversationScope(event.conversation.transport, event.conversation.externalId);
   }
 
   async steer(request: { readonly event: InputEvent; readonly runId: string; readonly userContent: ModelContent }): Promise<{ readonly conversationId: string; readonly turnId: string; readonly duplicate: boolean }> {
