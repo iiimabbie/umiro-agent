@@ -2,7 +2,7 @@ import { isInstructionAuthorityAtMost, type Authority } from "../authorization/a
 import { ContextProviderRegistry } from "../context/registry.js";
 import type { ContextProvider } from "../context/contract.js";
 import { ToolRegistry } from "../tool/registry.js";
-import type { LoadedPlugin, PluginEnableOptions, PluginHealth, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
+import type { DiscordPluginService, LoadedPlugin, PluginEnableOptions, PluginHealth, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
 import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 import { validatePluginConfig, validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
@@ -78,6 +78,29 @@ function pluginLogger(base: StructuredLogger, pluginId: string, namespace: strin
   return { debug: (e, m, d) => write("debug", e, m, d), info: (e, m, d) => write("info", e, m, d), warn: (e, m, d) => write("warn", e, m, d), error: (e, m, d) => write("error", e, m, d) };
 }
 
+function discordWithinCeiling(service: DiscordPluginService, manifest: PluginManifestV0): DiscordPluginService {
+  const requireCapability = (capability: string) => {
+    if (!manifest.permissions.capabilities.includes(capability)) throw new Error(`plugin ${manifest.id} requires undeclared service capability ${capability}`);
+  };
+  return {
+    ...(service.createButtonSet ? { async createButtonSet(input) { requireCapability("discord.button.write"); return service.createButtonSet!(input); } } : {}),
+    async sendButtons(input) { requireCapability("discord.button.write"); return service.sendButtons(input); },
+    async sendMessage(input) { requireCapability("discord.message.write"); return service.sendMessage(input); },
+    async react(input) { requireCapability("discord.message.react"); return service.react(input); },
+    async pin(input) { requireCapability("discord.message.pin"); return service.pin(input); },
+    async unpin(input) { requireCapability("discord.message.pin"); return service.unpin(input); },
+    async fetchMessage(input) { requireCapability("discord.message.read"); return service.fetchMessage(input); },
+    async createThread(input) { requireCapability("discord.thread.write"); return service.createThread(input); },
+    async createForumPost(input) { requireCapability("discord.thread.write"); return service.createForumPost(input); },
+    async archiveThread(input) { requireCapability("discord.thread.write"); return service.archiveThread(input); },
+    async deleteThread(input) { requireCapability("discord.thread.delete"); return service.deleteThread(input); },
+    async editMessage(input) { requireCapability("discord.message.write"); return service.editMessage(input); },
+    async deleteMessage(input) { requireCapability("discord.message.delete"); return service.deleteMessage(input); },
+    async fetchChannelMessages(input) { requireCapability("discord.message.read"); return service.fetchChannelMessages(input); },
+    async setRespondToBots(enabled) { requireCapability("discord.policy.write"); return service.setRespondToBots(enabled); },
+  };
+}
+
 export class PluginHost {
   private readonly plugins = new Map<string, ActivePlugin>();
 
@@ -119,6 +142,7 @@ export class PluginHost {
         ...(this.stateForNamespace ? { state: this.stateForNamespace(manifest.namespace) } : {}),
         services: {
           ...runtimeServices,
+          ...(runtimeServices.discord ? { discord: discordWithinCeiling(runtimeServices.discord, manifest) } : {}),
           subagentProfiles: this.subagentProfiles,
           ...(searchDocumentProjection ? { searchDocuments: {
             replaceSource: (sourceId, documents) => searchDocumentProjection.replaceSearchSource(manifest.namespace, sourceId, documents),

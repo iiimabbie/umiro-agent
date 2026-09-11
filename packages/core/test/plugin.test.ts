@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextEngine, ContextProviderRegistry } from "../src/context/index.js";
-import { PluginHost, SubagentProfileRegistry, validatePluginConfig, validatePluginManifest, type PluginModule, type SubagentProfileCatalog } from "../src/plugin/index.js";
+import { PluginHost, SubagentProfileRegistry, validatePluginConfig, validatePluginManifest, type DiscordPluginService, type PluginModule, type SubagentProfileCatalog } from "../src/plugin/index.js";
 import { ToolRegistry } from "../src/tool/index.js";
 
 const authority = { capabilities: [], visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
@@ -132,6 +132,25 @@ test("Plugin search documents are scoped to the manifest namespace", async () =>
   await host.enable(module);
   await host.disable("owned");
   assert.deepEqual(calls, ["owned:replace:DOC.md", "owned:remove:DOC.md"]);
+});
+
+test("Discord Plugin services fail closed outside the manifest capability ceiling", async () => {
+  const calls: string[] = [];
+  let discord: DiscordPluginService | undefined;
+  const backing = {
+    async sendMessage() { calls.push("message"); return { messageId: "message" }; },
+    async createButtonSet() { calls.push("buttons"); return { messageId: "message", buttonSetId: "set", expiresAt: "later" }; },
+    async sendButtons() { return { messageId: "message" }; }, async react() {}, async pin() {}, async unpin() {}, async fetchMessage() { return { messageId: "m", channelId: "c", authorId: "a", content: "", createdAt: "now" }; }, async createThread() { return { threadId: "t" }; }, async createForumPost() { return { threadId: "t" }; }, async archiveThread() {}, async deleteThread() {}, async editMessage() {}, async deleteMessage() {}, async fetchChannelMessages() { return []; }, async setRespondToBots() {},
+  } as DiscordPluginService;
+  const ceiling = { ...authority, capabilities: ["discord.message.write", "discord.button.write"] };
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), ceiling, undefined, undefined, undefined, undefined, { discord: backing });
+  await host.enable({
+    manifest: { schemaVersion: 0, id: "messenger", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "messenger", permissions: { ...authority, capabilities: ["discord.message.write"] }, contributes: {} },
+    create: context => { discord = context.services?.discord; return { contributions: {} }; },
+  });
+  await discord!.sendMessage({ channelId: "channel", content: "hello" });
+  await assert.rejects(discord!.createButtonSet!({ channelId: "channel", content: "choose", allowedUserIds: ["owner"], buttons: [{ id: "go", label: "Go", style: "primary", actionTool: "tool", actionArgs: {} }] }), /undeclared service capability discord\.button\.write/);
+  assert.deepEqual(calls, ["message"]);
 });
 
 test("plugin health is isolated and reports failed checks without throwing", async () => {
