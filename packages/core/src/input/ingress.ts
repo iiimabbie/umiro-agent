@@ -1,6 +1,6 @@
 import type { Authority } from "../authorization/authority.js";
 import type { ContextEngine } from "../context/engine.js";
-import type { ConversationIngressStore, IngestInputEventResult } from "../conversation/store.js";
+import type { ConversationIngressStore, ConversationSeedTurn, IngestInputEventResult } from "../conversation/store.js";
 import type { IdentityResolver } from "../identity/principal.js";
 import type { JsonObject } from "../ports/json.js";
 import { HeadlessRunEngine, type HeadlessRunResult } from "../run/engine.js";
@@ -21,6 +21,7 @@ export interface InteractiveIngressRequest {
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
   readonly onRunCreated?: (runId: string) => void;
   readonly steerControl?: { readonly flush: () => Promise<void>; readonly seal: () => Promise<void> };
+  readonly initialTurns?: readonly ConversationSeedTurn[];
 }
 
 export type InteractiveIngressResult =
@@ -72,6 +73,7 @@ export class InteractiveIngress {
       newConversationId: this.createId("conversation"),
       newTurnId: this.createId("turn"),
       newRunId: runId,
+      ...(request.initialTurns?.length ? { initialTurns: request.initialTurns } : {}),
       createdAt: this.now(),
     });
     const primaryRunId = ingested.turn.primaryRunId ?? runId;
@@ -141,6 +143,10 @@ export class InteractiveIngress {
       turnId: ingested.turn.id,
       result,
     };
+  }
+
+  async hasConversation(event: InputEvent): Promise<boolean> {
+    return this.conversations.hasConversationBinding(event.conversation.transport, event.conversation.externalId);
   }
 
   async steer(request: { readonly event: InputEvent; readonly runId: string; readonly userContent: ModelContent }): Promise<{ readonly conversationId: string; readonly turnId: string; readonly duplicate: boolean }> {

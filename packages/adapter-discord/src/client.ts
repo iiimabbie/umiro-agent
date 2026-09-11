@@ -181,6 +181,15 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, content: message.content, createdAt: message.createdAt.toISOString() };
   }
 
+  async fetchThreadStarter(input: { readonly threadId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly authorName: string; readonly content: string; readonly threadName: string; readonly createdAt: string } | undefined> {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.threadId);
+    if (!channel?.isThread() || !("messages" in channel)) return undefined;
+    const message = await channel.messages.fetch(input.threadId);
+    if (input.signal?.aborted) throw input.signal.reason;
+    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, authorName: message.author.displayName, content: message.content, threadName: channel.name, createdAt: message.createdAt.toISOString() };
+  }
+
   async createThread(input: { readonly channelId: string; readonly name: string; readonly messageId?: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }> {
     if (input.signal?.aborted) throw input.signal.reason;
     const channel = await this.client.channels.fetch(input.channelId);

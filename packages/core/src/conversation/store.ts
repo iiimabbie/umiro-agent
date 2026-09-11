@@ -1,7 +1,8 @@
 import type { Conversation, ConversationCompaction, ConversationHistoryItem, ConversationPreferences, ConversationQueueMode, ConversationState, Turn } from "./entities.js";
+import type { TurnId } from "../run/entities.js";
 import type { ReasoningEffort } from "../model/contract.js";
 import type { PrincipalId, PrincipalRole } from "../identity/principal.js";
-import type { InputEvent } from "../input/event.js";
+import type { InputContentBlock, InputEvent } from "../input/event.js";
 import type { ModelContent } from "../model/contract.js";
 import type { Authority } from "../authorization/authority.js";
 
@@ -60,6 +61,18 @@ export interface IngestInputEventRequest {
   readonly newTurnId: string;
   /** Omitted for an observed Turn that intentionally has no Run. */
   readonly newRunId?: string;
+  /** Optional sequence-zero context turns, inserted atomically only when a
+   * new Conversation binding is created. */
+  readonly initialTurns?: readonly ConversationSeedTurn[];
+  readonly createdAt: string;
+}
+
+export interface ConversationSeedTurn {
+  readonly id: TurnId;
+  readonly actorPrincipalId: PrincipalId;
+  readonly actorIdentity?: { readonly transport: string; readonly externalId: string };
+  readonly inputEventId: string;
+  readonly content: readonly InputContentBlock[];
   readonly createdAt: string;
 }
 
@@ -90,6 +103,7 @@ export interface SteerInputEventResult {
 
 export interface ConversationIngressStore extends Pick<ConversationStore, "listTurns" | "listRecentHistory" | "refreshConversationCompaction"> {
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
+  hasConversationBinding(transport: string, externalId: string): Promise<boolean>;
   /** Records only when an active binding already exists; never creates a Conversation or Run. */
   observeInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult | undefined>;
   /** Atomically appends a canonical Turn and queues it for an already-running Run. */

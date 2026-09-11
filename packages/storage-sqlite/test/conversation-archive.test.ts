@@ -21,6 +21,22 @@ test("archiving keeps canonical turns and the next ingress starts a new conversa
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("thread starter seed is inserted once before the triggering Turn", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  try {
+    const first = await store.ingestInputEvent({
+      event: event("discord:reply"), actorPrincipalId: "reply-author", newConversationId: "thread-conversation", newTurnId: "reply-turn", newRunId: "reply-run", createdAt: "2026-09-09T00:01:00.000Z",
+      initialTurns: [{ id: "starter-turn", actorPrincipalId: "starter-author", actorIdentity: { transport: "discord", externalId: "starter" }, inputEventId: "discord:starter:thread", content: [{ type: "text", text: "thread starter" }], createdAt: "2026-09-09T00:00:00.000Z" }],
+    });
+    assert.equal(first.conversationCreated, true);
+    assert.equal((await store.listTurns("thread-conversation")).map(turn => `${turn.sequence}:${turn.inputEventId}`).join(","), "0:discord:starter:thread,1:discord:reply");
+    assert.equal(await store.hasConversationBinding("discord", "channel"), true);
+    const second = await store.ingestInputEvent({ event: event("discord:next"), actorPrincipalId: "reply-author", newConversationId: "unused", newTurnId: "next-turn", newRunId: "next-run", createdAt: "2026-09-09T00:02:00.000Z", initialTurns: [{ id: "must-not-insert", actorPrincipalId: "starter-author", inputEventId: "discord:starter:other", content: [{ type: "text", text: "ignored" }], createdAt: "2026-09-09T00:00:00.000Z" }] });
+    assert.equal(second.turn.sequence, 2);
+    assert.equal((await store.listTurns("thread-conversation")).length, 3);
+  } finally { store.close(); }
+});
+
 test("session model and queue preferences survive conversation archive", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   try {

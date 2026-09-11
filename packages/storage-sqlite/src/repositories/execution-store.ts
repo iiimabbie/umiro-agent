@@ -429,6 +429,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     })();
   }
 
+  async hasConversationBinding(transport: string, externalId: string): Promise<boolean> {
+    const row = this.database.prepare("SELECT 1 AS present FROM conversation_bindings WHERE transport = ? AND external_id = ?")
+      .get(transport, externalId) as { present: number } | undefined;
+    return row?.present === 1;
+  }
+
   async ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult> {
     if (!request.newRunId) throw new TypeError("triggered Turns require a Run ID");
     const newRunId = request.newRunId;
@@ -459,10 +465,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           createdAt: request.createdAt,
           updatedAt: request.createdAt,
         };
+        const initialTurns = request.initialTurns ?? [];
         const turn: Turn = {
           id: request.newTurnId,
           conversationId: conversation.id,
-          sequence: 0,
+          sequence: initialTurns.length,
           actorPrincipalId: request.actorPrincipalId,
           actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
           inputEventId: request.event.id,
@@ -483,6 +490,9 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           conversation.id,
           request.createdAt,
         );
+        for (const [sequence, seed] of initialTurns.entries()) {
+          this.insertTurn({ ...seed, conversationId: conversation.id, sequence });
+        }
         this.insertTurn(turn);
         return { conversation, turn, duplicate: false, conversationCreated: true };
       }

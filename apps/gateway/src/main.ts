@@ -376,10 +376,29 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
   const userContent = await artifactModelContent(message.content, importedArtifacts, profile.capabilities.includes("vision"));
+  const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
+  if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasConversation(event))) {
+    try {
+      const starter = await discord.fetchThreadStarter({ threadId: message.threadId, signal: controller.signal });
+      if (starter && starter.messageId !== message.messageId) {
+        const starterIdentity = await identities.resolve({ transport: "discord", externalId: starter.authorId, principalId: null });
+        initialTurns.push({
+          id: `turn:discord-starter:${starter.messageId}`,
+          actorPrincipalId: starterIdentity.principal.id,
+          actorIdentity: { transport: "discord", externalId: starter.authorId },
+          inputEventId: `discord:starter:${starter.messageId}`,
+          content: [{ type: "text", text: `[System] This is the initial message of thread "${starter.threadName}" (by ${starter.authorName}) [thread_id: ${message.threadId}]:\n${starter.content}` }],
+          createdAt: starter.createdAt,
+        });
+      }
+    } catch (error) {
+      logger.write({ level: "warn", event: "discord.thread_starter.unavailable", message: "Thread starter could not be loaded; continuing without it", occurredAt: new Date().toISOString(), data: { threadId: message.threadId, errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
+    }
+  }
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const streaming = new DiscordStreamingDelivery(message.channelId, discord, store, Date.now, error => logger.write({ level: "warn", event: "discord.streaming.degraded", message: "Discord streaming failed; durable delivery remains pending", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
-  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(userContent.length ? { userContent } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); } });
+  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(userContent.length ? { userContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, onTextDelta: delta => streaming.delta(delta), steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); } });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
