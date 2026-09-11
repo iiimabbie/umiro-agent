@@ -1,11 +1,10 @@
 import { isInstructionAuthorityAtMost, type Authority } from "../authorization/authority.js";
-import { Ajv } from "ajv";
 import { ContextProviderRegistry } from "../context/registry.js";
 import type { ContextProvider } from "../context/contract.js";
 import { ToolRegistry } from "../tool/registry.js";
 import type { LoadedPlugin, PluginEnableOptions, PluginHealth, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
 import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
-import { validatePluginManifest } from "./manifest.js";
+import { validatePluginConfig, validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
 import { PluginCommandRegistry, PluginJobRegistry, SkillRegistry, SubagentProfileRegistry } from "./contributions.js";
@@ -81,7 +80,6 @@ function pluginLogger(base: StructuredLogger, pluginId: string, namespace: strin
 
 export class PluginHost {
   private readonly plugins = new Map<string, ActivePlugin>();
-  private readonly ajv = new Ajv({ allErrors: true, strict: true });
 
   constructor(
     private readonly tools: ToolRegistry,
@@ -104,13 +102,7 @@ export class PluginHost {
     if (this.plugins.has(manifest.id)) throw new Error(`plugin already loaded: ${manifest.id}`);
 
     const config = structuredClone(options.config ?? {});
-    if (manifest.configSchema) {
-      const validateConfig = this.ajv.compile(manifest.configSchema);
-      if (!validateConfig(config)) {
-        const detail = validateConfig.errors?.map(error => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
-        throw new TypeError(`plugin ${manifest.id} config is invalid: ${detail ?? "unknown schema violation"}`);
-      }
-    }
+    validatePluginConfig(manifest, config);
     const allowedSecrets = new Set(manifest.requiredSecrets ?? []);
     for (const secret of allowedSecrets) {
       if (!options.secrets?.[secret]) throw new TypeError(`plugin ${manifest.id} requires secret ${secret}`);

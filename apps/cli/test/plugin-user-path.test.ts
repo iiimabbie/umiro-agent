@@ -13,24 +13,37 @@ test("clean-home Plugin CLI runs install, list, configure, disable, enable, upda
   const root = await mkdtemp(join(tmpdir(), "umiro-plugin-user-path-"));
   const home = join(root, "home"); const plugin = join(root, "sample-plugin"); const env = { ...process.env, UMIRO_HOME: home };
   await mkdir(plugin);
-  await writeFile(join(plugin, "umiro.plugin.json"), `${JSON.stringify({ schemaVersion: 0, id: "sample", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "sample", permissions: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, contributes: {} })}\n`);
+  await writeFile(join(plugin, "umiro.plugin.json"), `${JSON.stringify({ schemaVersion: 0, id: "sample", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "sample", permissions: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, configSchema: { type: "object", additionalProperties: false, required: ["workspacePath"], properties: { workspacePath: { type: "string" }, mode: { type: "string" }, label: { type: "string" } } }, contributes: {} })}\n`);
   await writeFile(join(plugin, "index.js"), "export function createPlugin() { return { contributions: {} }; }\n");
   try {
     await exec(process.execPath, [cli, "init"], { env });
-    await exec(process.execPath, [cli, "plugin", "install", plugin], { env });
+    await exec(process.execPath, [cli, "plugin", "install", plugin, "--config", "{\"mode\":\"strict\"}"], { env });
     assert.match((await exec(process.execPath, [cli, "plugin", "list"], { env })).stdout, /enabled\s+.*sample-plugin/);
 
-    await exec(process.execPath, [cli, "plugin", "configure", plugin, "--config", "{\"mode\":\"strict\"}"], { env });
+    await exec(process.execPath, [cli, "plugin", "configure", plugin, "--config", "{\"label\":\"owner\"}"], { env });
     await exec(process.execPath, [cli, "plugin", "disable", plugin], { env });
     assert.match((await exec(process.execPath, [cli, "plugin", "list"], { env })).stdout, /disabled\s+.*sample-plugin/);
     await exec(process.execPath, [cli, "plugin", "enable", plugin], { env });
     await exec(process.execPath, [cli, "plugin", "update", plugin], { env });
 
     const configured = JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")) as Array<{ enabled: boolean; config?: unknown }>;
-    assert.deepEqual(configured, [{ source: plugin, path: plugin, enabled: true, config: { mode: "strict" } }]);
+    assert.deepEqual(configured, [{ source: plugin, path: plugin, enabled: true, config: { workspacePath: join(home, "workspace"), mode: "strict", label: "owner" } }]);
     await exec(process.execPath, [cli, "plugin", "remove", plugin], { env });
     assert.deepEqual(JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")), []);
     await assert.rejects(exec(process.execPath, [cli, "plugin", "enable", plugin], { env }), /plugin is not installed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Plugin install rejects required config that the host cannot derive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-plugin-required-config-"));
+  const home = join(root, "home"); const plugin = join(root, "required-plugin"); const env = { ...process.env, UMIRO_HOME: home };
+  await mkdir(plugin);
+  await writeFile(join(plugin, "umiro.plugin.json"), `${JSON.stringify({ schemaVersion: 0, id: "required", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "required", permissions: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, configSchema: { type: "object", additionalProperties: false, required: ["workspacePath", "accountId"], properties: { workspacePath: { type: "string" }, accountId: { type: "string" } } }, contributes: {} })}\n`);
+  await writeFile(join(plugin, "index.js"), "export function createPlugin() { return { contributions: {} }; }\n");
+  try {
+    await exec(process.execPath, [cli, "init"], { env });
+    await assert.rejects(exec(process.execPath, [cli, "plugin", "install", plugin], { env }), /required.*accountId|accountId.*required/);
+    assert.deepEqual(JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")), []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

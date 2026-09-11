@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextEngine, ContextProviderRegistry } from "../src/context/index.js";
-import { PluginHost, SubagentProfileRegistry, validatePluginManifest, type PluginModule, type SubagentProfileCatalog } from "../src/plugin/index.js";
+import { PluginHost, SubagentProfileRegistry, validatePluginConfig, validatePluginManifest, type PluginModule, type SubagentProfileCatalog } from "../src/plugin/index.js";
 import { ToolRegistry } from "../src/tool/index.js";
 
 const authority = { capabilities: [], visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
@@ -82,6 +82,14 @@ test("manifest policy is bounded and cannot exceed the host instruction ceiling"
   assert.throws(() => validatePluginManifest({ ...base, contributes: { policy: [{ content: "unsafe", retention: "essential" }] } }), /invalid plugin manifest/);
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), { ...authority, instructionAuthority: "none" });
   await assert.rejects(host.enable({ manifest: { ...base, contributes: { policy: ["Use this plugin."] } }, create: () => ({ contributions: {} }) }), /policy exceeds the host instruction authority ceiling/);
+});
+
+test("Plugin config validation is shared by Host and installer", () => {
+  const manifest = { schemaVersion: 0 as const, id: "configured", version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: "configured", permissions: authority, configSchema: { type: "object", additionalProperties: false, required: ["workspacePath"], properties: { workspacePath: { type: "string", minLength: 1 } } }, contributes: {} };
+  validatePluginManifest(manifest);
+  assert.doesNotThrow(() => validatePluginConfig(manifest, { workspacePath: "/workspace" }));
+  assert.throws(() => validatePluginConfig(manifest, {}), /required property 'workspacePath'/);
+  assert.throws(() => validatePluginConfig(manifest, { workspacePath: "/workspace", surprise: true }), /additional properties/);
 });
 
 test("plugin logger is namespaced, redacts secrets, and cannot break startup", async () => {

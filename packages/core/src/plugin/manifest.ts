@@ -150,3 +150,11 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
     throw new TypeError(`plugin ${manifest.id} policy exceeds the host instruction authority ceiling`);
   }
 }
+
+export function validatePluginConfig(manifest: PluginManifestV0, config: unknown): void {
+  if (!manifest.configSchema) return;
+  const validate = new Ajv({ allErrors: true, strict: true }).compile(manifest.configSchema);
+  if (validate(config)) return;
+  const detail = validate.errors?.map(error => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
+  throw new TypeError(`plugin ${manifest.id} config is invalid: ${detail ?? "unknown schema violation"}`);
+}

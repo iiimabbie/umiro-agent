@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { validatePluginManifest } from "@umiro/core";
+import { validatePluginConfig, validatePluginManifest, type PluginManifestV0 } from "@umiro/core";
 import { managedPluginPath } from "./plugin-path.js";
 
 const exec = promisify(execFile);
@@ -42,18 +42,40 @@ function assertPluginEntryInside(root: string, entry: string): void {
   if (!path || path === ".." || path.startsWith(`..${sep}`)) throw new Error(`plugin entry escapes its directory: ${entry}`);
 }
 
-async function validatePluginDirectory(directory: string): Promise<void> {
+async function validatePluginDirectory(directory: string): Promise<PluginManifestV0 | undefined> {
   const root = await realpath(directory);
   try {
     const manifest = JSON.parse(await readFile(join(root, "umiro.plugin.json"), "utf8")) as unknown;
     validatePluginManifest(manifest);
-    const entry = await realpath(join(root, manifest.entry)); assertPluginEntryInside(root, entry); return;
+    const entry = await realpath(join(root, manifest.entry)); assertPluginEntryInside(root, entry); return manifest;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { umiro?: { plugin?: string } };
   if (!pkg.umiro?.plugin) throw new Error(`plugin manifest not found: ${root}`);
   const entry = await realpath(join(root, pkg.umiro.plugin)); assertPluginEntryInside(root, entry);
+}
+
+function parsedPluginConfig(configJson: string | undefined): Record<string, unknown> {
+  if (configJson === undefined) return {};
+  const parsed = JSON.parse(configJson) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError("plugin --config must be a JSON object");
+  return parsed as Record<string, unknown>;
+}
+
+function resolvedPluginConfig(manifest: PluginManifestV0 | undefined, current: Record<string, unknown> | undefined, configJson: string | undefined): Record<string, unknown> {
+  const config = { ...(current ?? {}), ...parsedPluginConfig(configJson) };
+  if (manifest?.configSchema) {
+    const schema = manifest.configSchema;
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties) ? schema.properties as Record<string, unknown> : {};
+    const workspaceProperty = properties.workspacePath;
+    if (required.includes("workspacePath") && config.workspacePath === undefined && workspaceProperty && typeof workspaceProperty === "object" && !Array.isArray(workspaceProperty) && (workspaceProperty as Record<string, unknown>).type === "string") {
+      config.workspacePath = workspace;
+    }
+    validatePluginConfig(manifest, config);
+  }
+  return config;
 }
 
 async function init(): Promise<void> {
@@ -331,8 +353,17 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.source.startsWith("builtin:") ? "built-in" : "external"}\t${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
   if (action === "remove" && source.startsWith("builtin:")) throw new Error("built-in capabilities cannot be removed; disable them instead");
   let path = resolve(source); const installing = action === "install" || action === "update";
-  if (/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source)) {
+  const githubSource = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source);
+  if (githubSource) {
     const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, ""); path = managedPluginPath(join(app, "plugins"), repo, workspaceName);
+  }
+  const matches = (item: ManagedPlugin) => item.path === path || (item.source === source && item.workspace === workspaceName);
+  const previousEntry = entries.find(matches);
+  if (!installing && !previousEntry) throw new Error(`plugin is not installed: ${source}${workspaceName ? `#${workspaceName}` : ""}`);
+  if (!installing && previousEntry) path = previousEntry.path;
+  let manifest: PluginManifestV0 | undefined;
+  let nextConfig: Record<string, unknown> | undefined;
+  if (githubSource) {
     if (installing) {
       const pluginRoot = join(app, "plugins"); const nonce = crypto.randomUUID(); const checkout = join(pluginRoot, `.checkout-${nonce}`); const candidate = join(pluginRoot, `.candidate-${nonce}`); const previous = join(pluginRoot, `.previous-${nonce}`);
       await mkdir(pluginRoot, { recursive: true, mode: 0o700 });
@@ -341,21 +372,27 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
         if (workspaceName) { const direct = join(checkout, workspaceName); const nested = join(checkout, "packages", workspaceName); const selected = await exists(join(direct, "package.json")) ? direct : nested; await access(join(selected, "package.json")); await cp(selected, candidate, { recursive: true }); }
         else await rename(checkout, candidate);
         const manager = await exists(join(candidate, "pnpm-lock.yaml")) ? "pnpm" : "npm"; await exec(manager, manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], { cwd: candidate }); await exec(manager, ["run", "build"], { cwd: candidate });
-        await validatePluginDirectory(candidate);
+        manifest = await validatePluginDirectory(candidate);
+        nextConfig = resolvedPluginConfig(manifest, previousEntry?.config, configJson);
         const replacing = await exists(path); if (replacing) await rename(path, previous);
         try { await rename(candidate, path); } catch (error) { if (replacing) await rename(previous, path); throw error; }
         await rm(previous, { recursive: true, force: true });
       } finally { await rm(checkout, { recursive: true, force: true }); await rm(candidate, { recursive: true, force: true }); }
     }
   } else if (installing && /^(?:https?|git):/.test(source)) throw new Error("only public GitHub HTTPS plugin URLs are supported");
-  if (installing) await validatePluginDirectory(path);
-  const matches = (item: ManagedPlugin) => item.path === path || (item.source === source && item.workspace === workspaceName);
-  if (!installing && !entries.some(matches)) throw new Error(`plugin is not installed: ${source}${workspaceName ? `#${workspaceName}` : ""}`);
+  if (installing && !githubSource) {
+    manifest = await validatePluginDirectory(path);
+    nextConfig = resolvedPluginConfig(manifest, previousEntry?.config, configJson);
+  }
+  if (action === "configure" || action === "enable") {
+    manifest = await validatePluginDirectory(path);
+    nextConfig = resolvedPluginConfig(manifest, previousEntry?.config, configJson);
+  }
   let next = entries;
-  if (installing) { const previousEntry = entries.find(matches); next = [...entries.filter(item => !matches(item)), { source, path, ...(workspaceName ? { workspace: workspaceName } : {}), enabled: previousEntry?.enabled ?? true, ...(previousEntry?.config ? { config: previousEntry.config } : {}) }]; }
+  if (installing) { next = [...entries.filter(item => !matches(item)), { source, path, ...(workspaceName ? { workspace: workspaceName } : {}), enabled: previousEntry?.enabled ?? true, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) }]; }
   else if (action === "remove") next = entries.filter(item => !matches(item));
-  else if (action === "enable" || action === "disable") next = entries.map(item => matches(item) ? { ...item, enabled: action === "enable" } : item);
-  else if (action === "configure") next = entries.map(item => matches(item) ? { ...item, config: JSON.parse(configJson ?? "{}") as Record<string, unknown> } : item);
+  else if (action === "enable" || action === "disable") next = entries.map(item => matches(item) ? { ...item, enabled: action === "enable", ...(action === "enable" && nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
+  else if (action === "configure") next = entries.map(item => matches(item) ? { ...item, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
   else throw new Error(`unsupported plugin action: ${action}`);
   await savePlugins(next); if (action === "remove" && path.startsWith(`${join(app, "plugins")}/`) && !source.startsWith("builtin:")) await rm(path, { recursive: true, force: true }); console.log(`${action}: ${path}`);
 }
