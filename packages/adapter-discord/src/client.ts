@@ -281,8 +281,15 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     recent.push(now);
     this.messageTimes.set(message.author.id, recent);
     let replyAuthorId: string | undefined;
+    let replyToContent: string | undefined;
+    let replyToCreatedAt: string | undefined;
     if (message.reference?.messageId) {
-      try { replyAuthorId = (await message.fetchReference()).author.id; } catch { /* deleted or inaccessible reference */ }
+      try {
+        const reference = await message.fetchReference();
+        replyAuthorId = reference.author.id;
+        replyToContent = reference.content;
+        replyToCreatedAt = reference.createdAt.toISOString();
+      } catch { /* deleted or inaccessible reference */ }
     }
     const thread = message.channel.isThread() ? message.channel : undefined;
     return {
@@ -300,6 +307,8 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       mentionedUserIds: [...message.mentions.users.keys()],
       ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}),
       ...(replyAuthorId ? { replyAuthorId } : {}),
+      ...(replyToContent !== undefined ? { replyToContent } : {}),
+      ...(replyToCreatedAt ? { replyToCreatedAt } : {}),
       attachments: [...message.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) })),
     };
   }

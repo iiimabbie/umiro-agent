@@ -129,6 +129,15 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
     if (items.length) { const lines = items.flatMap(item => { const user = item.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n"); return [`User (${item.turn.actorPrincipalId}): ${user}`, ...(item.assistantText ? [`Assistant: ${item.assistantText}`] : [])]; }); blocks.push({ id: "context.conversation_history:recent", providerId: "context.conversation_history", role: "conversation-history", content: `<conversation-history>\n${lines.join("\n")}\n</conversation-history>`, source: { kind: "conversation", ref: items[0]!.turn.conversationId }, influence: "information" as const, instructionAuthority: "none" as const }); }
     const reply = request.replyTarget;
     if (reply) { const user = reply.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n"); blocks.push({ id: "context.conversation_history:reply-target", providerId: "context.conversation_history", role: "conversation-history", content: `<discord-reply-target trust="untrusted-data" turn-id="${reply.turn.id}">\n${user}${reply.assistantText ? `\nAssistant reply: ${reply.assistantText}` : ""}\n</discord-reply-target>`, source: { kind: "conversation-turn", ref: reply.turn.id }, influence: "information" as const, instructionAuthority: "none" as const }); }
+    else {
+      const metadata = request.inputEvent?.metadata;
+      const referenceId = typeof metadata?.replyToMessageId === "string" ? metadata.replyToMessageId : undefined;
+      if (referenceId) {
+        const author = typeof metadata?.replyAuthorId === "string" ? metadata.replyAuthorId : "unknown";
+        const content = typeof metadata?.replyToContent === "string" ? metadata.replyToContent : "[內容無法取得；僅保留 Discord 訊息參照。]";
+        blocks.push({ id: "context.conversation_history:reply-reference", providerId: "context.conversation_history", role: "conversation-history", content: `<discord-reply-target trust="untrusted-data" external-message-id="${referenceId}" author-id="${author}">\n${content}\n</discord-reply-target>`, source: { kind: "discord-message", ref: referenceId }, influence: "information" as const, instructionAuthority: "none" as const });
+      }
+    }
     return blocks;
   } };
   return {

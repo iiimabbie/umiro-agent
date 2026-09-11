@@ -27,6 +27,8 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.match(history[1]?.content ?? "", /我叫小明[\s\S]*記住了/);
   const reply = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, replyTarget: { turn: { id: "reply-turn", conversationId: "c", sequence: 1, actorPrincipalId: "user", inputEventId: "e-reply", content: [{ type: "text", text: "被回覆的內容" }], createdAt: "now" }, assistantText: "原本的回答" } });
   assert.match(reply[0]?.content ?? "", /discord-reply-target[\s\S]*被回覆的內容[\s\S]*原本的回答/);
+  const fetchedReply = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, inputEvent: { metadata: { replyToMessageId: "discord-message-1", replyAuthorId: "member-1", replyToContent: "尚未入庫的被回覆訊息" } } as never });
+  assert.match(fetchedReply[0]?.content ?? "", /external-message-id="discord-message-1"[\s\S]*尚未入庫的被回覆訊息/);
   await plugin.stop?.();
 });
 
