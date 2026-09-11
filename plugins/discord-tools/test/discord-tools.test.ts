@@ -14,8 +14,8 @@ test("registers protocol-neutral Discord tools and delegates with explicit resou
   const plugin = createPlugin(setup);
   assert.deepEqual(plugin.contributions.tools?.map(tool => tool.name), ["discord_send_message", "discord_react", "discord_pin", "discord_unpin", "discord_fetch_message", "discord_create_thread", "discord_create_forum_post", "discord_archive_thread", "discord_delete_thread", "discord_edit_message", "discord_delete_message", "discord_fetch_channel_messages", "discord_bot_mention_toggle", "discord_attach_to_reply", "discord_send_buttons"]);
   const forum = plugin.contributions.tools?.find(tool => tool.name === "discord_create_forum_post");
-  assert.equal(forum?.description.includes("channel ID supplied by the user"), true);
-  assert.equal((forum?.inputSchema.properties as Record<string, { description?: string }>).channelId?.description, "Target Discord Forum channel ID supplied by the user.");
+  assert.equal(forum?.description.includes("this/current Forum"), true);
+  assert.equal((forum?.inputSchema.properties as Record<string, { description?: string }>).channelId?.description?.includes("currentForum.id"), true);
   const react = plugin.contributions.tools?.find(tool => tool.name === "discord_react");
   assert.ok(react);
   const result = await react.execute({ channelId: "123456", messageId: "654321", emoji: "👍" }, { execution: context, operationId: "op", signal: new AbortController().signal });
