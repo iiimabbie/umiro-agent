@@ -240,7 +240,7 @@ async function readinessState(expectedPid?: number): Promise<"ready" | "not-read
     return checks?.storage && checks.plugins && checks.discord && checks.scheduler && checks.shuttingDown !== true ? "ready" : "not-ready";
   } catch { return "not-ready"; }
 }
-async function waitForReady(expectedPid?: number, timeoutMs = 30_000): Promise<void> {
+async function waitForReady(expectedPid?: number, timeoutMs = 90_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) { if (await readinessState(expectedPid) === "ready") return; await new Promise(resolveWait => setTimeout(resolveWait, 250)); }
   throw new Error(`gateway did not become ready within ${timeoutMs}ms; inspect ${join(home, "state", "gateway.log")}`);
