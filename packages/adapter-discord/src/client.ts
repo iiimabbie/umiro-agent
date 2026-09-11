@@ -3,6 +3,25 @@ import type { DiscordMessageEnvelope, DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 
+type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
+type DiscordCommandManager = { set(commands: readonly ApplicationCommandDataResolvable[]): Promise<unknown> };
+
+export function applicationCommandData(commands: readonly DiscordCommandDefinition[]): readonly ApplicationCommandDataResolvable[] {
+  const types = { string: ApplicationCommandOptionType.String, integer: ApplicationCommandOptionType.Integer, boolean: ApplicationCommandOptionType.Boolean, channel: ApplicationCommandOptionType.Channel } as const;
+  return commands.map(command => ({
+    name: command.name,
+    description: command.description,
+    options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [],
+  })) as ApplicationCommandDataResolvable[];
+}
+
+/** Bulk overwrite both scopes so commands left behind by an older release cannot
+ * remain visible in a guild after this adapter becomes authoritative. */
+export async function syncApplicationCommands(application: DiscordCommandManager, guilds: readonly DiscordCommandManager[], commands: readonly ApplicationCommandDataResolvable[]): Promise<void> {
+  await application.set(commands);
+  await Promise.all(guilds.map(guild => guild.set(commands)));
+}
+
 export type DiscordApprovalAction = "approve" | "deny";
 export interface DiscordApprovalPrompt { readonly approvalId: string; readonly operation: string; readonly details: string; readonly expiresAt: string }
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
@@ -28,7 +47,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
   private steerHandler?: (message: DiscordMessageEnvelope) => Promise<boolean>;
-  private commands: readonly { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; choices?: readonly { name: string; value: string | number }[] }[] }[] = [];
+  private commands: readonly DiscordCommandDefinition[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
   private approvalHandler?: (approvalId: string, action: DiscordApprovalAction, context: DiscordInteractionContext) => Promise<{ readonly content: string }>;
   private buttonHandler?: (interaction: DiscordButtonInteraction) => Promise<{ readonly content: string }>;
@@ -59,8 +78,8 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (!this.client.user) throw new Error("Discord login returned without a bot user");
     if (presence?.status || presence?.activity) this.client.user.setPresence({ status: presence.status ?? "online", activities: presence.activity ? [{ name: presence.activity, type: ActivityType.Playing }] : [] });
     console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
-    const types = { string: ApplicationCommandOptionType.String, integer: ApplicationCommandOptionType.Integer, boolean: ApplicationCommandOptionType.Boolean, channel: ApplicationCommandOptionType.Channel } as const;
-    await this.client.application?.commands.set(this.commands.map(command => ({ name: command.name, description: command.description, options: command.options?.map(option => ({ type: types[option.type], name: option.name, description: option.description, required: option.required ?? false, ...(option.choices ? { choices: [...option.choices] } : {}) })) ?? [] })) as ApplicationCommandDataResolvable[]);
+    if (!this.client.application) throw new Error("Discord login returned without an application");
+    await syncApplicationCommands(this.client.application.commands, [...this.client.guilds.cache.values()].map(guild => guild.commands), applicationCommandData(this.commands));
   }
 
   async stop(): Promise<void> { this.client.destroy(); }
