@@ -36,3 +36,30 @@ test("schedule update uses the same trigger identity and increments revision", a
   await assert.rejects(store.updateScheduledTrigger(trigger.id, { name: "stale", schedule: updated.schedule, timezone: updated.timezone, input: updated.input, misfirePolicy: updated.misfirePolicy, maxAttempts: updated.maxAttempts, retryBackoffMs: updated.retryBackoffMs }, 0, updated.nextFireAt, updated.updatedAt), /changed/);
   store.close();
 });
+
+test("plugin job sync reconciles changed declarations without re-enabling a disabled trigger", async () => {
+  let now = new Date("2026-01-01T00:00:00.000Z");
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => now);
+  const run = async () => undefined;
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "0 8,20 * * *", timezone: "Asia/Taipei", run }]);
+  const created = await store.getScheduledTrigger("plugin-job:guardian.check");
+  assert.equal(created?.nextFireAt, "2026-01-01T12:00:00.000Z");
+  await scheduler.setEnabled("plugin-job:guardian.check", false);
+
+  now = new Date("2026-01-01T00:00:30.000Z");
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "* * * * *", timezone: "UTC", misfirePolicy: "skip", maxAttempts: 5, retryBackoffMs: 2500, run }]);
+  const updated = await store.getScheduledTrigger("plugin-job:guardian.check");
+  assert.equal(updated?.revision, 2);
+  assert.equal(updated?.enabled, false);
+  assert.equal(updated?.nextFireAt, null);
+  assert.deepEqual(updated?.schedule, { kind: "cron", expression: "* * * * *" });
+  assert.equal(updated?.timezone, "UTC");
+  assert.equal(updated?.misfirePolicy, "skip");
+  assert.equal(updated?.maxAttempts, 5);
+  assert.equal(updated?.retryBackoffMs, 2500);
+
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "* * * * *", timezone: "UTC", misfirePolicy: "skip", maxAttempts: 5, retryBackoffMs: 2500, run }]);
+  assert.equal((await store.getScheduledTrigger("plugin-job:guardian.check"))?.revision, 2);
+  store.close();
+});

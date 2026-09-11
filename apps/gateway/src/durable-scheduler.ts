@@ -27,8 +27,23 @@ export class DurableScheduler implements SchedulerControl {
   async syncPluginJobs(jobs: readonly PluginJobDefinition[]): Promise<void> {
     const current = new Map((await this.store.listScheduledTriggers()).map(trigger => [trigger.id, trigger]));
     for (const job of jobs) {
-      const id = `plugin-job:${job.id}`; if (current.has(id)) continue; const now = this.now(); const schedule = { kind: "cron" as const, expression: job.schedule };
-      await this.store.createScheduledTrigger({ id, name: job.id, enabled: true, schedule, timezone: job.timezone ?? "UTC", jobRef: `plugin:${job.id}`, input: {}, creatorPrincipalId: "system", creatorRoles: ["system"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, misfirePolicy: job.misfirePolicy ?? "coalesce", maxAttempts: job.maxAttempts ?? 3, retryBackoffMs: job.retryBackoffMs ?? 15_000, nextFireAt: nextFire(schedule, job.timezone ?? "UTC", now), createdAt: now.toISOString() });
+      const id = `plugin-job:${job.id}`; const now = this.now(); const schedule = { kind: "cron" as const, expression: job.schedule };
+      const patch = { name: job.id, schedule, timezone: job.timezone ?? "UTC", input: {}, misfirePolicy: job.misfirePolicy ?? "coalesce", maxAttempts: job.maxAttempts ?? 3, retryBackoffMs: job.retryBackoffMs ?? 15_000 };
+      const existing = current.get(id);
+      if (!existing) {
+        await this.store.createScheduledTrigger({ id, ...patch, enabled: true, jobRef: `plugin:${job.id}`, creatorPrincipalId: "system", creatorRoles: ["system"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, nextFireAt: nextFire(schedule, patch.timezone, now), createdAt: now.toISOString() });
+        continue;
+      }
+      const changed = existing.name !== patch.name
+        || existing.schedule.kind !== "cron"
+        || existing.schedule.expression !== patch.schedule.expression
+        || existing.timezone !== patch.timezone
+        || Object.keys(existing.input).length !== 0
+        || existing.destination !== undefined
+        || existing.misfirePolicy !== patch.misfirePolicy
+        || existing.maxAttempts !== patch.maxAttempts
+        || existing.retryBackoffMs !== patch.retryBackoffMs;
+      if (changed) await this.store.updateScheduledTrigger(id, patch, existing.revision, existing.enabled ? nextFire(schedule, patch.timezone, now) : null, now.toISOString());
     }
   }
   recover(): Promise<number> { return this.store.recoverScheduledOccurrences(this.now().toISOString()); }
