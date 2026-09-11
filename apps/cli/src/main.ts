@@ -162,7 +162,7 @@ async function configure(fromEnv?: string): Promise<void> {
   if (!fromEnv) throw new Error("configure requires --from-env <path>"); const source = resolve(fromEnv); await access(source); await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 }); let content = await readFile(source, "utf8"); if (!/^UMIRO_WEB_UI_TOKEN=/m.test(content)) content = `${content.trimEnd()}\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`; await writeFile(secretsFile, content, { mode: 0o600 }); await chmod(secretsFile, 0o600); console.log(secretsFile);
 }
 
-async function embedding(action: string, provider?: string, model?: string, baseUrl?: string, apiKeyEnv?: string): Promise<void> {
+async function embedding(action: string, provider?: string, model?: string, baseUrl?: string, apiKeyEnv?: string, requestsPerMinute?: string, recallLimit?: string, minSimilarity?: string): Promise<void> {
   const config = await loadConfig();
   if (action === "status") { console.log(JSON.stringify(config.embedding ?? { provider: "disabled" }, null, 2)); return; }
   if (action === "disable") { await saveConfig({ ...config, embedding: { provider: "disabled" } }); console.log("embedding disabled"); return; }
@@ -170,9 +170,16 @@ async function embedding(action: string, provider?: string, model?: string, base
   if (provider !== "gemini" && provider !== "openai-compatible") throw new Error("--provider must be gemini or openai-compatible");
   if (!model?.trim()) throw new Error("embedding configure requires --model");
   if (provider === "openai-compatible" && !baseUrl?.trim()) throw new Error("openai-compatible embedding requires --base-url");
+  const rpm = requestsPerMinute === undefined ? undefined : Number(requestsPerMinute);
+  const limit = recallLimit === undefined ? undefined : Number(recallLimit);
+  const similarity = minSimilarity === undefined ? undefined : Number(minSimilarity);
+  if (rpm !== undefined && (!Number.isSafeInteger(rpm) || rpm < 1 || rpm > 600)) throw new Error("--requests-per-minute must be between 1 and 600");
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 20)) throw new Error("--recall-limit must be between 1 and 20");
+  if (similarity !== undefined && (!Number.isFinite(similarity) || similarity < 0 || similarity > 1)) throw new Error("--min-similarity must be between 0 and 1");
+  const tuning = { ...(rpm !== undefined ? { requestsPerMinute: rpm } : {}), ...(limit !== undefined ? { recallLimit: limit } : {}), ...(similarity !== undefined ? { minSimilarity: similarity } : {}) };
   const next = provider === "gemini"
-    ? { provider, model: model.trim(), apiKeyEnv: apiKeyEnv?.trim() || "GOOGLE_API_KEY" }
-    : { provider, model: model.trim(), baseUrl: baseUrl!.trim(), ...(apiKeyEnv?.trim() ? { apiKeyEnv: apiKeyEnv.trim() } : {}) };
+    ? { provider, model: model.trim(), apiKeyEnv: apiKeyEnv?.trim() || "GOOGLE_API_KEY", ...tuning }
+    : { provider, model: model.trim(), baseUrl: baseUrl!.trim(), ...(apiKeyEnv?.trim() ? { apiKeyEnv: apiKeyEnv.trim() } : {}), ...tuning };
   await saveConfig({ ...config, embedding: next });
   console.log(`embedding configured: ${provider}/${model.trim()}`);
 }
@@ -408,4 +415,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
+if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");

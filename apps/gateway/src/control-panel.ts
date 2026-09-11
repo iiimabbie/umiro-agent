@@ -43,6 +43,7 @@ export const CONFIG_EXPLANATIONS = {
   "embedding.apiKeyEnv": { label: "Embedding credential 變數", description: "secrets.env 中存放 API key 的環境變數名稱；不是 key 本身。", defaultValue: null, risk: "變數不存在時 daemon 會 fail fast。", restartRequired: true },
   "embedding.recallLimit": { label: "跨對話記憶筆數", description: "每輪自動注入最多幾筆其他 Conversation 的向量搜尋結果。", defaultValue: 5, risk: "調高會佔用更多 context，也可能引入不相關記憶。", restartRequired: true },
   "embedding.minSimilarity": { label: "跨對話記憶門檻", description: "0–1 的向量相似度下限；不同 provider／model 的分數分佈不同，可依實際 recall 調整。", defaultValue: 0.55, risk: "調低會提高 recall，但可能注入不相關資料；調高可能漏掉應記得的對話。", restartRequired: true },
+  "embedding.requestsPerMinute": { label: "Embedding 每分鐘請求上限", description: "背景建索引、自動 recall 與手動搜尋共用的 provider RPM；前景查詢會優先於等待中的背景工作。省略表示不由 ümiro 限速。", defaultValue: null, risk: "設得高於帳號額度會收到 rate limit；設得過低會延後背景索引。", restartRequired: true },
   "discord.ignoredChannels": { label: "完全忽略頻道", description: "不記錄、不回覆；精確比對 channel/thread ID，優先級最高。", defaultValue: [], risk: "列入後該頻道的訊息完全不進入記憶。", restartRequired: true },
   "discord.ambientChannels": { label: "Ambient 頻道", description: "不需 mention 即觸發；仍必須通過 guild/channel scope。", defaultValue: [], risk: "會提高觸發頻率、模型用量與誤回覆機率。", restartRequired: true },
   "discord.allowedChannels": { label: "允許頻道", description: "所有人（包含 Owner）在伺服器內可使用的 channel/thread ID；空陣列表示不以此項限制。", defaultValue: [], risk: "空陣列不代表拒絕全部；需配合 allowedGuilds 理解範圍。", restartRequired: true },
@@ -115,7 +116,11 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
     for (const key of ["maxConcurrentChildren", "maxParallelTools"] as const) if (subagent[key] !== undefined && (!Number.isSafeInteger(subagent[key]) || Number(subagent[key]) < 1 || Number(subagent[key]) > 2)) throw new TypeError(`subagent.${key} must be 1 or 2`);
   }
   if (config.plugins !== undefined && (!Array.isArray(config.plugins) || config.plugins.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof (item as { path?: unknown }).path !== "string"))) throw new TypeError("plugins must contain objects with a path");
-  if (config.embedding !== undefined && (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding))) throw new TypeError("embedding must be an object");
+  if (config.embedding !== undefined) {
+    if (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding)) throw new TypeError("embedding must be an object");
+    const embedding = config.embedding as Record<string, unknown>;
+    if (embedding.requestsPerMinute !== undefined && (!Number.isSafeInteger(embedding.requestsPerMinute) || Number(embedding.requestsPerMinute) < 1 || Number(embedding.requestsPerMinute) > 600)) throw new TypeError("embedding.requestsPerMinute must be between 1 and 600");
+  }
   if (config.webUi !== undefined) {
     if (!config.webUi || typeof config.webUi !== "object" || Array.isArray(config.webUi)) throw new TypeError("webUi must be an object");
     const ui = config.webUi as Record<string, unknown>;

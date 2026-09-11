@@ -7,6 +7,100 @@ export interface TextEmbedder {
   readonly model: string;
   embed(text: string, signal?: AbortSignal): Promise<readonly number[]>;
   embedMany?(texts: readonly string[], signal?: AbortSignal): Promise<readonly (readonly number[])[]>;
+  /** Returns a low-priority view that shares the same provider request budget. */
+  forBackground?(): TextEmbedder;
+}
+
+interface RateLimitScheduler {
+  now(): number;
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const systemScheduler: RateLimitScheduler = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: handle => clearTimeout(handle as NodeJS.Timeout),
+};
+
+type PendingEmbeddingRequest = {
+  readonly priority: "foreground" | "background";
+  readonly run: () => Promise<unknown>;
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: unknown) => void;
+  readonly signal?: AbortSignal;
+  readonly abort: () => void;
+};
+
+/** Serializes all calls to one provider budget and lets interactive recall jump
+ * ahead of queued background projection work. A batch consumes one request. */
+export class RateLimitedTextEmbedder implements TextEmbedder {
+  readonly model: string;
+  private readonly intervalMs: number;
+  private readonly queue: PendingEmbeddingRequest[] = [];
+  private active = false;
+  private lastStartedAt: number | undefined;
+  private timer: unknown;
+
+  constructor(private readonly inner: TextEmbedder, requestsPerMinute: number, private readonly scheduler: RateLimitScheduler = systemScheduler) {
+    if (!Number.isSafeInteger(requestsPerMinute) || requestsPerMinute < 1 || requestsPerMinute > 600) throw new TypeError("embedding.requestsPerMinute must be between 1 and 600");
+    this.model = inner.model;
+    this.intervalMs = 60_000 / requestsPerMinute;
+  }
+
+  embed(text: string, signal?: AbortSignal): Promise<readonly number[]> { return this.enqueue(() => this.inner.embed(text, signal), "foreground", signal); }
+  embedMany(texts: readonly string[], signal?: AbortSignal): Promise<readonly (readonly number[])[]> {
+    if (!texts.length) return Promise.resolve([]);
+    return this.inner.embedMany
+      ? this.enqueue(() => this.inner.embedMany!(texts, signal), "foreground", signal)
+      : Promise.all(texts.map(text => this.embed(text, signal)));
+  }
+  forBackground(): TextEmbedder {
+    return {
+      model: this.model,
+      embed: (text, signal) => this.enqueue(() => this.inner.embed(text, signal), "background", signal),
+      ...(this.inner.embedMany ? { embedMany: (texts: readonly string[], signal?: AbortSignal) => texts.length ? this.enqueue(() => this.inner.embedMany!(texts, signal), "background", signal) : Promise.resolve([]) } : {}),
+    };
+  }
+
+  private enqueue<T>(run: () => Promise<T>, priority: "foreground" | "background", signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("embedding request aborted"));
+    return new Promise<T>((resolve, reject) => {
+      const request: PendingEmbeddingRequest = {
+        priority,
+        run,
+        resolve: value => resolve(value as T),
+        reject,
+        ...(signal ? { signal } : {}),
+        abort: () => {
+          const index = this.queue.indexOf(request);
+          if (index < 0) return;
+          this.queue.splice(index, 1);
+          reject(signal?.reason ?? new Error("embedding request aborted"));
+          if (!this.queue.length && this.timer !== undefined) { this.scheduler.clearTimeout(this.timer); this.timer = undefined; }
+        },
+      };
+      signal?.addEventListener("abort", request.abort, { once: true });
+      this.queue.push(request);
+      this.schedule();
+    });
+  }
+
+  private schedule(): void {
+    if (this.active || this.timer !== undefined || !this.queue.length) return;
+    const delay = this.lastStartedAt === undefined ? 0 : Math.max(0, this.intervalMs - (this.scheduler.now() - this.lastStartedAt));
+    if (delay > 0) {
+      this.timer = this.scheduler.setTimeout(() => { this.timer = undefined; this.schedule(); }, delay);
+      return;
+    }
+    const foreground = this.queue.findIndex(request => request.priority === "foreground");
+    const [request] = this.queue.splice(foreground >= 0 ? foreground : 0, 1);
+    if (!request) return;
+    request.signal?.removeEventListener("abort", request.abort);
+    this.active = true;
+    this.lastStartedAt = this.scheduler.now();
+    void request.run().then(request.resolve, request.reject).finally(() => { this.active = false; this.schedule(); });
+  }
 }
 
 type Fetcher = typeof fetch;

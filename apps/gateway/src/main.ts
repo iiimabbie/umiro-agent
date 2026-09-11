@@ -102,7 +102,7 @@ const extractionBackfill = await artifacts.backfillTextExtractions();
 if (extractionBackfill.updated > 0) await store.rebuildSearchProjection();
 if (extractionBackfill.failed > 0) logger.write({ level: "warn", event: "artifact.extraction.backfill_degraded", message: "Some legacy artifact text could not be extracted", occurredAt: new Date().toISOString(), data: extractionBackfill });
 const embedder = createConfiguredEmbedder(config.embedding);
-const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder, 15_000, logger) : undefined;
+const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder.forBackground?.() ?? embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);
 if (embedder) providers.register(new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }));
 const scheduler = new DurableScheduler(store);
