@@ -689,7 +689,7 @@ export class HeadlessRunEngine {
       modelStep = { ...modelStep, revision: 1, state: "running" };
     }
 
-    const maxModelTurns = request.maxModelTurns ?? 8;
+    const maxModelTurns = request.maxModelTurns ?? 25;
     let toolCalls = 0;
     const startedMs = Date.now();
     const durationError = request.maxDurationMs === undefined ? undefined : new Error(`run duration budget exceeded: ${request.maxDurationMs}ms`);

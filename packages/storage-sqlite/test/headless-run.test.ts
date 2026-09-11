@@ -137,6 +137,42 @@ test("runs model to tool to model and persists the final output", async () => {
   }
 });
 
+test("defaults the main Run to 25 model turns", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let modelCalls = 0;
+  let toolCalls = 0;
+  const model: ModelPort = {
+    async generate() {
+      modelCalls += 1;
+      const toolCall = { id: `call-${modelCalls}`, name: "test.continue", input: {} };
+      return response({
+        toolCalls: [toolCall],
+        finishReason: "tool_calls",
+        assistantMessage: { role: "assistant", content: null, toolCalls: [toolCall] },
+      });
+    },
+  };
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "test.continue",
+    description: "Continue until the Run reaches its model-turn ceiling",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    policy: { capability: "test.continue", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+    async execute() {
+      toolCalls += 1;
+      return { ok: true, output: null, effectStatus: "not_applicable" };
+    },
+  });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() })
+      .run({ context: ownerContext("test.continue"), model: "fake-model", prompt: "keep going" });
+    assert.equal(result.status, "failed");
+    if (result.status === "failed") assert.match(result.error, /model turn limit exceeded: 25/);
+    assert.equal(modelCalls, 25);
+    assert.equal(toolCalls, 25);
+  } finally { store.close(); }
+});
+
 test("passes the selected session reasoning effort to every model turn", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   const efforts: unknown[] = [];
