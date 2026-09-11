@@ -19,11 +19,20 @@ const secretsFile = join(home, "config", "secrets.env");
 const app = join(home, "app");
 const currentRelease = join(app, "current");
 const previousRelease = join(app, "previous");
-const templates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
+const sourceTemplates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
 interface UmiroConfig { model: string; protocol?: "openai_responses" | "openai_chat_completions"; modelCapabilities?: string[]; profiles?: Record<string, { model: string; protocol?: "openai_responses" | "openai_chat_completions"; capabilities?: string[]; reasoningEffort?: string }>; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
+async function workspaceTemplates(): Promise<string> {
+  const candidates = [
+    ...(process.env.UMIRO_SOURCE_DIR?.trim() ? [join(resolve(process.env.UMIRO_SOURCE_DIR.trim()), "templates", "workspace")] : []),
+    join(currentRelease, "templates", "workspace"),
+    sourceTemplates,
+  ];
+  for (const candidate of candidates) if (await exists(join(candidate, "BOOTSTRAP.md"))) return candidate;
+  throw new Error(`workspace templates not found; checked ${candidates.join(", ")}`);
+}
 async function loadPlugins(): Promise<ManagedPlugin[]> {
   const raw = JSON.parse(await readFile(pluginsFile, "utf8").catch(() => "[]")) as Array<string | ManagedPlugin>;
   return raw.map(item => typeof item === "string" ? { source: item, path: item, enabled: true } : item);
@@ -80,6 +89,7 @@ function resolvedPluginConfig(manifest: PluginManifestV0 | undefined, current: R
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
+  const templates = await workspaceTemplates();
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "BOOTSTRAP.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
