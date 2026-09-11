@@ -44,7 +44,7 @@ export interface PluginCommandDefinition {
   readonly description: string;
   readonly ownerOnly?: boolean;
   readonly ephemeral?: boolean;
-  readonly options?: readonly { readonly name: string; readonly description: string; readonly type: "string" | "integer" | "boolean" | "channel"; readonly required?: boolean; readonly choices?: readonly { readonly name: string; readonly value: string | number }[] }[];
+  readonly options?: readonly { readonly name: string; readonly description: string; readonly type: "string" | "integer" | "boolean" | "channel"; readonly required?: boolean; readonly autocomplete?: boolean; readonly choices?: readonly { readonly name: string; readonly value: string | number }[] }[];
   readonly execute: (input: JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }) => Promise<JsonObject>;
 }
 
