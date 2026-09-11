@@ -7,7 +7,7 @@ import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, c
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
-import { pluginStateDirectory } from "./plugin-composition.js";
+import { orderPluginEnableEntries, pluginStateDirectory } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedder, type EmbeddingConfig } from "./embedding-config.js";
@@ -55,8 +55,9 @@ const managed = managedRaw.map(item => typeof item === "string" ? { path: item, 
 const byPath = new Map<string, { path: string; config?: JsonObject }>();
 for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.config ? { config: item.config } : {}) });
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
-const configured = [...byPath.values()];
-const modules = await Promise.all(configured.map(item => loadPluginModule(item.path)));
+const pluginEntries = orderPluginEnableEntries(await Promise.all([...byPath.values()].map(async configured => ({ configured, module: await loadPluginModule(configured.path) }))));
+const configured = pluginEntries.map(entry => entry.configured);
+const modules = pluginEntries.map(entry => entry.module);
 const hostedWebSearch = allModelCapabilities.includes("hosted_web_search");
 const hostedImageGeneration = allModelCapabilities.includes("hosted_image_generation");
 const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
