@@ -1,8 +1,8 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ApprovalRunCoordinator, capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationPreferences, type HeadlessRunResult, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
-import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordApprovalAction, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
+import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
+import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { FilePluginStateStore } from "./file-plugin-state.js";
@@ -16,7 +16,6 @@ import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
 import { JsonLineLogger } from "./structured-logger.js";
-import { approvalDetails } from "./approval-presentation.js";
 import { DiscordStreamingDelivery } from "./discord-streaming.js";
 import { ControlPanelServer, validateControlConfig } from "./control-panel.js";
 import { artifactModelContent } from "./artifact-input.js";
@@ -174,7 +173,6 @@ if (hostedImageGeneration) tools.register({
 const engine = new HeadlessRunEngine(modelPort, tools, store, { maxParallelToolCalls: config.subagent?.maxParallelTools ?? 2 });
 const contextEngine = new ContextEngine(providers);
 const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: config.subagent?.maxConcurrentChildren ?? 2, resolveModel: selection => resolveDelegatedModel(selection, defaultModelProfile.model, configuredProfiles) });
-const approvalRuns = new ApprovalRunCoordinator(store, engine);
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
 readiness.storage = true;
@@ -312,28 +310,10 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     const result = await exec(`${paths.root}/bin/umiro`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
     return { ok: true, output: result.stdout.trim(), restartRequired: true };
   },
-}, approvals: {
-  list: async () => Promise.all((await store.listPendingApprovals(100)).map(async approval => { const operation = await store.getOperation(approval.operationId); return { id: approval.id, operation: operation?.kind ?? "unknown", details: operation ? approvalDetails(operation) : "Operation missing", expiresAt: approval.expiresAt }; })),
-  resolve: async (id, action) => {
-    const outcome = await approvalRuns.resolveAndResume(id, action, { actor: { id: "owner", kind: "human", roles: ["owner"] }, authority: ownerAuthority, origin: { kind: "interactive", transport: "web-ui", conversationId: "control-panel" } });
-    if (outcome.status === "resumed") { await delivery.drain(); return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.result.status }; }
-    return { approval: outcome.approval.state, runId: outcome.runId, runStatus: outcome.runState };
-  },
 }, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); const origin = run.context.origin; const binding = run.conversationId ? await store.getConversationBinding(run.conversationId) : undefined; return { id: run.id, state: run.state, origin: origin.kind, ...(binding?.transport === "discord" ? { channelId: binding.externalId } : {}), createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
 }, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
-async function presentApprovalId(approvalId: string, channelId: string): Promise<void> {
-  const approval = await store.getApproval(approvalId);
-  if (!approval) throw new Error(`Approval is missing: ${approvalId}`);
-  const operation = await store.getOperation(approval.operationId);
-  if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
-  await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
-}
-async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
-  if (result.status !== "waiting" || result.reason !== "approval_required") return;
-  await presentApprovalId(result.approvalId, channelId);
-}
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
   const module = modules[index]!;
@@ -412,22 +392,6 @@ discord.onAutocomplete(async (name: string, option: string, value: string, conte
     return [];
   }
 });
-const handleApproval = async (approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => {
-  const resolved = await identities.resolve({ transport: "discord", externalId: interaction.userId, principalId: null });
-  if (await buttonActions.handles(approvalId)) {
-    const outcome = await buttonActions.resolveAndExecute(approvalId, action, { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive", transport: "discord", conversationId: interaction.channelId } });
-    return { content: `Approval ${outcome.approvalState}; action ${outcome.status}.` };
-  }
-  const outcome = await approvalRuns.resolveAndResume(approvalId, action, { actor: resolved.principal, authority: resolved.authority, origin: { kind: "interactive", transport: "discord", conversationId: interaction.channelId } });
-  if (outcome.status === "resumed") {
-    await presentApproval(outcome.result, interaction.channelId);
-    await delivery.drain();
-    const state = outcome.result.status === "succeeded" ? "completed" : outcome.result.status;
-    return { content: `Approval ${outcome.approval.state}; Run ${state}.` };
-  }
-  return { content: `Approval ${outcome.approval.state}; Run is already ${outcome.runState}.` };
-};
-discord.onApproval((approvalId: string, action: DiscordApprovalAction, interaction: DiscordInteractionContext) => activeWork.track(handleApproval(approvalId, action, interaction)));
 const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => {
   const decision = decideDiscordIngress({
     channelId: message.channelId,
@@ -486,7 +450,6 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
-  if (result.status === "executed") await presentApproval(result.result, message.channelId);
   if (result.status === "executed" && result.result.status === "succeeded") await streaming.finalize(result.result.deliveryId, result.result.text, new Date().toISOString());
   await delivery.drain();
 };

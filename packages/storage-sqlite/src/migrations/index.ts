@@ -11,7 +11,6 @@ import { CONVERSATION_EMBEDDINGS_SCHEMA } from "./009-conversation-embeddings.js
 import { SCHEDULER_SCHEMA } from "./010-scheduler.js";
 import { ARTIFACTS_SCHEMA } from "./011-artifacts.js";
 import { DELIVERY_RETRY_SCHEMA } from "./012-delivery-retry.js";
-import { APPROVALS_SCHEMA } from "./013-approvals.js";
 import { OPERATION_ARTIFACTS_SCHEMA } from "./014-operation-artifacts.js";
 import { CONVERSATION_COMPACTIONS_SCHEMA } from "./015-conversation-compactions.js";
 import { PLUGIN_STATE_SCHEMA } from "./016-plugin-state.js";
@@ -119,78 +118,73 @@ export function migrate(database: Database.Database): void {
   }
   if (current.version < 13) {
     database.transaction(() => {
-      database.exec(APPROVALS_SCHEMA);
+      database.exec(OPERATION_ARTIFACTS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(13, new Date().toISOString());
     })();
   }
   if (current.version < 14) {
     database.transaction(() => {
-      database.exec(OPERATION_ARTIFACTS_SCHEMA);
+      database.exec(CONVERSATION_COMPACTIONS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(14, new Date().toISOString());
     })();
   }
   if (current.version < 15) {
     database.transaction(() => {
-      database.exec(CONVERSATION_COMPACTIONS_SCHEMA);
+      database.exec(PLUGIN_STATE_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(15, new Date().toISOString());
     })();
   }
   if (current.version < 16) {
     database.transaction(() => {
-      database.exec(PLUGIN_STATE_SCHEMA);
+      database.exec(CONVERSATION_PREFERENCES_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(16, new Date().toISOString());
     })();
   }
   if (current.version < 17) {
     database.transaction(() => {
-      database.exec(CONVERSATION_PREFERENCES_SCHEMA);
+      database.exec(STEERED_INPUTS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(17, new Date().toISOString());
     })();
   }
   if (current.version < 18) {
     database.transaction(() => {
-      database.exec(STEERED_INPUTS_SCHEMA);
+      database.exec(ARTIFACT_TEXT_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(18, new Date().toISOString());
     })();
   }
   if (current.version < 19) {
     database.transaction(() => {
-      database.exec(ARTIFACT_TEXT_SCHEMA);
+      database.exec(SEARCH_DOCUMENTS_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(19, new Date().toISOString());
     })();
   }
   if (current.version < 20) {
     database.transaction(() => {
-      database.exec(SEARCH_DOCUMENTS_SCHEMA);
+      database.exec(STEERED_INPUT_AUTHORITY_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(20, new Date().toISOString());
     })();
   }
   if (current.version < 21) {
     database.transaction(() => {
-      database.exec(STEERED_INPUT_AUTHORITY_SCHEMA);
+      database.exec(DELEGATION_STATE_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(21, new Date().toISOString());
     })();
   }
   if (current.version < 22) {
     database.transaction(() => {
-      database.exec(DELEGATION_STATE_SCHEMA);
+      database.exec(MULTIPLE_DELIVERIES_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(22, new Date().toISOString());
     })();
   }
   if (current.version < 23) {
     database.transaction(() => {
-      database.exec(MULTIPLE_DELIVERIES_SCHEMA);
-      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(23, new Date().toISOString());
-    })();
-  }
-  if (current.version < 24) {
-    database.transaction(() => {
       database.exec(SOURCE_EMBEDDINGS_SCHEMA);
-      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(24, new Date().toISOString());
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(23, new Date().toISOString());
     })();
   }
   if (current.version < 25) {
     database.transaction(() => {
+      database.exec("DROP TABLE IF EXISTS approval_requests");
       database.exec(CONVERSATION_SCOPES_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(25, new Date().toISOString());
     })();

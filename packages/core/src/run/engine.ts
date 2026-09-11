@@ -44,12 +44,11 @@ export interface HeadlessResumeRequest {
 export type HeadlessRunResult =
   | { readonly status: "succeeded"; readonly runId: string; readonly deliveryId: string; readonly text: string; readonly usage: ModelUsage }
   | { readonly status: "waiting"; readonly runId: string; readonly reason: "outcome_unknown" }
-  | { readonly status: "waiting"; readonly runId: string; readonly reason: "approval_required"; readonly approvalId: string }
   | { readonly status: "failed" | "cancelled"; readonly runId: string; readonly error: string };
 
 export interface HeadlessRunEngineOptions {
   readonly now?: () => string;
-  readonly createId?: (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization" | "approval") => string;
+  readonly createId?: (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization") => string;
   readonly maxParallelToolCalls?: number;
 }
 
@@ -479,15 +478,6 @@ export class HeadlessRunEngine {
         ? await this.toolRuntime.resume(existing.id, { toolName: call.name, input: call.input, stepId: operationStep.id, context: claim.run.context, runId: claim.run.id, ...(request.signal ? { signal: request.signal } : {}) })
         : await this.invokeTool(call, claim.run.id, operationStep.id, claim.run.context, request.signal);
 
-    if (toolResult.status === "approval_required") {
-      await this.store.updateExecutionProgress({
-        runId: claim.run.id, expectedRunRevision: claim.run.revision, expectedRunState: "running", runState: "waiting",
-        waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(),
-        checkpoint: { runId: claim.run.id, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort), updatedAt: this.now() },
-      });
-      return { status: "waiting", runId: claim.run.id, reason: "approval_required", approvalId: toolResult.approvalId };
-    }
-
     if (toolResult.status === "outcome_unknown") {
       await this.store.updateExecutionProgress({
         runId: claim.run.id,
@@ -854,11 +844,9 @@ export class HeadlessRunEngine {
           })));
           if (durationController?.signal.aborted) throw durationError;
 
-          let approvalId: string | undefined;
           let outcomeUnknown = false;
           let cancellationError: string | undefined;
           for (const { call, step, result: toolResult } of completed) {
-            if (toolResult.status === "approval_required") { approvalId ??= toolResult.approvalId; continue; }
             const stepState = toolResult.status === "cancelled" ? "cancelled" : toolResult.status === "outcome_unknown" ? "failed" : "succeeded";
             const payload = toolResult.status === "succeeded"
               ? { ok: true, output: toolResult.output }
@@ -888,10 +876,6 @@ export class HeadlessRunEngine {
           if (cancellationError) {
             await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "cancelled", resumeEligibility: "ineligible", runUpdatedAt: this.now(), clearCheckpoint: true });
             return { status: "cancelled", runId, error: cancellationError };
-          }
-          if (approvalId) {
-            await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting", waitingReason: "approval_required", resumeEligibility: "manual_review", runUpdatedAt: this.now(), checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() } });
-            return { status: "waiting", runId, reason: "approval_required", approvalId };
           }
         }
 

@@ -40,10 +40,10 @@ test("localhost control panel authenticates config and fixed workspace file oper
   const root = await mkdtemp(join(tmpdir(), "umiro-web-ui-")); const workspace = join(root, "workspace"); const configFile = join(root, "umiro.json");
   await mkdir(workspace); await writeFile(join(workspace, "AGENT.md"), "before\n"); await writeFile(configFile, `${JSON.stringify({ model: "gemma4", discord: {}, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] })}\n`);
   const schedules = [{ id: "schedule-1", name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 8 * * *" } }]; let created: unknown; let enabled: unknown; let updatedSchedule: unknown; let removed: unknown;
-  let pluginAction: unknown; let approvalAction: unknown; let runLimit: unknown; let runId: unknown; const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
+  let pluginAction: unknown; let runLimit: unknown; let runId: unknown; const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
   const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, workspaceFiles: ["AGENT.md"], secrets: () => ({ DISCORD_TOKEN: true, LLM_API_KEY: false }), models: async () => ["gemma4", "gpt-5"], audit: (event, data) => audits.push({ event, data }), schedules: {
     async list() { return schedules; }, async create(input) { created = input; return { id: "new", ...input }; }, async setEnabled(id, value) { enabled = [id, value]; return { id, enabled: value }; }, async update(id, input) { updatedSchedule = [id, input]; return { id, ...input }; }, async remove(id) { removed = id; return true; },
-  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, approvals: { async list() { return [{ id: "approval-1", operation: "write", details: "{}", expiresAt: "later" }]; }, async resolve(...args) { approvalAction = args; return { approval: args[1] }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, channels: { async list() { return [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
+  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, channels: { async list() { return [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
   try {
     const html = await (await fetch(`${endpoint}/`)).text();
@@ -83,9 +83,8 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.deepEqual(await (await fetch(`${endpoint}/api/logs?limit=25`, { headers })).json(), [{ event: "test", limit: 25 }]);
     assert.equal((await fetch(`${endpoint}/api/logs?limit=501`, { headers })).status, 400);
     assert.deepEqual(await (await fetch(`${endpoint}/api/usage`, { headers })).json(), { completedRuns: 2, inputTokens: 10, outputTokens: 5 });
-    assert.equal((await fetch(`${endpoint}/api/approvals/approval-1`, { method: "POST", headers, body: JSON.stringify({ action: "approve" }) })).status, 200);
-    assert.deepEqual(approvalAction, ["approval-1", "approve"]);
-    assert.deepEqual(audits.map(item => item.event), ["control.config.saved", "control.workspace.saved", "control.schedule.created", "control.schedule.toggled", "control.schedule.updated", "control.schedule.removed", "control.plugin.action", "control.approval.resolved"]);
+    assert.equal((await fetch(`${endpoint}/api/unknown`, { headers })).status, 404);
+    assert.deepEqual(audits.map(item => item.event), ["control.config.saved", "control.workspace.saved", "control.schedule.created", "control.schedule.toggled", "control.schedule.updated", "control.schedule.removed", "control.plugin.action"]);
     assert.doesNotMatch(JSON.stringify(audits), /new-model|after|builtin:memory/);
   } finally { await server.stop(); await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalRequest } from "../approval/entities.js";
-import { exactOperationFingerprint } from "../approval/fingerprint.js";
 import type { AuthorizationDecisionRecord } from "../audit/records.js";
 import { authorize } from "../authorization/authorize.js";
 import type { Operation, OperationError, OperationResult } from "../operation/index.js";
@@ -17,9 +15,8 @@ import { ToolRegistry } from "./registry.js";
 
 export interface ToolRuntimeOptions {
   readonly now?: () => string;
-  readonly createId?: (kind: "operation" | "authorization" | "approval") => string;
+  readonly createId?: (kind: "operation" | "authorization") => string;
   readonly defaultTimeoutMs?: number;
-  readonly approvalTtlMs?: number;
   /** Maximum automatic re-attempts for explicitly retryable idempotent results. */
   readonly maxAutomaticRetries?: number;
   /** Delay between automatic re-attempts. Kept bounded and deterministic. */
@@ -128,7 +125,6 @@ export class ToolRuntime {
   private readonly now: () => string;
   private readonly createId: NonNullable<ToolRuntimeOptions["createId"]>;
   private readonly defaultTimeoutMs: number;
-  private readonly approvalTtlMs: number;
   private readonly maxAutomaticRetries: number;
   private readonly retryBackoffMs: number;
 
@@ -140,13 +136,11 @@ export class ToolRuntime {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? (() => randomUUID());
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000;
-    this.approvalTtlMs = options.approvalTtlMs ?? 5 * 60_000;
     this.maxAutomaticRetries = options.maxAutomaticRetries ?? 2;
     this.retryBackoffMs = options.retryBackoffMs ?? 100;
     if (!Number.isSafeInteger(this.defaultTimeoutMs) || this.defaultTimeoutMs <= 0) {
       throw new TypeError("default tool timeout must be a positive integer");
     }
-    if (!Number.isSafeInteger(this.approvalTtlMs) || this.approvalTtlMs <= 0) throw new TypeError("approval TTL must be a positive integer");
     if (!Number.isSafeInteger(this.maxAutomaticRetries) || this.maxAutomaticRetries < 0) throw new TypeError("automatic retry limit must be a non-negative integer");
     if (!Number.isSafeInteger(this.retryBackoffMs) || this.retryBackoffMs < 0) throw new TypeError("retry backoff must be a non-negative integer");
   }
@@ -243,16 +237,7 @@ export class ToolRuntime {
       createdAt: proposedAt,
       updatedAt: decisionRecord.decidedAt,
     };
-    const approval: ApprovalRequest | undefined = decision.allow && tool.policy.approvalRequirement === "required" ? {
-      id: this.createId("approval"),
-      operationId,
-      fingerprint: exactOperationFingerprint(operation, decisionRecord),
-      state: "pending",
-      requiredRole: "owner",
-      requestedAt: decisionRecord.decidedAt,
-      expiresAt: new Date(Date.parse(decisionRecord.decidedAt) + this.approvalTtlMs).toISOString(),
-    } : undefined;
-    await this.store.recordOperationAuthorization(operation, decisionRecord, approval);
+    await this.store.recordOperationAuthorization(operation, decisionRecord);
     if (!decision.allow) {
       return {
         status: "denied",
@@ -260,8 +245,6 @@ export class ToolRuntime {
         error: operationError("permission_denied", decision.reason, false),
       };
     }
-    if (approval) return { status: "approval_required", operationId, approvalId: approval.id, expiresAt: approval.expiresAt };
-
     return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
   }
 
@@ -279,38 +262,7 @@ export class ToolRuntime {
   }
 
   private async resumeAuthorizedTool(tool: ToolDefinition, operation: Operation, invocation: ToolInvocation, input: JsonObject, idempotencyKey: string | undefined): Promise<ToolInvocationResult> {
-    const approval = await this.store.getApprovalByOperation(operation.id);
-    if (!approval) {
-      if (tool.policy.approvalRequirement === "required") {
-        const error = operationError("approval_missing", "exact-operation approval is missing", false);
-        await this.persistOutcome(operation, { operationId: operation.id, outcome: "failed", effectStatus: "not_applicable", error, completedAt: this.now() });
-        return { status: "failed", operationId: operation.id, error };
-      }
-      return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
-    }
-    if (approval.state === "pending") return { status: "approval_required", operationId: operation.id, approvalId: approval.id, expiresAt: approval.expiresAt };
-    if (approval.state === "denied" || approval.state === "expired") {
-      const error = operationError(approval.state === "denied" ? "approval_denied" : "approval_expired", `operation approval was ${approval.state}`, false);
-      await this.persistOutcome(operation, { operationId: operation.id, outcome: "failed", effectStatus: "not_applicable", error, completedAt: this.now() });
-      return { status: "failed", operationId: operation.id, error };
-    }
-    if (approval.state !== "approved") return { status: "outcome_unknown", operationId: operation.id, error: operationError("approval_already_consumed", "operation approval was already consumed", false) };
-    if (invocation.signal?.aborted) {
-      const error = operationError("tool_cancelled", "tool invocation was cancelled before approval consumption", false);
-      await this.persistOutcome(operation, { operationId: operation.id, outcome: "cancelled", effectStatus: "not_applicable", error, completedAt: this.now() });
-      return { status: "cancelled", operationId: operation.id, error };
-    }
-    const resource = tool.policy.resource?.(input);
-    const revalidated = authorize({ context: invocation.context, capability: tool.policy.capability, tier: tool.policy.tier, interactionRequirement: tool.policy.interactionRequirement, ...(resource ? { resource } : {}) });
-    if (!revalidated.allow) {
-      const error = operationError("approval_revalidation_failed", revalidated.reason, false);
-      await this.persistOutcome(operation, { operationId: operation.id, outcome: "failed", effectStatus: "not_applicable", error, completedAt: this.now() });
-      return { status: "failed", operationId: operation.id, error };
-    }
-    const revalidationRecord: AuthorizationDecisionRecord = { ...revalidated, id: operation.authorizationDecisionId!, operationId: operation.id, decidedAt: this.now() };
-    const fingerprint = exactOperationFingerprint(operation, revalidationRecord);
-    await this.store.consumeApprovalAndMarkExecuting(operation.id, fingerprint, this.now());
-    return this.executeMarkedTool(tool, operation, invocation, input, idempotencyKey);
+    return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
   }
 
   private async executeAuthorizedTool(
