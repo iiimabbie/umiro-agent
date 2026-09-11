@@ -275,11 +275,12 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (message.reference?.messageId) {
       try { replyAuthorId = (await message.fetchReference()).author.id; } catch { /* deleted or inaccessible reference */ }
     }
+    const thread = message.channel.isThread() ? message.channel : undefined;
     return {
       messageId: message.id,
       channelId: message.channelId,
       ...(message.guildId ? { guildId: message.guildId } : {}),
-      ...(message.channel.isThread() ? { threadId: message.channel.id } : {}),
+      ...(thread ? { threadId: thread.id, ...(thread.parentId ? { threadParentId: thread.parentId } : {}), ...(thread.parent?.name ? { threadParentName: thread.parent.name } : {}), ...(thread.parent ? { threadParentKind: thread.parent.isThreadOnly() ? "forum" as const : "channel" as const } : {}) } : {}),
       authorId: message.author.id,
       authorBot: message.author.bot,
       botMentioned: this.client.user ? message.mentions.users.has(this.client.user.id) : false,

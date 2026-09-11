@@ -26,6 +26,7 @@ import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
+import { discordRuntimeContextProvider } from "./discord-context.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -64,6 +65,7 @@ const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hoste
 const { ownerAuthority, memberAuthority } = resolveRuntimeAuthorities(config.authority, granted, [...(discordPolicy.allowedChannels ?? []), ...(discordPolicy.ambientChannels ?? [])]);
 const tools = new ToolRegistry();
 const providers = new ContextProviderRegistry();
+providers.register(discordRuntimeContextProvider);
 const logger = new JsonLineLogger();
 const pluginHooks = new PluginHookRegistry(logger);
 let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
