@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCurrentTimeContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "../src/discord-context.js";
+import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "../src/discord-context.js";
 
 test("Discord thread context exposes its parent Forum as trusted transport metadata", async () => {
   const blocks = await discordRuntimeContextProvider.load({
@@ -31,4 +31,14 @@ test("current time context is available to every Run with an explicit timezone",
   const blocks = await provider.load({ runId: "scheduled", execution: {} as never, prompt: "today?" });
   assert.match(blocks[0]?.content ?? "", /2026-09-12T01:02:03\.000Z \(Asia\/Taipei:/);
   assert.equal(blocks[0]?.retention, "essential");
+});
+
+test("Discord Application Emoji names are injected only for Discord Runs", async () => {
+  const provider = createDiscordApplicationEmojiContextProvider(() => [{ name: "party" }, { name: "dance" }, { name: "bad-name" }]);
+  const request = { runId: "run", execution: {} as never, prompt: "hi", inputEvent: { id: "discord:message", occurredAt: "now", identity: { transport: "discord", externalId: "owner", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: "hi" }] } };
+  const blocks = await provider.load(request);
+  assert.match(blocks[0]?.content ?? "", /:dance: :party:/);
+  assert.doesNotMatch(blocks[0]?.content ?? "", /bad-name/);
+  assert.equal(blocks[0]?.instructionAuthority, "none");
+  assert.deepEqual(await provider.load({ ...request, inputEvent: { ...request.inputEvent, identity: { ...request.inputEvent.identity, transport: "test" } } }), []);
 });

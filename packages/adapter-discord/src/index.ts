@@ -4,6 +4,7 @@ import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, Transpor
 import type { ExecutionStore } from "@umiro/core/ports";
 import type { ArtifactStore } from "@umiro/core";
 export * from "./client.js";
+export * from "./emoji.js";
 export * from "./trigger-policy.js";
 
 export interface DiscordMessageEnvelope {
@@ -84,6 +85,8 @@ export class DiscordIdentityResolver implements IdentityResolver {
 }
 
 export interface DiscordTextTransport {
+  /** Resolve transport-owned markup before delivery limits are applied. */
+  prepareText?(text: string): string;
   sendText(channelId: string, text: string, signal?: AbortSignal): Promise<{ readonly messageId: string }>;
   sendTyping?(channelId: string): Promise<void>;
   sendFiles?(channelId: string, files: readonly { readonly path: string; readonly name?: string }[], signal?: AbortSignal): Promise<{ readonly messageId: string }>;
@@ -157,8 +160,9 @@ export class DiscordDeliveryWorker {
       try {
         const text = intent.payload.text;
         if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
+        const preparedText = this.transport.prepareText?.(text) ?? text;
         const artifactIds = intent.payload.artifactIds;
-        if ((!text.trim() || text.trim() === "NO_REPLY") && !(Array.isArray(artifactIds) && artifactIds.length)) {
+        if ((!preparedText.trim() || preparedText.trim() === "NO_REPLY") && !(Array.isArray(artifactIds) && artifactIds.length)) {
           await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", channelId: intent.destination.channelId, skipped: "no_reply" });
           delivered++;
           continue;
@@ -176,7 +180,7 @@ export class DiscordDeliveryWorker {
           sent = await this.transport.sendFiles(intent.destination.channelId, files, signal);
         } else {
           const messageIds: string[] = [];
-          for (const chunk of chunkDiscordText(text)) messageIds.push((await this.transport.sendText(intent.destination.channelId, chunk, signal)).messageId);
+          for (const chunk of chunkDiscordText(preparedText)) messageIds.push((await this.transport.sendText(intent.destination.channelId, chunk, signal)).messageId);
           sent = { messageId: messageIds[0]! };
           await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", messageId: sent.messageId, messageIds, channelId: intent.destination.channelId });
           delivered++;

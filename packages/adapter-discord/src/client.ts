@@ -2,6 +2,7 @@ import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBui
 import { normalizeDiscordMentions, type DiscordMessageEnvelope, type DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
+import { ApplicationEmojiCatalog, type ApplicationEmoji } from "./emoji.js";
 
 type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; autocomplete?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
 type DiscordCommandManager = { set(commands: readonly ApplicationCommandDataResolvable[]): Promise<unknown> };
@@ -23,7 +24,7 @@ export async function syncApplicationCommands(guilds: readonly DiscordCommandMan
 
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
 export interface DiscordButtonInteraction extends DiscordInteractionContext { readonly buttonSetId: string; readonly buttonId: string; readonly messageContent: string }
-export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "button"; readonly channelId?: string; readonly messageId?: string }
+export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "button" | "emoji"; readonly channelId?: string; readonly messageId?: string }
 export type DiscordAdapterErrorHandler = (error: unknown, context: DiscordAdapterErrorContext) => void;
 
 export function parseButtonCustomId(value: string): { buttonSetId: string; buttonId: string } | undefined {
@@ -49,6 +50,8 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private errorHandler?: DiscordAdapterErrorHandler;
   private readonly messageTimes = new Map<string, number[]>();
   private readonly channelQueues = new Map<string, Promise<void>>();
+  private readonly emojis = new ApplicationEmojiCatalog();
+  private emojiRefreshTimer: NodeJS.Timeout | undefined;
   private respondToBots = true;
 
   onMessage(listener: (message: DiscordMessageEnvelope) => Promise<void>): void { this.listener = listener; }
@@ -74,11 +77,16 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (presence?.status || presence?.activity) this.client.user.setPresence({ status: presence.status ?? "online", activities: presence.activity ? [{ name: presence.activity, type: ActivityType.Playing }] : [] });
     console.log(`discord bot connected: ${this.client.user.tag} (${this.client.user.id})`);
     if (!this.client.application) throw new Error("Discord login returned without an application");
+    await this.refreshApplicationEmojis();
+    this.emojiRefreshTimer = setInterval(() => { void this.refreshApplicationEmojis(); }, 10 * 60_000);
+    this.emojiRefreshTimer.unref();
     await syncApplicationCommands([...this.client.guilds.cache.values()].map(guild => guild.commands), applicationCommandData(this.commands));
   }
 
-  async stop(): Promise<void> { this.client.destroy(); }
+  async stop(): Promise<void> { if (this.emojiRefreshTimer) clearInterval(this.emojiRefreshTimer); this.emojiRefreshTimer = undefined; this.client.destroy(); }
   identity(): { readonly id: string; readonly tag: string } | undefined { return this.client.user ? { id: this.client.user.id, tag: this.client.user.tag } : undefined; }
+  applicationEmojis(): readonly ApplicationEmoji[] { return this.emojis.list(); }
+  prepareText(text: string): string { return this.emojis.resolveText(text); }
 
   async listChannels(channelIds: readonly string[]): Promise<readonly { readonly id: string; readonly name: string; readonly guildId: string; readonly guildName: string; readonly kind: "direct" | "channel" | "forum" | "thread"; readonly parentId?: string; readonly parentName?: string }[]> {
     const supported = new Set<ChannelType>([ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]);
@@ -123,7 +131,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
     if (signal?.aborted) throw signal.reason;
-    const sent = await channel.send({ content: text });
+    const sent = await channel.send({ content: this.prepareText(text) });
     return { messageId: sent.id };
   }
 
@@ -144,7 +152,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${channelId}`);
     const message = await channel.messages.fetch(messageId);
-    const edited = await message.edit({ content: text });
+    const edited = await message.edit({ content: this.prepareText(text) });
     return { messageId: edited.id, migrated: false };
   }
 
@@ -166,7 +174,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       rows.push(row);
     }
     if (input.signal?.aborted) throw input.signal.reason;
-    const sent = await channel.send({ content: input.content.slice(0, 2_000), components: rows });
+    const sent = await channel.send({ content: this.prepareText(input.content).slice(0, 2_000), components: rows });
     return { messageId: sent.id };
   }
 
@@ -176,7 +184,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
     const message = await channel.messages.fetch(input.messageId);
     if (input.signal?.aborted) throw input.signal.reason;
-    await message.react(input.emoji);
+    await message.react(this.emojis.resolveReaction(input.emoji));
   }
 
   async pin(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<void> {
@@ -227,7 +235,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (input.signal?.aborted) throw input.signal.reason;
     const channel = await this.client.channels.fetch(input.channelId);
     if (!channel || !channel.isThreadOnly() || !("threads" in channel)) throw new Error(`Discord channel is not a forum: ${input.channelId}`);
-    const thread = await channel.threads.create({ name: input.title.slice(0, 100), message: { content: input.content.slice(0, 2_000) } });
+    const thread = await channel.threads.create({ name: input.title.slice(0, 100), message: { content: this.prepareText(input.content).slice(0, 2_000) } });
     return { threadId: thread.id };
   }
 
@@ -269,6 +277,15 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
 
   async setRespondToBots(enabled: boolean): Promise<void> { this.respondToBots = enabled; }
   respondsToBots(): boolean { return this.respondToBots; }
+
+  private async refreshApplicationEmojis(): Promise<void> {
+    try {
+      const application = this.client.application;
+      if (!application) return;
+      const collection = await application.emojis.fetch();
+      this.emojis.replace([...collection.values()].flatMap(emoji => emoji.name ? [{ name: emoji.name, id: emoji.id, animated: Boolean(emoji.animated) }] : []));
+    } catch (error) { this.reportError(error, { event: "emoji" }); }
+  }
 
   private async normalize(message: Message): Promise<DiscordMessageEnvelope | undefined> {
     if (!this.listener || message.author.id === this.client.user?.id) return undefined;
@@ -317,7 +334,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     try {
       const input = Object.fromEntries(interaction.options.data.flatMap(option => option.value === undefined ? [] : [[option.name, option.value]])) as Record<string, string | number | boolean>;
       const result = await this.commandHandler(interaction.commandName, input, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
-      await interaction.editReply({ content: commandReplyContent(interaction.commandName, result) });
+      await interaction.editReply({ content: this.prepareText(commandReplyContent(interaction.commandName, result)) });
     } catch { await interaction.editReply({ content: "指令執行失敗，請稍後再試。" }); }
   }
 
@@ -348,9 +365,9 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
             }
             return [updated];
           });
-          await interaction.editReply({ ...(result.messageContent !== undefined ? { content: result.messageContent.slice(0, 2_000) } : {}), components });
+          await interaction.editReply({ ...(result.messageContent !== undefined ? { content: this.prepareText(result.messageContent).slice(0, 2_000) } : {}), components });
         }
-        if (result.ephemeralContent) await interaction.followUp({ content: result.ephemeralContent.slice(0, 1_900), ephemeral: true });
+        if (result.ephemeralContent) await interaction.followUp({ content: this.prepareText(result.ephemeralContent).slice(0, 1_900), ephemeral: true });
       } catch { await interaction.followUp({ content: "Button action failed or is no longer actionable.", ephemeral: true }); }
   }
 }

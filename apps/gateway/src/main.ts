@@ -24,7 +24,7 @@ import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
-import { createCurrentTimeContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
+import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 
 const paths = umiroPaths();
@@ -63,10 +63,12 @@ const hostedImageGeneration = allModelCapabilities.includes("hosted_image_genera
 const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
 const { ownerAuthority, memberAuthority } = resolveRuntimeAuthorities(config.authority, granted, [...(discordPolicy.allowedChannels ?? []), ...(discordPolicy.ambientChannels ?? [])]);
 const tools = new ToolRegistry();
+const discord = new DiscordJsAdapter();
 const providers = new ContextProviderRegistry();
 providers.register(createCurrentTimeContextProvider());
 providers.register(discordRuntimeContextProvider);
 providers.register(discordOutputPolicyProvider);
+providers.register(createDiscordApplicationEmojiContextProvider(() => discord.applicationEmojis()));
 const logger = new JsonLineLogger();
 const pluginHooks = new PluginHookRegistry(logger);
 let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
@@ -198,7 +200,6 @@ const updateSessionPreferences = async (channelId: string, change: (current: Con
   }
   throw new Error("conversation preferences changed repeatedly");
 };
-const discord = new DiscordJsAdapter();
 await discord.setRespondToBots(discordPolicy.respondToBots === true);
 const buttonState = store.pluginState("discord-tools");
 const buttonActions = new ButtonActionCoordinator(store, tools);

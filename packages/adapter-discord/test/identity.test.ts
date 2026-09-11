@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IdentityMappingStore, PersistedTransportIdentity } from "@umiro/core/identity";
-import { chunkDiscordText, DiscordDeliveryWorker, DiscordIdentityResolver, normalizeDiscordMentions, toInputEvent } from "../src/index.js";
+import { ApplicationEmojiCatalog, chunkDiscordText, DiscordDeliveryWorker, DiscordIdentityResolver, normalizeDiscordMentions, toInputEvent } from "../src/index.js";
 
 class MemoryMappings implements IdentityMappingStore {
   readonly rows = new Map<string, PersistedTransportIdentity>();
@@ -72,6 +72,23 @@ test("chunks long Discord output and records every delivered message", async () 
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
   assert.deepEqual(sent, chunks);
   assert.deepEqual(evidence, { transport: "discord", messageId: "m1", messageIds: chunks.map((_chunk, index) => `m${index + 1}`), channelId: "c" });
+});
+
+test("prepares Application Emoji markup before enforcing Discord chunk limits", async () => {
+  const catalog = new ApplicationEmojiCatalog();
+  catalog.replace([{ name: "party", id: "123456789012345678", animated: false }]);
+  const source = ":party:".repeat(220);
+  const expected = catalog.resolveText(source);
+  const sent: string[] = [];
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [{ id: "emoji", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: source }, state: "pending" as const, createdAt: "now" }]; },
+    async markDeliveryDelivered() {},
+    async markDeliveryFailed() {},
+  }, { prepareText: text => catalog.resolveText(text), async sendText(_channelId, text) { sent.push(text); return { messageId: `m${sent.length}` }; } });
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every(text => text.length <= 2_000));
+  assert.equal(sent.join(""), expected);
 });
 
 test("marks an explicit no-reply outcome delivered without sending text", async () => {

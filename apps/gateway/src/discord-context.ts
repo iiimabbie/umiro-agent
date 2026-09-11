@@ -66,3 +66,26 @@ export const discordOutputPolicyProvider: ContextProvider = {
     }];
   },
 };
+
+export function createDiscordApplicationEmojiContextProvider(catalog: () => readonly { readonly name: string }[]): ContextProvider {
+  return {
+    id: "discord.application-emojis",
+    role: "transport-context",
+    priority: 7,
+    async load(request) {
+      if (request.inputEvent?.identity.transport !== "discord") return [];
+      const names = catalog().map(emoji => emoji.name).filter(name => /^[A-Za-z0-9_]{2,32}$/.test(name)).sort().map(name => `:${name}:`);
+      if (names.length === 0) return [];
+      return [{
+        id: `discord.application-emojis:${request.runId}`,
+        providerId: "discord.application-emojis",
+        role: "transport-context",
+        content: `Available Discord application emoji: ${names.join(" ")}. Use an emoji by writing its exact :name: form; unknown names remain plain text.`,
+        source: { kind: "discord-adapter", ref: "application-emojis" },
+        influence: "information",
+        instructionAuthority: "none",
+        retention: "normal",
+      }];
+    },
+  };
+}
