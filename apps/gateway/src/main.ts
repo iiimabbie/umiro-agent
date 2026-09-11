@@ -201,6 +201,34 @@ const updateSessionPreferences = async (channelId: string, change: (current: Con
 const discord = new DiscordJsAdapter();
 await discord.setRespondToBots(discordPolicy.respondToBots === true);
 const buttonState = store.pluginState("discord-tools");
+const discordPluginService = Object.assign(discord, {
+  async createButtonSet(input: {
+    readonly channelId: string;
+    readonly content: string;
+    readonly allowedUserIds: readonly string[];
+    readonly expiresInMinutes?: number;
+    readonly creatorPrincipalId?: string;
+    readonly buttons: readonly { readonly id: string; readonly label: string; readonly style: "primary" | "secondary" | "success" | "danger"; readonly actionTool: string; readonly actionArgs: JsonObject }[];
+    readonly signal?: AbortSignal;
+  }): Promise<{ readonly messageId: string; readonly buttonSetId: string; readonly expiresAt: string }> {
+    if (input.allowedUserIds.length === 0) throw new Error("allowedUserIds is required");
+    if (input.buttons.length < 1 || input.buttons.length > 25) throw new TypeError("Discord button set must contain 1 to 25 buttons");
+    const buttonSetId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const minutes = input.expiresInMinutes ?? 1_440;
+    if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 10_080) throw new TypeError("button expiry must be between 1 and 10080 minutes");
+    const expiresAt = new Date(Date.parse(createdAt) + minutes * 60_000).toISOString();
+    const record = { buttonSetId, channelId: input.channelId, creatorPrincipalId: input.creatorPrincipalId, allowedUserIds: [...input.allowedUserIds], buttons: input.buttons.map(button => ({ id: button.id, actionTool: button.actionTool, actionArgs: button.actionArgs })), createdAt, expiresAt, usedButtonIds: [] as string[] };
+    await buttonState.writeAtomic(`buttons/${buttonSetId}.json`, new TextEncoder().encode(JSON.stringify(record)), { expiresAt });
+    try {
+      const sent = await discord.sendButtons({ buttonSetId, channelId: input.channelId, content: input.content, buttons: input.buttons.map(button => ({ id: button.id, label: button.label, style: button.style })), ...(input.signal ? { signal: input.signal } : {}) });
+      return { ...sent, buttonSetId, expiresAt };
+    } catch (error) {
+      await buttonState.remove(`buttons/${buttonSetId}.json`);
+      throw error;
+    }
+  },
+});
 discord.onButton(async (interaction: DiscordButtonInteraction) => {
     const key = `buttons/${interaction.buttonSetId}.json`;
     const current = await buttonState.readVersioned(key);
@@ -214,7 +242,6 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     if (!action) throw new Error("button action does not exist");
     const actionDefinition = tools.get(action.actionTool);
     if (!actionDefinition) throw new Error("button action tool is unavailable");
-    if (actionDefinition.policy.approvalRequirement === "required") throw new Error("button action requires the separate exact-operation approval flow");
     record.usedButtonIds.push(interaction.buttonId);
     const claimed = await buttonState.compareAndSwap(key, current.version, new TextEncoder().encode(JSON.stringify(record)), { expiresAt: record.expiresAt });
     if (!claimed.updated) throw new Error("button was already claimed");
@@ -228,6 +255,7 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     const result = await new ToolRuntime(tools, store).execute({ toolName: action.actionTool, input: action.actionArgs, stepId, runId, context: execution, idempotencyKey: `button:${interaction.buttonSetId}:${interaction.buttonId}` });
     const terminal = result.status === "succeeded" ? "succeeded" : result.status === "approval_required" ? "waiting" : "failed";
     await store.updateExecutionProgress({ runId, expectedRunRevision: 1, expectedRunState: "running", runState: terminal, ...(terminal === "waiting" ? { waitingReason: "approval_required" } : {}), resumeEligibility: terminal === "waiting" ? "manual_review" : "not_applicable", runUpdatedAt: new Date().toISOString(), ...(terminal === "waiting" ? {} : { step: { id: stepId, expectedRevision: 1, expectedState: "running" as const, state: terminal === "succeeded" ? "succeeded" as const : "failed" as const, updatedAt: new Date().toISOString() } }) });
+    if (result.status === "approval_required") await presentApprovalId(result.approvalId, interaction.channelId);
     return { content: result.status === "succeeded" ? `Action completed: ${action.actionTool}` : result.status === "approval_required" ? `Approval required: ${result.approvalId}` : `Action ${result.status}` };
 });
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
@@ -269,15 +297,18 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); const origin = run.context.origin; const binding = run.conversationId ? await store.getConversationBinding(run.conversationId) : undefined; return { id: run.id, state: run.state, origin: origin.kind, ...(binding?.transport === "discord" ? { channelId: binding.externalId } : {}), createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
 }, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
-async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
-  if (result.status !== "waiting" || result.reason !== "approval_required") return;
-  const approval = await store.getApproval(result.approvalId);
-  if (!approval) throw new Error(`Approval is missing: ${result.approvalId}`);
+async function presentApprovalId(approvalId: string, channelId: string): Promise<void> {
+  const approval = await store.getApproval(approvalId);
+  if (!approval) throw new Error(`Approval is missing: ${approvalId}`);
   const operation = await store.getOperation(approval.operationId);
   if (!operation) throw new Error(`Approval operation is missing: ${approval.operationId}`);
   await discord.sendApproval(channelId, { approvalId: approval.id, operation: operation.kind, details: approvalDetails(operation), expiresAt: approval.expiresAt });
 }
-host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
+async function presentApproval(result: HeadlessRunResult, channelId: string): Promise<void> {
+  if (result.status !== "waiting" || result.reason !== "approval_required") return;
+  await presentApprovalId(result.approvalId, channelId);
+}
+host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) await host.enable(modules[index]!, { config: configured[index]!.config ?? {} });
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
 await scheduler.syncPluginJobs(host.listJobs());
