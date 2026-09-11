@@ -10,7 +10,7 @@ test("Discord thread context exposes its parent Forum as trusted transport metad
     inputEvent: { id: "discord:message", occurredAt: "now", identity: { transport: "discord", externalId: "owner", principalId: null }, conversation: { transport: "discord", externalId: "thread", kind: "thread" }, content: [{ type: "text", text: "post here" }], metadata: { channelId: "thread", guildId: "guild", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum" } },
   });
   assert.equal(blocks.length, 1);
-  assert.deepEqual(JSON.parse(blocks[0]!.content), { transport: "discord", currentChannel: { id: "thread", kind: "thread" }, guild: { id: "guild" }, thread: { id: "thread", parent: { id: "forum", kind: "forum", name: "Travel" } } });
+  assert.deepEqual(JSON.parse(blocks[0]!.content), { transport: "discord", currentChannel: { id: "thread", kind: "thread" }, guild: { id: "guild" }, currentPost: { id: "thread" }, currentForum: { id: "forum", name: "Travel" }, thread: { id: "thread", parent: { id: "forum", kind: "forum", name: "Travel" } } });
   assert.equal(blocks[0]!.instructionAuthority, "none");
   assert.equal(blocks[0]!.retention, "essential");
 });
