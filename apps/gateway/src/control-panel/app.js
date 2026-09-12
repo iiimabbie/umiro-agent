@@ -3,6 +3,7 @@ let file;
 let editingSchedule;
 let channelCatalog = new Map();
 let channelRefreshTimer;
+let selectedChannelId;
 
 const headers = () => ({
   'authorization': 'Bearer ' + $('token').value,
@@ -42,6 +43,7 @@ async function channels() {
   $('channels').replaceChildren(...items.map(x => {
     const d = document.createElement('div');
     d.className = 'channel';
+    d.dataset.channelId = x.id;
     const name = document.createElement('span');
     name.textContent = channelName(x.id);
     const id = document.createElement('small');
@@ -57,9 +59,14 @@ async function channels() {
   );
   $('scheduleChannel').value = selected;
   await Promise.all([runs(), schedules()]);
+  if (selectedChannelId) {
+    const el = document.querySelector('#channels .channel[data-channel-id="' + CSS.escape(selectedChannelId) + '"]');
+    if (el) await selectChannel(selectedChannelId, el);
+  }
 }
 
 async function selectChannel(channelId, element) {
+  selectedChannelId = channelId;
   for (const el of document.querySelectorAll('#channels .channel.active')) el.classList.remove('active');
   element.classList.add('active');
   const target = $('channelConversation');
@@ -430,6 +437,7 @@ $('refreshRuns').onclick = () => runs().catch(e => alert(e.message));
 $('refreshUsage').onclick = () => usage().catch(e => alert(e.message));
 $('refreshLogs').onclick = () => logs().catch(e => alert(e.message));
 $('refreshChannels').onclick = () => channels().catch(e => alert(e.message));
+$('refreshArchived').onclick = () => archived().catch(e => alert(e.message));
 $('token').value = localStorage.umiroToken || '';
 
 const pages = [...document.querySelectorAll('.page')];
