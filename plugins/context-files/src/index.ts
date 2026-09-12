@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonObject } from "@umiro/core/ports";
 import type { ContextProvider, ContextRole } from "@umiro/core/context";
@@ -7,6 +7,7 @@ import type { ToolDefinition, ToolExecutionResult } from "@umiro/core/tool";
 
 interface ContextFilesConfig {
   readonly workspacePath: string;
+  readonly skills?: readonly string[];
 }
 
 const FILES: Readonly<Record<"soul" | "agent" | "owner" | "memory" | "bootstrap", string>> = {
@@ -29,6 +30,50 @@ const OWNER_TEMPLATE = `# OWNER\n\nThe person this agent serves. Read on every t
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+function skillFrontmatter(content: string): { readonly name?: string; readonly description?: string } {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return {};
+  const values: Record<string, string> = {};
+  for (const line of match[1]!.split(/\r?\n/)) {
+    const separator = line.indexOf(":");
+    if (separator < 1) continue;
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
+    if ((key === "name" || key === "description") && value) values[key] = value;
+  }
+  return { ...(values.name ? { name: values.name } : {}), ...(values.description ? { description: values.description.split(/\r?\n/)[0]! } : {}) };
+}
+
+function skillsProvider(config: ContextFilesConfig, getRoot: () => string): ContextProvider {
+  return {
+    id: "context.skills",
+    role: "skills",
+    priority: 350,
+    async load() {
+      const enabled = new Set(config.skills ?? []);
+      if (!enabled.size) return [];
+      const root = join(getRoot(), "skills");
+      let entries: string[];
+      try { entries = await readdir(root); } catch (error) { if (isMissing(error)) return []; throw error; }
+      const summaries: string[] = [];
+      for (const directory of entries.sort()) {
+        if (!enabled.has(directory) || !/^[A-Za-z0-9._-]+$/.test(directory)) continue;
+        const directoryPath = join(root, directory);
+        const skillPath = join(directoryPath, "SKILL.md");
+        try {
+          const directoryStat = await lstat(directoryPath);
+          const skillStat = await lstat(skillPath);
+          if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory() || skillStat.isSymbolicLink() || !skillStat.isFile()) continue;
+          const meta = skillFrontmatter(await readFile(skillPath, "utf8"));
+          summaries.push(`- ${meta.name ?? directory}: ${meta.description ?? "(no description)"} → workspace/skills/${directory}/SKILL.md`);
+        } catch (error) { if (!isMissing(error)) throw error; }
+      }
+      if (!summaries.length) return [];
+      return [{ id: "context.skills:catalog", providerId: "context.skills", role: "skills", content: summaries.join("\n"), source: { kind: "workspace-skills", ref: root }, influence: "information", instructionAuthority: "none", retention: "normal" }];
+    },
+  };
 }
 
 function historySpeaker(item: { readonly turn: { readonly actorPrincipalId: string; readonly actorIdentity?: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly primaryRunId?: string; readonly createdAt: string; readonly content: readonly ({ readonly type: string; readonly text?: string })[] }; readonly actorDisplayName?: string }): string {
@@ -156,6 +201,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
         provider("agent", config, () => workspaceRoot),
         provider("owner", config, () => workspaceRoot),
         provider("memory", config, () => workspaceRoot),
+        skillsProvider(config, () => workspaceRoot),
         history,
       ],
       tools,

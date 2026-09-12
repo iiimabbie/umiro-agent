@@ -39,7 +39,7 @@ const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 type ConfigModelProfile = { readonly model: string; readonly protocol?: OpenAIProtocol; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
 type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly protocol: OpenAIProtocol; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; skills?: readonly string[]; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const defaultProtocol = parseOpenAIProtocol(config.protocol);
 const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? defaultProtocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
 const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, protocol: defaultProtocol, capabilities: [...(config.modelCapabilities ?? [])] };
@@ -55,7 +55,11 @@ const managed = managedRaw.map(item => typeof item === "string" ? { path: item, 
 const byPath = new Map<string, { path: string; config?: JsonObject }>();
 for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.config ? { config: item.config } : {}) });
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
-const pluginEntries = orderPluginEnableEntries(await Promise.all([...byPath.values()].map(async configured => ({ configured, module: await loadPluginModule(configured.path) }))));
+const pluginEntries = orderPluginEnableEntries(await Promise.all([...byPath.values()].map(async configured => {
+  const module = await loadPluginModule(configured.path);
+  if (module.manifest.id !== "context-files" || config.skills === undefined) return { configured, module };
+  return { configured: { ...configured, config: { ...(configured.config ?? {}), skills: [...config.skills] } }, module };
+})));
 const configured = pluginEntries.map(entry => entry.configured);
 const modules = pluginEntries.map(entry => entry.module);
 const hostedWebSearch = allModelCapabilities.includes("hosted_web_search");

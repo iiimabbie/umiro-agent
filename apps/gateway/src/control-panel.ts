@@ -35,6 +35,7 @@ export const CONFIG_EXPLANATIONS = {
   profiles: { label: "模型 profiles", description: "依 profile ID 定義模型、能力與預設 reasoning；Discord session 的模型選擇會解析這些 profile。", defaultValue: {}, risk: "能力宣告過多會允許模型收到它實際不支援的請求。", restartRequired: true },
   modelCapabilities: { label: "模型能力", description: "模型明確支援的能力清單，例如 vision、function_tools、hosted_web_search。", defaultValue: [], risk: "未宣告會 fail closed；錯誤宣告可能在 provider 端失敗。", restartRequired: true },
   contextMaxTokens: { label: "Context token 上限", description: "固定文件、人物、記憶與對話歷史合計可使用的估算 token 上限。", defaultValue: 24000, risk: "過高會增加延遲與費用，過低可能放不下必要 context。", restartRequired: true },
+  skills: { label: "Workspace skills", description: "啟用 workspace/skills/<name>/SKILL.md 的技能摘要；技能正文仍由模型按需讀取。", defaultValue: [], risk: "技能檔是使用者提供的內容，會影響模型的工作流程；只啟用信任的目錄。", restartRequired: true },
   pricing: { label: "模型價格", description: "依 model ID 設定 inputUsdPerMillion／outputUsdPerMillion；未設定的模型不猜測成本。", defaultValue: {}, risk: "只影響估算；錯誤價格會造成控制台成本顯示不準。", restartRequired: true },
   "embedding.provider": { label: "Embedding provider", description: "disabled、gemini 或 openai-compatible；disabled 時只用 FTS。", defaultValue: "disabled", risk: "啟用後會把可索引文字送往所選 provider。", restartRequired: true },
   "embedding.model": { label: "Embedding model", description: "啟用 embedding 時使用的模型 ID，不可寫死為內建模型。", defaultValue: null, risk: "更換模型或維度會觸發 projection 重建。", restartRequired: true },
@@ -77,11 +78,12 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export function validateControlConfig(value: unknown): Record<string, unknown> {
   assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
-  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "discord", "authority", "subagent", "plugins", "webUi"]);
+  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "skills", "discord", "authority", "subagent", "plugins", "webUi"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
   if (typeof config.model !== "string" || !config.model.trim()) throw new TypeError("model must be a non-empty string");
   if (config.protocol !== undefined && config.protocol !== "openai_responses" && config.protocol !== "openai_chat_completions") throw new TypeError("protocol must be openai_responses or openai_chat_completions");
   if (config.contextMaxTokens !== undefined && (!Number.isSafeInteger(config.contextMaxTokens) || Number(config.contextMaxTokens) < 256 || Number(config.contextMaxTokens) > 1_000_000)) throw new TypeError("contextMaxTokens must be between 256 and 1000000");
+  if (config.skills !== undefined && (!Array.isArray(config.skills) || config.skills.some(item => typeof item !== "string" || !/^[A-Za-z0-9._-]+$/.test(item)) || new Set(config.skills).size !== config.skills.length)) throw new TypeError("skills must contain unique workspace skill directory names");
   if (config.pricing !== undefined) {
     if (!config.pricing || typeof config.pricing !== "object" || Array.isArray(config.pricing)) throw new TypeError("pricing must be an object keyed by model ID");
     for (const [model, value] of Object.entries(config.pricing)) { const rate = value as Record<string, unknown>; if (!model.trim() || !rate || typeof rate !== "object" || Array.isArray(rate) || Object.keys(rate).some(key => key !== "inputUsdPerMillion" && key !== "outputUsdPerMillion") || typeof rate.inputUsdPerMillion !== "number" || !Number.isFinite(rate.inputUsdPerMillion) || rate.inputUsdPerMillion < 0 || typeof rate.outputUsdPerMillion !== "number" || !Number.isFinite(rate.outputUsdPerMillion) || rate.outputUsdPerMillion < 0) throw new TypeError(`invalid pricing for model ${model || "<empty>"}`); }

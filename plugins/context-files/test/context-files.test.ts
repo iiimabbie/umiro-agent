@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,13 +8,17 @@ import { createPlugin } from "../src/index.js";
 test("built-in context provider loads OWNER with the other workspace files", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-context-"));
   for (const [name, content] of [["SOUL.md", "soul"], ["AGENT.md", "agent"], ["OWNER.md", "owner"], ["MEMORY.md", "memory"]] as const) await writeFile(join(root, name), content);
-  const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root }, getSecret: () => undefined });
+  const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root, skills: ["travel"] }, getSecret: () => undefined });
+  await mkdir(join(root, "skills", "travel"), { recursive: true });
+  await writeFile(join(root, "skills", "travel", "SKILL.md"), "---\nname: Traveler\ndescription: Plan trips\n---\n# Details\n");
   await plugin.start?.();
   const providers = plugin.contributions.contextProviders ?? [];
-  assert.deepEqual(providers.map(provider => provider.id), ["context.bootstrap", "context.soul", "context.agent", "context.owner", "context.memory", "context.conversation_history"]);
+  assert.deepEqual(providers.map(provider => provider.id), ["context.bootstrap", "context.soul", "context.agent", "context.owner", "context.memory", "context.skills", "context.conversation_history"]);
   const request = { runId: "run", execution: { actor: { id: "owner", kind: "human", roles: ["owner"] } } as never, prompt: "hi" };
   const owner = await providers.find(provider => provider.id === "context.owner")!.load(request);
   assert.equal(owner[0]?.content, "owner");
+  const skills = await providers.find(provider => provider.id === "context.skills")!.load(request);
+  assert.match(skills[0]?.content ?? "", /Traveler: Plan trips.*workspace\/skills\/travel\/SKILL\.md/);
   const ownerTools = plugin.contributions.tools ?? [];
   const add = ownerTools.find(tool => tool.name === "owner_profile_add")!;
   const replace = ownerTools.find(tool => tool.name === "owner_profile_replace")!;
