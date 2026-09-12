@@ -37,6 +37,8 @@ test("maps Discord messages and preserves stable principals", async () => {
   assert.equal(event.content[0]?.type, "text");
   assert.equal(event.identity.displayName, "小明");
   assert.deepEqual(event.metadata, { messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum" });
+  const replied = toInputEvent({ messageId: "m2", channelId: "thread", guildId: "g", authorId: "2", content: "你看這張", createdAt: "2026-01-01T00:01:00Z", replyToMessageId: "m1", replyAuthorId: "3", replyToContent: "圖片", replyToAttachments: [{ id: "a1", url: "https://cdn.discordapp.com/a", filename: "photo.png", size: 3, mediaType: "image/png" }] });
+  assert.equal(replied.metadata?.replyToAttachmentCount, 1);
 });
 
 test("normalizes known Discord user mentions while retaining stable IDs", () => {

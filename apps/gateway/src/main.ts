@@ -479,12 +479,28 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     logger.write({ level: "warn", event: "discord.attachment.import_failed", message: "Discord attachment could not be imported; continuing with the message", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
   });
   const importedArtifacts = imported.artifacts;
+  const storedReplyArtifacts = message.replyToMessageId
+    ? await artifacts.listBySource({ kind: "discord_message", id: message.replyToMessageId })
+    : [];
+  const replyResolved = message.replyAuthorId && message.replyToAttachments?.length
+    ? await identities.resolve({ transport: "discord", externalId: message.replyAuthorId, principalId: null })
+    : undefined;
+  const replyImported = message.replyToMessageId && !storedReplyArtifacts.length && replyResolved
+    ? await importDiscordAttachments(artifacts, message.replyToAttachments ?? [], replyResolved.principal.id, message.replyToMessageId, failure => {
+      logger.write({ level: "warn", event: "discord.reply_attachment.import_failed", message: "Discord reply attachment could not be imported; continuing with the reply text", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, replyToMessageId: message.replyToMessageId!, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
+    })
+    : { artifacts: [], promptSuffix: "" };
+  const replyArtifacts = storedReplyArtifacts.length ? storedReplyArtifacts : replyImported.artifacts;
   const artifactIds = importedArtifacts.map(artifact => artifact.id);
   const controller = new AbortController();
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
   const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${imported.promptSuffix}`;
   const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol);
+  const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
+    ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol)
+    : [];
+  const modelContent = [...userContent, ...replyContent];
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
   if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasConversation(event))) {
     try {
@@ -506,7 +522,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   }
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
-  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(userContent.length ? { userContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); } });
+  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); } });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
@@ -530,10 +546,25 @@ discord.onSteer(async message => {
       logger.write({ level: "warn", event: "discord.attachment.import_failed", message: "Discord attachment could not be imported; continuing with the steer message", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
     });
     const imported = importedResult.artifacts;
+    const storedReplyArtifacts = message.replyToMessageId
+      ? await artifacts.listBySource({ kind: "discord_message", id: message.replyToMessageId })
+      : [];
+    const replyResolved = message.replyAuthorId && message.replyToAttachments?.length
+      ? await identities.resolve({ transport: "discord", externalId: message.replyAuthorId, principalId: null })
+      : undefined;
+    const replyImported = message.replyToMessageId && !storedReplyArtifacts.length && replyResolved
+      ? await importDiscordAttachments(artifacts, message.replyToAttachments ?? [], replyResolved.principal.id, message.replyToMessageId, failure => {
+        logger.write({ level: "warn", event: "discord.reply_attachment.import_failed", message: "Discord reply attachment could not be imported; continuing with the steer text", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, replyToMessageId: message.replyToMessageId!, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
+      })
+      : { artifacts: [], promptSuffix: "" };
+    const replyArtifacts = storedReplyArtifacts.length ? storedReplyArtifacts : replyImported.artifacts;
     const artifactIds = imported.map(artifact => artifact.id);
     const event = toInputEvent(message, artifactIds);
     const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"), profile.protocol);
-    await ingress.steer({ event, runId: activeSession.runId, userContent: modelContent });
+    const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
+      ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol)
+      : [];
+    await ingress.steer({ event, runId: activeSession.runId, userContent: [...modelContent, ...replyContent] });
   });
   if (!accepted) return false;
   try { await accepted; return true; }

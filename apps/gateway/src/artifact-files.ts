@@ -9,6 +9,10 @@ export interface IncomingAttachment { readonly url: string; readonly filename: s
 export class ArtifactFileService {
   constructor(private readonly root: string, private readonly store: ArtifactStore, private readonly maxBytes = 25 * 1024 * 1024, private readonly now = () => new Date().toISOString()) {}
 
+  async listBySource(source: { readonly kind: string; readonly id: string }): Promise<readonly Artifact[]> {
+    return (await this.store.listArtifacts()).filter(artifact => artifact.parentSource?.kind === source.kind && artifact.parentSource.id === source.id);
+  }
+
   async read(input: { readonly artifactId: string; readonly principalId: PrincipalId }): Promise<{ readonly bytes: Uint8Array; readonly filename?: string; readonly mediaType: string } | undefined> {
     const artifact = await this.store.getArtifact(input.artifactId);
     if (!artifact || !this.store.canAccessArtifact(artifact, input.principalId, artifact.visibility)) return undefined;

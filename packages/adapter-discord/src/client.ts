@@ -297,12 +297,14 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     let replyAuthorId: string | undefined;
     let replyToContent: string | undefined;
     let replyToCreatedAt: string | undefined;
+    let replyToAttachments: DiscordMessageEnvelope["replyToAttachments"];
     if (message.reference?.messageId) {
       try {
         const reference = await message.fetchReference();
         replyAuthorId = reference.author.id;
         replyToContent = reference.content;
         replyToCreatedAt = reference.createdAt.toISOString();
+        replyToAttachments = [...reference.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) }));
       } catch { /* deleted or inaccessible reference */ }
     }
     const thread = message.channel.isThread() ? message.channel : undefined;
@@ -323,6 +325,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       ...(replyAuthorId ? { replyAuthorId } : {}),
       ...(replyToContent !== undefined ? { replyToContent } : {}),
       ...(replyToCreatedAt ? { replyToCreatedAt } : {}),
+      ...(replyToAttachments?.length ? { replyToAttachments } : {}),
       attachments: [...message.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) })),
     };
   }
