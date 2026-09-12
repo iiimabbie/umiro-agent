@@ -16,9 +16,20 @@ test("inbound images, text and unsupported files remain visible to the model", a
       { type: "text", text: "inspect" },
       { type: "image", url: "data:image/png;base64,AQID", detail: "auto" },
       { type: "text", text: "Attached file note.txt:\nhello attachment" },
-      { type: "text", text: "Attached file: doc.pdf (application/pdf, 3 bytes)" },
+      { type: "text", text: "Attached PDF: doc.pdf" },
+      { type: "file", filename: "doc.pdf", data: "data:application/pdf;base64,cGRm" },
     ]);
     assert.deepEqual(await artifactModelContent("", [artifact("i", "image/png", image, "shot.png")], false), [{ type: "text", text: "Attached file: shot.png (image/png, 3 bytes)" }]);
     assert.deepEqual(await artifactModelContent("", [artifact("j", "application/json; charset=utf-8", note, "data.json", "{\"saved\":true}")]), [{ type: "text", text: "Attached file data.json:\n{\"saved\":true}" }]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("PDF uses a Responses file part while Office and Chat profiles use extracted text", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-artifact-file-input-")); const pdf = join(root, "doc.pdf"); await writeFile(pdf, Buffer.from([1, 2, 3]));
+  const artifact: Artifact = { id: "pdf", ownerPrincipalId: "p", visibility: "shared", mediaType: "application/pdf", filename: "doc.pdf", size: 3, sha256: "pdf", location: pdf, extractedText: "PDF extracted fallback", state: "stored", createdAt: "now", updatedAt: "now" };
+  try {
+    assert.deepEqual(await artifactModelContent("", [artifact], true, "openai_responses"), [{ type: "text", text: "Attached PDF: doc.pdf" }, { type: "file", filename: "doc.pdf", data: "data:application/pdf;base64,AQID" }]);
+    assert.deepEqual(await artifactModelContent("", [{ ...artifact, id: "docx", filename: "doc.docx", mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }], true, "openai_responses"), [{ type: "text", text: "Attached file doc.docx:\nPDF extracted fallback" }]);
+    assert.deepEqual(await artifactModelContent("", [artifact], true, "openai_chat_completions"), [{ type: "text", text: "Attached file doc.pdf:\nPDF extracted fallback" }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

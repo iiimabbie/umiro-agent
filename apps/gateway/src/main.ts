@@ -484,7 +484,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
   const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${imported.promptSuffix}`;
-  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"));
+  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol);
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
   if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasConversation(event))) {
     try {
@@ -532,7 +532,7 @@ discord.onSteer(async message => {
     const imported = importedResult.artifacts;
     const artifactIds = imported.map(artifact => artifact.id);
     const event = toInputEvent(message, artifactIds);
-    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"));
+    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"), profile.protocol);
     await ingress.steer({ event, runId: activeSession.runId, userContent: modelContent });
   });
   if (!accepted) return false;
