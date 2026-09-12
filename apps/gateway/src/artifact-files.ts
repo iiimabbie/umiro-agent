@@ -28,7 +28,7 @@ export class ArtifactFileService {
     const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`attachment download failed: HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength !== attachment.size || bytes.byteLength > this.maxBytes) throw new Error("attachment size mismatch");
+    if (bytes.byteLength > this.maxBytes) throw new Error(`attachment exceeds ${this.maxBytes} byte limit`);
     const id = randomUUID();
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     const directory = join(this.root, sha256.slice(0, 2));
@@ -39,7 +39,7 @@ export class ArtifactFileService {
     try { await rename(temporary, location).catch(async error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; await rm(temporary, { force: true }); }); }
     catch (error) { await rm(temporary, { force: true }); throw error; }
     const at = this.now();
-    const mediaType = attachment.mediaType ?? response.headers.get("content-type") ?? "application/octet-stream";
+    const mediaType = response.headers.get("content-type") ?? attachment.mediaType ?? "application/octet-stream";
     const extractedText = extractArtifactText(mediaType, bytes);
     const artifact: Artifact = { id, ownerPrincipalId, visibility: "shared", mediaType, filename: basename(attachment.filename), size: bytes.byteLength, sha256, location, ...(extractedText !== undefined ? { extractedText } : {}), parentSource: { kind: "discord_message", id: sourceMessageId }, state: "stored", createdAt: at, updatedAt: at };
     await this.store.createArtifact({ artifact });

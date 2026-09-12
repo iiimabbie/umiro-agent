@@ -69,3 +69,16 @@ test("Artifact service backfills durable text for artifacts created by older rel
     assert.deepEqual(await service.backfillTextExtractions(), { updated: 0, failed: 1 });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("Discord imports accept CDN-transformed sizes and use the returned media type", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-artifact-discord-"));
+  const rows = new Map<string, Artifact>();
+  const service = new ArtifactFileService(root, { async createArtifact({ artifact }) { rows.set(artifact.id, artifact); }, async getArtifact(id) { return rows.get(id); }, async listArtifacts() { return [...rows.values()]; }, async updateArtifactState() {}, async deleteArtifact() {}, canAccessArtifact() { return true; } });
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "image/webp" } });
+  try {
+    const artifact = await service.importDiscord({ url: "https://cdn.discordapp.com/converted", filename: "photo.png", size: 1, mediaType: "image/png" }, "owner", "message");
+    assert.equal(artifact.size, 3);
+    assert.equal(artifact.mediaType, "image/webp");
+  } finally { globalThis.fetch = previousFetch; await rm(root, { recursive: true, force: true }); }
+});

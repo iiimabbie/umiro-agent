@@ -26,6 +26,8 @@ import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDel
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
+import { importDiscordAttachments } from "./discord-attachments.js";
+import { safeErrorMessage } from "./safe-error.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -288,7 +290,8 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     if (!finalized) throw new Error("button result changed repeatedly");
     return { messageContent: renderButtonRecord(finalized), disableButtonIds: finalized.usedButtonIds };
 });
-discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
+const runtimeSecrets = [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env.VOYAGE_API_KEY, process.env.GOOGLE_API_KEY, process.env.GOOGLE_CLIENT_SECRET];
+discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets) } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 const replies = { async send(runId: string, text: string, signal?: AbortSignal) {
   const checkpoint = await store.getCheckpoint(runId);
@@ -470,18 +473,16 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   }
   await discord.sendTyping(message.channelId);
   const profile = await sessionProfile(message.channelId);
-  const artifactIds: string[] = [];
-  const importedArtifacts = [];
-  for (const attachment of message.attachments ?? []) {
-    const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
-    const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId);
-    artifactIds.push(artifact.id);
-    importedArtifacts.push(artifact);
-  }
+  const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
+  const imported = await importDiscordAttachments(artifacts, message.attachments ?? [], resolved.principal.id, message.messageId, failure => {
+    logger.write({ level: "warn", event: "discord.attachment.import_failed", message: "Discord attachment could not be imported; continuing with the message", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
+  });
+  const importedArtifacts = imported.artifacts;
+  const artifactIds = importedArtifacts.map(artifact => artifact.id);
   const controller = new AbortController();
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
-  const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}`;
+  const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${imported.promptSuffix}`;
   const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"));
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
   if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasConversation(event))) {
@@ -518,11 +519,13 @@ discord.onSteer(async message => {
   const accepted = activeSession.gate.submit(async () => {
     const profile = await sessionProfile(message.threadId ?? message.channelId);
     const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
-    const imported = [];
-    const artifactIds: string[] = [];
-    for (const attachment of message.attachments ?? []) { const artifact = await artifacts.importDiscord(attachment, resolved.principal.id, message.messageId); imported.push(artifact); artifactIds.push(artifact.id); }
+    const importedResult = await importDiscordAttachments(artifacts, message.attachments ?? [], resolved.principal.id, message.messageId, failure => {
+      logger.write({ level: "warn", event: "discord.attachment.import_failed", message: "Discord attachment could not be imported; continuing with the steer message", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
+    });
+    const imported = importedResult.artifacts;
+    const artifactIds = imported.map(artifact => artifact.id);
     const event = toInputEvent(message, artifactIds);
-    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}`, imported, profile.capabilities.includes("vision"));
+    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"));
     await ingress.steer({ event, runId: activeSession.runId, userContent: modelContent });
   });
   if (!accepted) return false;
