@@ -43,8 +43,8 @@ cd umiro-agent
 corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm build
-pnpm umiro install
-export PATH="$HOME/.umiro-v2/bin:$PATH"
+pnpm umo install
+export PATH="$HOME/.umiro/bin:$PATH"
 ```
 
 Provide credentials and start the daemon:
@@ -52,9 +52,9 @@ Provide credentials and start the daemon:
 ```bash
 cp .env.example .env
 $EDITOR .env
-umiro configure --from-env .env
-umiro start
-umiro status
+umo configure --from-env .env
+umo start
+umo status
 ```
 
 On first contact the agent walks the owner through a short setup: name, voice, how to address you. The setup protocol removes itself once `SOUL.md` and `OWNER.md` are filled in.
@@ -64,11 +64,11 @@ On first contact the agent walks the owner through a short setup: name, voice, h
 
 ## Configuration
 
-Everything lives under one installation root, `~/.umiro-v2/` by default (`UMIRO_HOME` overrides it).
+Everything lives under one installation root, `~/.umiro/` by default (`UMIRO_HOME` overrides it).
 
 | Path | Purpose |
 |---|---|
-| `bin/umiro` | Management CLI |
+| `bin/umo` | Management CLI |
 | `app/releases/`, `app/current` | Versioned releases and the active one |
 | `config/umiro.json` | Model, Discord, embedding and web UI settings |
 | `config/secrets.env` | Tokens and API keys, mode `0600` |
@@ -102,10 +102,10 @@ The workspace is plain Markdown the agent reads on every run and edits through i
 ### Discord
 
 ```bash
-umiro discord configure --allowed-guilds <id,...> --allowed-channels <id,...> \
+umo discord configure --allowed-guilds <id,...> --allowed-channels <id,...> \
   --ambient-channels <id,...> --ignored-channels <id,...> \
   --respond-to-bots false --queue-mode queue
-umiro discord status
+umo discord status
 ```
 
 Slash commands in Discord: `/new` starts a fresh conversation in the channel (the current one is archived), `/stop` cancels the active run, `/model` and `/queue` adjust the session.
@@ -115,17 +115,17 @@ Slash commands in Discord: `/new` starts a fresh conversation in the channel (th
 Full-text search works out of the box. Embeddings are opt-in:
 
 ```bash
-umiro embedding configure --provider gemini --model gemini-embedding-2
-umiro embedding configure --provider openai-compatible \
+umo embedding configure --provider gemini --model gemini-embedding-2
+umo embedding configure --provider openai-compatible \
   --model nomic-embed-text --base-url http://localhost:11434/v1
-umiro embedding status
+umo embedding status
 ```
 
 ## Control panel
 
 ```bash
-umiro web token     # print the access token
-umiro web status
+umo web token     # print the access token
+umo web status
 ```
 
 The panel binds to loopback only (`http://127.0.0.1:3210` by default). It shows each channel's current conversation and archived ones as a chat log, plus plugins, schedules, workspace files, configuration, usage and logs.
@@ -146,10 +146,10 @@ External plugins add capabilities and are installed separately. The official col
 | `daily-report` | Scheduled daily summary |
 
 ```bash
-umiro plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
-umiro plugin list
-umiro plugin enable | disable | update | remove <source>
-umiro plugin configure <source> --config '{"key":"value"}'
+umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
+umo plugin list
+umo plugin enable | disable | update | remove <source>
+umo plugin configure <source> --config '{"key":"value"}'
 ```
 
 Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin declares the capabilities it needs; the host caps them at what the calling principal is allowed to do.
@@ -157,14 +157,14 @@ Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin
 ## CLI
 
 ```text
-umiro install | upgrade | rollback | uninstall [--purge]
-umiro start | stop | status
-umiro configure --from-env <file>
-umiro discord configure | status
-umiro embedding configure | disable | status
-umiro web status | token
-umiro backup | restore
-umiro plugin install | list | enable | disable | update | remove | configure
+umo install | upgrade | rollback | uninstall [--purge]
+umo start | stop | status
+umo configure --from-env <file>
+umo discord configure | status
+umo embedding configure | disable | status
+umo web status | token
+umo backup | restore
+umo plugin install | list | enable | disable | update | remove | configure
 ```
 
 ## Architecture

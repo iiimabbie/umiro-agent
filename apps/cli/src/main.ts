@@ -11,7 +11,7 @@ import { validatePluginConfig, validatePluginManifest, type PluginManifestV0 } f
 import { managedPluginPath } from "./plugin-path.js";
 
 const exec = promisify(execFile);
-const home = resolve(process.env.UMIRO_HOME?.trim() || join(homedir(), ".umiro-v2"));
+const home = resolve(process.env.UMIRO_HOME?.trim() || join(homedir(), ".umiro"));
 const workspace = join(home, "workspace");
 const pluginsFile = join(home, "config", "plugins.json");
 const configFile = join(home, "config", "umiro.json");
@@ -142,14 +142,14 @@ async function registerBuiltins(): Promise<void> {
 async function writeLaunchers(): Promise<void> {
   await mkdir(join(home, "bin"), { recursive: true, mode: 0o700 });
   const launcher = (entry: string) => `#!/bin/sh\nexport UMIRO_HOME=\"\${UMIRO_HOME:-${home}}\"\nexec \"${process.execPath}\" \"$UMIRO_HOME/app/current/${entry}\" \"$@\"\n`;
-  await writeFile(join(home, "bin", "umiro"), launcher("cli/dist/src/main.js"), { mode: 0o700 });
-  await writeFile(join(home, "bin", "umiro-gateway"), launcher("gateway/dist/src/main.js"), { mode: 0o700 });
-  await chmod(join(home, "bin", "umiro"), 0o700); await chmod(join(home, "bin", "umiro-gateway"), 0o700);
+  await writeFile(join(home, "bin", "umo"), launcher("cli/dist/src/main.js"), { mode: 0o700 });
+  await writeFile(join(home, "bin", "umo-gateway"), launcher("gateway/dist/src/main.js"), { mode: 0o700 });
+  await chmod(join(home, "bin", "umo"), 0o700); await chmod(join(home, "bin", "umo-gateway"), 0o700);
 }
 
 const unitPath = join(home, "state", "umiro.service");
 async function installService(): Promise<boolean> {
-  const unit = `[Unit]\nDescription=Umiro Discord Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=UMIRO_HOME=${home}\nEnvironmentFile=-${secretsFile}\nWorkingDirectory=${workspace}\nExecStart=${join(home, "bin", "umiro-gateway")}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`;
+  const unit = `[Unit]\nDescription=Umiro Discord Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=UMIRO_HOME=${home}\nEnvironmentFile=-${secretsFile}\nWorkingDirectory=${workspace}\nExecStart=${join(home, "bin", "umo-gateway")}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(join(home, "state"), { recursive: true, mode: 0o700 }); await writeFile(unitPath, unit, { mode: 0o600 });
   if (process.env.UMIRO_NO_SYSTEMD === "1") return false;
   try { await exec("systemctl", ["--user", "link", unitPath]); await exec("systemctl", ["--user", "daemon-reload"]); await exec("systemctl", ["--user", "enable", "umiro.service"]); return true; } catch { return false; }
@@ -176,7 +176,7 @@ async function embedding(action: string, provider?: string, model?: string, base
   const config = await loadConfig();
   if (action === "status") { console.log(JSON.stringify(config.embedding ?? { provider: "disabled" }, null, 2)); return; }
   if (action === "disable") { await saveConfig({ ...config, embedding: { provider: "disabled" } }); console.log("embedding disabled"); return; }
-  if (action !== "configure") throw new Error("usage: umiro embedding configure|disable|status");
+  if (action !== "configure") throw new Error("usage: umo embedding configure|disable|status");
   if (provider !== "gemini" && provider !== "openai-compatible") throw new Error("--provider must be gemini or openai-compatible");
   if (!model?.trim()) throw new Error("embedding configure requires --model");
   if (provider === "openai-compatible" && !baseUrl?.trim()) throw new Error("openai-compatible embedding requires --base-url");
@@ -203,7 +203,7 @@ async function discord(action: string, options: { ignoredChannels: string | unde
   const config = await loadConfig();
   const current = config.discord ?? {};
   if (action === "status") { console.log(JSON.stringify(current, null, 2)); return; }
-  if (action !== "configure") throw new Error("usage: umiro discord configure|status");
+  if (action !== "configure") throw new Error("usage: umo discord configure|status");
   if (options.respondToBots !== undefined && options.respondToBots !== "true" && options.respondToBots !== "false") throw new Error("--respond-to-bots must be true or false");
   if (options.queueMode !== undefined && options.queueMode !== "queue" && options.queueMode !== "steer") throw new Error("--queue-mode must be queue or steer");
   if (options.status !== undefined && !["online", "idle", "dnd", "invisible"].includes(options.status)) throw new Error("--status must be online, idle, dnd, or invisible");
@@ -225,7 +225,7 @@ async function discord(action: string, options: { ignoredChannels: string | unde
 async function web(action: string): Promise<void> {
   if (action === "status") { const config = await loadConfig(); console.log(JSON.stringify(config.webUi ?? { enabled: false }, null, 2)); return; }
   if (action === "token") { const content = await readFile(secretsFile, "utf8"); const token = /^UMIRO_WEB_UI_TOKEN=(.+)$/m.exec(content)?.[1]?.trim(); if (!token) throw new Error("Web UI token is not configured"); console.log(token); return; }
-  throw new Error("usage: umiro web status|token");
+  throw new Error("usage: umo web status|token");
 }
 
 const pidFile = join(home, "state", "gateway.pid.json");
@@ -425,4 +425,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umiro install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
+if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umo install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");

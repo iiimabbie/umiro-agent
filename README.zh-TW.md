@@ -43,8 +43,8 @@ cd umiro-agent
 corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm build
-pnpm umiro install
-export PATH="$HOME/.umiro-v2/bin:$PATH"
+pnpm umo install
+export PATH="$HOME/.umiro/bin:$PATH"
 ```
 
 填入憑證並啟動：
@@ -52,9 +52,9 @@ export PATH="$HOME/.umiro-v2/bin:$PATH"
 ```bash
 cp .env.example .env
 $EDITOR .env
-umiro configure --from-env .env
-umiro start
-umiro status
+umo configure --from-env .env
+umo start
+umo status
 ```
 
 第一次接觸時，agent 會帶 Owner 走一段簡短的設定：名字、語氣、怎麼稱呼你。`SOUL.md` 與 `OWNER.md` 填好後，設定流程會自行移除。
@@ -64,11 +64,11 @@ umiro status
 
 ## 設定
 
-所有東西都在同一個安裝根目錄，預設 `~/.umiro-v2/`（可用 `UMIRO_HOME` 覆寫）。
+所有東西都在同一個安裝根目錄，預設 `~/.umiro/`（可用 `UMIRO_HOME` 覆寫）。
 
 | 路徑 | 用途 |
 |---|---|
-| `bin/umiro` | 管理 CLI |
+| `bin/umo` | 管理 CLI |
 | `app/releases/`、`app/current` | 版本化 release 與目前使用中的那份 |
 | `config/umiro.json` | 模型、Discord、embedding 與網頁介面設定 |
 | `config/secrets.env` | token 與 API 金鑰，權限 `0600` |
@@ -102,10 +102,10 @@ Workspace 是純 Markdown，agent 每次執行都會讀，並透過工具編輯�
 ### Discord
 
 ```bash
-umiro discord configure --allowed-guilds <id,...> --allowed-channels <id,...> \
+umo discord configure --allowed-guilds <id,...> --allowed-channels <id,...> \
   --ambient-channels <id,...> --ignored-channels <id,...> \
   --respond-to-bots false --queue-mode queue
-umiro discord status
+umo discord status
 ```
 
 Discord 內的 slash 指令：`/new` 在本頻道開新對話（目前這段封存）、`/stop` 取消進行中的 Run、`/model` 與 `/queue` 調整本 session。
@@ -115,17 +115,17 @@ Discord 內的 slash 指令：`/new` 在本頻道開新對話（目前這段封�
 全文搜尋開箱即用；embedding 需自行啟用：
 
 ```bash
-umiro embedding configure --provider gemini --model gemini-embedding-2
-umiro embedding configure --provider openai-compatible \
+umo embedding configure --provider gemini --model gemini-embedding-2
+umo embedding configure --provider openai-compatible \
   --model nomic-embed-text --base-url http://localhost:11434/v1
-umiro embedding status
+umo embedding status
 ```
 
 ## 控制台
 
 ```bash
-umiro web token     # 印出存取 token
-umiro web status
+umo web token     # 印出存取 token
+umo web status
 ```
 
 控制台只綁 loopback（預設 `http://127.0.0.1:3210`）。可以看每個頻道目前的對話與封存的對話（聊天紀錄形式），以及外掛、排程、workspace 檔案、設定、用量與 log。
@@ -146,10 +146,10 @@ umiro web status
 | `daily-report` | 排程的每日摘要 |
 
 ```bash
-umiro plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
-umiro plugin list
-umiro plugin enable | disable | update | remove <source>
-umiro plugin configure <source> --config '{"key":"value"}'
+umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
+umo plugin list
+umo plugin enable | disable | update | remove <source>
+umo plugin configure <source> --config '{"key":"value"}'
 ```
 
 兩種外掛共用同一套 manifest、權限、生命週期與 runtime。外掛宣告需要的 capability，host 會把它限制在呼叫者本身被允許的範圍內。
@@ -157,14 +157,14 @@ umiro plugin configure <source> --config '{"key":"value"}'
 ## CLI
 
 ```text
-umiro install | upgrade | rollback | uninstall [--purge]
-umiro start | stop | status
-umiro configure --from-env <file>
-umiro discord configure | status
-umiro embedding configure | disable | status
-umiro web status | token
-umiro backup | restore
-umiro plugin install | list | enable | disable | update | remove | configure
+umo install | upgrade | rollback | uninstall [--purge]
+umo start | stop | status
+umo configure --from-env <file>
+umo discord configure | status
+umo embedding configure | disable | status
+umo web status | token
+umo backup | restore
+umo plugin install | list | enable | disable | update | remove | configure
 ```
 
 ## 架構

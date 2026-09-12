@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 /** Single installation root, overridable for tests and alternate user profiles. */
 export function umiroHome(environment: NodeJS.ProcessEnv = process.env): string {
-  return resolve(environment.UMIRO_HOME?.trim() || join(homedir(), ".umiro-v2"));
+  return resolve(environment.UMIRO_HOME?.trim() || join(homedir(), ".umiro"));
 }
 
 export function umiroPaths(environment: NodeJS.ProcessEnv = process.env) {

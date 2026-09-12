@@ -326,7 +326,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   list: async () => JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")),
   run: async (action, source, workspace, pluginConfig) => {
     const args = ["plugin", action, source, ...(workspace ? ["--workspace", workspace] : []), ...(pluginConfig ? ["--config", JSON.stringify(pluginConfig)] : [])];
-    const result = await exec(`${paths.root}/bin/umiro`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
+    const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
     return { ok: true, output: result.stdout.trim(), restartRequired: true };
   },
 }, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {

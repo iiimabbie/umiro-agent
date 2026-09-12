@@ -9,7 +9,7 @@
     "typecheck": "tsc --build",
     "test": "pnpm -r test",
     "dev": "pnpm --filter @umiro/dev-driver dev",
-    "umiro": "pnpm --filter @umiro/cli start --"
+    "umo": "pnpm --filter @umiro/cli start --"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
