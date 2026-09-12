@@ -7,6 +7,7 @@
 **A self-hosted personal AI agent for Discord, with a durable execution core.**
 
 [![node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen)](https://nodejs.org)
+[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/iiimabbie/umiro-agent/releases/tag/v0.1.0)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 </div>

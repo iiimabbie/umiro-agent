@@ -7,6 +7,7 @@
 **可自行託管的 Discord 個人 AI agent，具備可持久化的執行核心。**
 
 [![node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen)](https://nodejs.org)
+[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/iiimabbie/umiro-agent/releases/tag/v0.1.0)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 </div>
