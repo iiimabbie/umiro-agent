@@ -25,6 +25,10 @@ export interface ControlPanelSchedules {
 export interface ControlPanelPlugins { list(): Promise<unknown>; run(action: "install" | "configure" | "enable" | "disable" | "update" | "remove", source: string, workspace?: string, config?: Record<string, unknown>): Promise<unknown> }
 export interface ControlPanelRuns { list(limit: number): Promise<unknown>; get(id: string): Promise<unknown | undefined> }
 export interface ControlPanelChannels { list(): Promise<unknown> }
+export interface ControlPanelConversations {
+  list(filter: { readonly scope?: { readonly transport: string; readonly externalId: string }; readonly state?: "active" | "archived"; readonly limit: number }): Promise<unknown>;
+  messages(conversationId: string, limit: number, after?: number): Promise<unknown | undefined>;
+}
 export interface GatewayReadiness {
   readonly storage: boolean;
   readonly plugins: boolean;
@@ -32,7 +36,7 @@ export interface GatewayReadiness {
   readonly scheduler: boolean;
   readonly shuttingDown?: boolean;
 }
-export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly workspaceFiles?: readonly string[]; readonly secrets?: () => Readonly<Record<string, boolean>>; readonly models?: () => Promise<readonly string[]>; readonly audit?: (event: string, data: Readonly<Record<string, string | number | boolean>>) => void; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly runs?: ControlPanelRuns; readonly channels?: ControlPanelChannels; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly usage?: () => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
+export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly workspaceFiles?: readonly string[]; readonly secrets?: () => Readonly<Record<string, boolean>>; readonly models?: () => Promise<readonly string[]>; readonly audit?: (event: string, data: Readonly<Record<string, string | number | boolean>>) => void; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly runs?: ControlPanelRuns; readonly channels?: ControlPanelChannels; readonly conversations?: ControlPanelConversations; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly usage?: () => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
 
 export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", defaultValue: null, risk: "模型必須存在於目前 API；錯誤值會使 Run 失敗。", restartRequired: true },
@@ -166,6 +170,21 @@ export class ControlPanelServer {
       if (request.method === "GET" && url.pathname === "/api/secrets") return json(response, 200, this.options.secrets?.() ?? {});
       if (request.method === "GET" && url.pathname === "/api/models") { if (!this.options.models) return json(response, 503, { error: "model catalog unavailable" }); return json(response, 200, await this.options.models()); }
       if (request.method === "GET" && url.pathname === "/api/channels") { if (!this.options.channels) return json(response, 503, { error: "Discord channel catalog unavailable" }); return json(response, 200, await this.options.channels.list()); }
+      if (request.method === "GET" && url.pathname === "/api/conversations") {
+        if (!this.options.conversations) return json(response, 503, { error: "conversation view unavailable" });
+        const stateRaw = url.searchParams.get("state");
+        if (stateRaw !== null && stateRaw !== "active" && stateRaw !== "archived") throw new TypeError("state must be active or archived");
+        const limitRaw = url.searchParams.get("limit") ?? "50";
+        if (!/^\d{1,3}$/.test(limitRaw) || Number(limitRaw) < 1 || Number(limitRaw) > 200) throw new TypeError("conversation limit must be between 1 and 200");
+        const scopeRaw = url.searchParams.get("scope");
+        let scope: { transport: string; externalId: string } | undefined;
+        if (scopeRaw !== null) {
+          const separator = scopeRaw.indexOf(":");
+          if (separator < 1 || separator === scopeRaw.length - 1 || !/^[a-z][a-z0-9._-]*$/.test(scopeRaw.slice(0, separator))) throw new TypeError("scope must be <transport>:<externalId>");
+          scope = { transport: scopeRaw.slice(0, separator), externalId: scopeRaw.slice(separator + 1) };
+        }
+        return json(response, 200, await this.options.conversations.list({ ...(scope ? { scope } : {}), ...(stateRaw ? { state: stateRaw } : {}), limit: Number(limitRaw) }));
+      }
       if (request.method === "GET" && url.pathname === "/api/workspace") return json(response, 200, [...this.editableFiles()]);
       if (request.method === "PUT" && url.pathname === "/api/config") { const config = validateControlConfig(await body(request)); await atomicWrite(this.options.configFile, `${JSON.stringify(config, null, 2)}\n`); this.audit("control.config.saved", { fieldCount: Object.keys(config).length, restartRequired: true }); return json(response, 200, { saved: true, restartRequired: true }); }
       if (request.method === "GET" && url.pathname === "/api/schedules") { if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); return json(response, 200, await this.options.schedules.list()); }
@@ -192,6 +211,17 @@ export class ControlPanelServer {
       if (request.method === "GET" && url.pathname === "/api/runs") { if (!this.options.runs) return json(response, 503, { error: "run query unavailable" }); const raw = url.searchParams.get("limit") ?? "50"; if (!/^\d{1,3}$/.test(raw)) throw new TypeError("run limit must be an integer"); const limit = Number(raw); if (limit < 1 || limit > 200) throw new TypeError("run limit must be between 1 and 200"); return json(response, 200, await this.options.runs.list(limit)); }
       const runMatch = /^\/api\/runs\/([A-Za-z0-9._:-]{1,160})$/.exec(url.pathname); const runId = runMatch?.[1];
       if (request.method === "GET" && runId) { if (!this.options.runs) return json(response, 503, { error: "run query unavailable" }); const result = await this.options.runs.get(runId); return result === undefined ? json(response, 404, { error: "run not found" }) : json(response, 200, result); }
+      const messagesMatch = /^\/api\/conversations\/([A-Za-z0-9._:-]{1,160})\/messages$/.exec(url.pathname);
+      const conversationId = messagesMatch?.[1];
+      if (request.method === "GET" && conversationId) {
+        if (!this.options.conversations) return json(response, 503, { error: "conversation view unavailable" });
+        const limitRaw = url.searchParams.get("limit") ?? "200";
+        if (!/^\d{1,3}$/.test(limitRaw) || Number(limitRaw) < 1 || Number(limitRaw) > 500) throw new TypeError("message limit must be between 1 and 500");
+        const afterRaw = url.searchParams.get("after");
+        if (afterRaw !== null && (!/^\d+$/.test(afterRaw) || !Number.isSafeInteger(Number(afterRaw)))) throw new TypeError("after must be a non-negative integer");
+        const result = await this.options.conversations.messages(conversationId, Number(limitRaw), afterRaw === null ? undefined : Number(afterRaw));
+        return result === undefined ? json(response, 404, { error: "conversation not found" }) : json(response, 200, result);
+      }
       const match = /^\/api\/workspace\/([A-Z]+\.md)$/.exec(url.pathname); const name = match?.[1];
       if (name && this.editableFiles().has(name)) {
         const path = join(this.options.workspace, name);

@@ -1,7 +1,8 @@
 import type { PrincipalId } from "../identity/principal.js";
 import type { InputContentBlock } from "../input/event.js";
-import type { ConversationId, TurnId } from "../run/entities.js";
+import type { ConversationId, RunState, TurnId } from "../run/entities.js";
 import type { ReasoningEffort } from "../model/contract.js";
+import type { ModelUsage } from "../model/contract.js";
 
 export type ConversationState = "active" | "archived";
 
@@ -50,6 +51,41 @@ export interface ConversationHistoryItem {
   readonly assistantCreatedAt?: string;
   /** Bounded, redacted evidence from tools used by this Turn's Run. */
   readonly toolEvidence?: string;
+}
+
+/** Permanent transport location of one Conversation. Unlike the active
+ * binding, this remains attached after archive and replacement. */
+export interface ConversationLocation {
+  readonly transport: string;
+  readonly externalId: string;
+  readonly kind: "direct" | "channel" | "thread";
+}
+
+export interface ConversationSummary {
+  readonly conversation: Conversation;
+  readonly location: ConversationLocation;
+  readonly lastActivityAt: string;
+  readonly turnCount: number;
+  readonly firstText?: string;
+}
+
+export interface ConversationMessageItem {
+  readonly turn: Turn;
+  readonly actorDisplayName?: string;
+  readonly reply?: {
+    readonly runId: string;
+    readonly state: RunState;
+    readonly at: string;
+    readonly text?: string;
+    readonly usage?: ModelUsage;
+  };
+}
+
+export interface ConversationMessagePage {
+  readonly conversation: Conversation;
+  readonly location: ConversationLocation;
+  readonly messages: readonly ConversationMessageItem[];
+  readonly hasMore: boolean;
 }
 
 /** A rebuildable, lossy projection of canonical conversation turns that fell

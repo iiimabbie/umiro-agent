@@ -40,10 +40,10 @@ test("localhost control panel authenticates config and fixed workspace file oper
   const root = await mkdtemp(join(tmpdir(), "umiro-web-ui-")); const workspace = join(root, "workspace"); const configFile = join(root, "umiro.json");
   await mkdir(workspace); await writeFile(join(workspace, "AGENT.md"), "before\n"); await writeFile(configFile, `${JSON.stringify({ model: "gemma4", discord: {}, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] })}\n`);
   const schedules = [{ id: "schedule-1", name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 8 * * *" } }]; let created: unknown; let enabled: unknown; let updatedSchedule: unknown; let removed: unknown;
-  let pluginAction: unknown; let runLimit: unknown; let runId: unknown; const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
+  let pluginAction: unknown; let runLimit: unknown; let runId: unknown; let conversationFilter: unknown; let messageArgs: unknown; const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
   const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "test-token", configFile, workspace, workspaceFiles: ["AGENT.md"], secrets: () => ({ DISCORD_TOKEN: true, LLM_API_KEY: false }), models: async () => ["gemma4", "gpt-5"], audit: (event, data) => audits.push({ event, data }), schedules: {
     async list() { return schedules; }, async create(input) { created = input; return { id: "new", ...input }; }, async setEnabled(id, value) { enabled = [id, value]; return { id, enabled: value }; }, async update(id, input) { updatedSchedule = [id, input]; return { id, ...input }; }, async remove(id) { removed = id; return true; },
-  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, channels: { async list() { return [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
+  }, plugins: { async list() { return [{ source: "builtin:memory", enabled: true }]; }, async run(...args) { pluginAction = args; return { ok: true }; } }, runs: { async list(limit) { runLimit = limit; return [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]; }, async get(id) { runId = id; return id === "run-1" ? { run: { id } } : undefined; } }, channels: { async list() { return [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]; } }, conversations: { async list(filter) { conversationFilter = filter; return [{ id: "conversation-1", state: "archived", scope: { transport: "discord", externalId: "channel-1", kind: "channel", name: "交誼廳" }, turnCount: 2 }]; }, async messages(id, limit, after) { messageArgs = [id, limit, after]; return id === "conversation-1" ? { conversation: { id }, messages: [{ turnId: "turn-1", sequence: 0, text: "hello", observed: true }], hasMore: false } : undefined; } }, logs: limit => [{ event: "test", limit }], usage: () => ({ completedRuns: 2, inputTokens: 10, outputTokens: 5 }), runtime: () => ({ status: "running", bot: { tag: "dev" } }) }); await server.start();
   const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer test-token", "content-type": "application/json" };
   try {
     const html = await (await fetch(`${endpoint}/`)).text();
@@ -58,6 +58,18 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: true, LLM_API_KEY: false });
     assert.deepEqual(await (await fetch(`${endpoint}/api/models`, { headers })).json(), ["gemma4", "gpt-5"]);
     assert.deepEqual(await (await fetch(`${endpoint}/api/channels`, { headers })).json(), [{ id: "channel-1", name: "交誼廳", guildId: "guild-1", guildName: "測試站", kind: "channel" }]);
+    assert.equal((await fetch(`${endpoint}/api/conversations`)).status, 401);
+    assert.deepEqual(await (await fetch(`${endpoint}/api/conversations?scope=discord%3Achannel-1&state=archived&limit=20`, { headers })).json(), [{ id: "conversation-1", state: "archived", scope: { transport: "discord", externalId: "channel-1", kind: "channel", name: "交誼廳" }, turnCount: 2 }]);
+    assert.deepEqual(conversationFilter, { scope: { transport: "discord", externalId: "channel-1" }, state: "archived", limit: 20 });
+    assert.equal((await fetch(`${endpoint}/api/conversations?state=deleted`, { headers })).status, 400);
+    assert.equal((await fetch(`${endpoint}/api/conversations?scope=broken`, { headers })).status, 400);
+    assert.equal((await fetch(`${endpoint}/api/conversations?limit=201`, { headers })).status, 400);
+    const conversationMessages = await (await fetch(`${endpoint}/api/conversations/conversation-1/messages?limit=2&after=0`, { headers })).json();
+    assert.deepEqual(conversationMessages, { conversation: { id: "conversation-1" }, messages: [{ turnId: "turn-1", sequence: 0, text: "hello", observed: true }], hasMore: false });
+    assert.deepEqual(messageArgs, ["conversation-1", 2, 0]);
+    assert.doesNotMatch(JSON.stringify(conversationMessages), /toolEvidence|checkpoint|context envelope/i);
+    assert.equal((await fetch(`${endpoint}/api/conversations/missing/messages`, { headers })).status, 404);
+    assert.equal((await fetch(`${endpoint}/api/conversations/conversation-1/messages?after=-1`, { headers })).status, 400);
     assert.deepEqual(await (await fetch(`${endpoint}/api/workspace`, { headers })).json(), ["AGENT.md"]);
     const updated = { model: "new-model", discord: { allowedGuilds: ["g"] }, webUi: { enabled: true, host: "127.0.0.1", port: 4000 }, plugins: [] };
     assert.equal((await fetch(`${endpoint}/api/config`, { method: "PUT", headers, body: JSON.stringify(updated) })).status, 200);

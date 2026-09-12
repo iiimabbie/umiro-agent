@@ -1,4 +1,4 @@
-import type { Conversation, ConversationCompaction, ConversationHistoryItem, ConversationPreferences, ConversationQueueMode, ConversationState, Turn } from "./entities.js";
+import type { Conversation, ConversationCompaction, ConversationHistoryItem, ConversationMessagePage, ConversationPreferences, ConversationQueueMode, ConversationState, ConversationSummary, Turn } from "./entities.js";
 import type { TurnId } from "../run/entities.js";
 import type { ReasoningEffort } from "../model/contract.js";
 import type { PrincipalId, PrincipalRole } from "../identity/principal.js";
@@ -45,6 +45,8 @@ export interface ConversationStore {
   getHistoryItem(turnId: string): Promise<ConversationHistoryItem | undefined>;
   listTurns(conversationId: string, limit?: number): Promise<readonly Turn[]>;
   listRecentHistory(conversationId: string, beforeSequence: number, limit: number): Promise<readonly ConversationHistoryItem[]>;
+  listConversations(filter: { readonly transport?: string; readonly externalId?: string; readonly state?: ConversationState; readonly limit?: number }): Promise<readonly ConversationSummary[]>;
+  listConversationMessages(conversationId: string, limit?: number, after?: number): Promise<ConversationMessagePage | undefined>;
   refreshConversationCompaction(request: {
     readonly conversationId: string;
     readonly beforeSequence: number;

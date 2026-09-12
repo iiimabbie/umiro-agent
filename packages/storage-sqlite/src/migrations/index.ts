@@ -23,8 +23,9 @@ import { DELEGATION_STATE_SCHEMA } from "./022-delegation-state.js";
 import { MULTIPLE_DELIVERIES_SCHEMA } from "./023-multiple-deliveries.js";
 import { SOURCE_EMBEDDINGS_SCHEMA } from "./024-source-embeddings.js";
 import { CONVERSATION_SCOPES_SCHEMA } from "./025-conversation-scopes.js";
+import { CONVERSATION_LOCATIONS_SCHEMA } from "./026-conversation-locations.js";
 
-const LATEST_VERSION = 25;
+const LATEST_VERSION = 26;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -187,6 +188,12 @@ export function migrate(database: Database.Database): void {
       database.exec("DROP TABLE IF EXISTS approval_requests");
       database.exec(CONVERSATION_SCOPES_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(25, new Date().toISOString());
+    })();
+  }
+  if (current.version < 26) {
+    database.transaction(() => {
+      database.exec(CONVERSATION_LOCATIONS_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(26, new Date().toISOString());
     })();
   }
 }

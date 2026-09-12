@@ -53,6 +53,8 @@ import {
   type ScheduledOccurrence,
   type ScheduledTrigger,
   type ConversationHistoryItem,
+  type ConversationMessagePage,
+  type ConversationSummary,
   type Artifact,
   type ArtifactStore,
   type CreateArtifactRequest,
@@ -205,6 +207,10 @@ function json(value: JsonValue | object): string {
   const serialized = JSON.stringify(value);
   if (serialized === undefined) throw new TypeError("value is not JSON serializable");
   return serialized;
+}
+
+function turnText(content: Turn["content"]): string {
+  return content.filter((block): block is Extract<Turn["content"][number], { type: "text" }> => block.type === "text").map(block => block.text).join("\n");
 }
 
 function parseJson<T>(value: string): T {
@@ -477,6 +483,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         this.database.prepare(`
           INSERT INTO conversations(id, revision, state, created_at, updated_at) VALUES (?, 0, 'active', ?, ?)
         `).run(conversation.id, conversation.createdAt, conversation.updatedAt);
+        this.insertConversationLocation(conversation.id, request.event, request.createdAt);
         this.database.prepare(`
           INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at)
           VALUES (?, ?, ?, ?, ?)
@@ -556,6 +563,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         const conversation: Conversation = { id: request.newConversationId, revision: 0, state: "active", createdAt: request.createdAt, updatedAt: request.createdAt };
         const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: 0, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
         this.database.prepare("INSERT INTO conversations(id, revision, state, created_at, updated_at) VALUES (?, 0, 'active', ?, ?)").run(conversation.id, conversation.createdAt, conversation.updatedAt);
+        this.insertConversationLocation(conversation.id, request.event, request.createdAt);
         this.database.prepare("INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, conversation_id=excluded.conversation_id, created_at=excluded.created_at")
           .run(request.event.conversation.transport, request.event.conversation.externalId, request.event.conversation.kind, conversation.id, request.createdAt);
         this.database.prepare("UPDATE conversation_scopes SET kind=?, last_seen_at=? WHERE transport=? AND external_id=?")
@@ -695,6 +703,85 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return rows.map(row => this.turnFromRow(row));
   }
 
+  async listConversations(filter: { readonly transport?: string; readonly externalId?: string; readonly state?: Conversation["state"]; readonly limit?: number } = {}): Promise<readonly ConversationSummary[]> {
+    const limit = filter.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new TypeError("conversation list limit must be between 1 and 200");
+    if ((filter.transport === undefined) !== (filter.externalId === undefined)) throw new TypeError("conversation scope requires both transport and externalId");
+    if (filter.state !== undefined && filter.state !== "active" && filter.state !== "archived") throw new TypeError("conversation state must be active or archived");
+    const clauses: string[] = [];
+    const parameters: Array<string | number> = [];
+    if (filter.transport !== undefined && filter.externalId !== undefined) { clauses.push("l.transport=? AND l.external_id=?"); parameters.push(filter.transport, filter.externalId); }
+    if (filter.state !== undefined) { clauses.push("c.state=?"); parameters.push(filter.state); }
+    parameters.push(limit);
+    const rows = this.database.prepare(`
+      SELECT c.*, l.transport, l.external_id, l.kind,
+        COALESCE(MAX(t.created_at), c.created_at) AS last_activity_at,
+        COUNT(t.id) AS turn_count
+      FROM conversations c
+      JOIN conversation_locations l ON l.conversation_id=c.id
+      LEFT JOIN turns t ON t.conversation_id=c.id
+      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+      GROUP BY c.id, l.transport, l.external_id, l.kind
+      ORDER BY last_activity_at DESC, c.id DESC
+      LIMIT ?
+    `).all(...parameters) as Array<ConversationRow & { transport: string; external_id: string; kind: "direct" | "channel" | "thread"; last_activity_at: string; turn_count: number }>;
+    const textRows = this.database.prepare("SELECT content_json FROM turns WHERE conversation_id=? ORDER BY sequence") as Database.Statement<[string]>;
+    return rows.map(row => {
+      let firstText: string | undefined;
+      for (const candidate of textRows.all(row.id) as Array<{ content_json: string }>) {
+        const text = turnText(parseJson<Turn["content"]>(candidate.content_json)).trim();
+        if (!text || text.startsWith("[System] This is the initial message")) continue;
+        firstText = text.slice(0, 80);
+        break;
+      }
+      return {
+        conversation: this.conversationFromRow(row),
+        location: { transport: row.transport, externalId: row.external_id, kind: row.kind },
+        lastActivityAt: row.last_activity_at,
+        turnCount: row.turn_count,
+        ...(firstText ? { firstText } : {}),
+      };
+    });
+  }
+
+  async listConversationMessages(conversationId: string, limit = 200, after?: number): Promise<ConversationMessagePage | undefined> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new TypeError("conversation message limit must be between 1 and 500");
+    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new TypeError("conversation message after must be a non-negative integer");
+    const conversationRow = this.database.prepare("SELECT * FROM conversations WHERE id=?").get(conversationId) as ConversationRow | undefined;
+    if (!conversationRow) return undefined;
+    const location = this.database.prepare("SELECT transport,external_id,kind FROM conversation_locations WHERE conversation_id=?").get(conversationId) as { transport: string; external_id: string; kind: "direct" | "channel" | "thread" } | undefined;
+    if (!location) return undefined;
+    const parameters = after === undefined ? [conversationId, limit + 1] : [conversationId, after, limit + 1];
+    const rows = this.database.prepare(`
+      SELECT t.*, i.display_name AS actor_display_name,
+        r.id AS reply_run_id, r.state AS reply_state, r.updated_at AS reply_updated_at,
+        o.text AS assistant_text, o.usage_json AS usage_json, o.created_at AS assistant_created_at
+      FROM turns t
+      LEFT JOIN transport_identities i ON i.transport=t.actor_transport AND i.external_id=t.actor_external_id
+      LEFT JOIN runs r ON r.id=t.primary_run_id
+      LEFT JOIN run_outputs o ON o.run_id=t.primary_run_id
+      WHERE t.conversation_id=? ${after === undefined ? "" : "AND t.sequence>?"}
+      ORDER BY t.sequence
+      LIMIT ?
+    `).all(...parameters) as Array<TurnRow & { actor_display_name: string | null; reply_run_id: string | null; reply_state: RunState | null; reply_updated_at: string | null; assistant_text: string | null; usage_json: string | null; assistant_created_at: string | null }>;
+    const hasMore = rows.length > limit;
+    return {
+      conversation: this.conversationFromRow(conversationRow),
+      location: { transport: location.transport, externalId: location.external_id, kind: location.kind },
+      messages: rows.slice(0, limit).map(row => {
+        const reply = row.reply_run_id && row.reply_state && row.reply_updated_at ? {
+          runId: row.reply_run_id,
+          state: row.reply_state,
+          at: row.assistant_created_at ?? row.reply_updated_at,
+          ...(row.reply_state === "succeeded" && row.assistant_text !== null ? { text: row.assistant_text } : {}),
+          ...(row.usage_json !== null ? { usage: parseJson<NonNullable<NonNullable<ConversationMessagePage["messages"][number]["reply"]>["usage"]>>(row.usage_json) } : {}),
+        } : undefined;
+        return { turn: this.turnFromRow(row), ...(row.actor_display_name ? { actorDisplayName: row.actor_display_name } : {}), ...(reply ? { reply } : {}) };
+      }),
+      hasMore,
+    };
+  }
+
   async listRecentHistory(conversationId: string, beforeSequence: number, limit: number): Promise<readonly ConversationHistoryItem[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("history limit must be between 1 and 100");
     const rows = this.database.prepare(`SELECT t.*, o.text AS assistant_text, o.created_at AS assistant_created_at, i.display_name AS actor_display_name FROM turns t LEFT JOIN run_outputs o ON o.run_id = t.primary_run_id LEFT JOIN transport_identities i ON i.transport=t.actor_transport AND i.external_id=t.actor_external_id
@@ -767,6 +854,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (text.trim()) this.database.prepare("INSERT INTO conversation_fts(turn_id, conversation_id, actor_principal_id, text) VALUES (?, ?, ?, ?)")
       .run(turn.id, turn.conversationId, turn.actorPrincipalId, text);
     if (text.trim()) this.enqueueEmbedding(`turn:${turn.id}`, text);
+  }
+
+  private insertConversationLocation(conversationId: string, event: InputEvent, createdAt: string): void {
+    this.database.prepare("INSERT INTO conversation_locations(conversation_id,transport,external_id,kind,created_at) VALUES (?,?,?,?,?)")
+      .run(conversationId, event.conversation.transport, event.conversation.externalId, event.conversation.kind, createdAt);
   }
 
   private attachmentEvidence(content: Turn["content"]): string {

@@ -1,7 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
+import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
@@ -303,6 +303,19 @@ const replies = { async send(runId: string, text: string, signal?: AbortSignal) 
   return { deliveryId };
 } };
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
+const namedConversationScopes = async (locations: readonly ConversationLocation[]) => {
+  const discordIds = locations.filter(location => location.transport === "discord").map(location => location.externalId);
+  const catalog = new Map((await discord.listChannels(discordIds)).map(channel => [channel.id, channel]));
+  return new Map(locations.map(location => {
+    const channel = location.transport === "discord" ? catalog.get(location.externalId) : undefined;
+    return [`${location.transport}:${location.externalId}`, {
+      transport: location.transport,
+      externalId: location.externalId,
+      kind: location.kind,
+      ...(channel ? { name: channel.name, guildName: channel.guildName, ...(channel.parentName ? { parentName: channel.parentName } : {}) } : {}),
+    }];
+  }));
+};
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
   list: () => scheduler.list(),
   create: input => scheduler.create({ name: input.name, enabled: true, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, jobRef: "agent.prompt", input: { prompt: input.prompt }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: ownerAuthority, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
@@ -319,6 +332,45 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
 }, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); const origin = run.context.origin; const binding = run.conversationId ? await store.getConversationBinding(run.conversationId) : undefined; return { id: run.id, state: run.state, origin: origin.kind, ...(binding?.transport === "discord" ? { channelId: binding.externalId } : {}), createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
+}, conversations: {
+  list: async filter => {
+    const summaries = await store.listConversations({ ...(filter.scope ? filter.scope : {}), ...(filter.state ? { state: filter.state } : {}), limit: filter.limit });
+    const scopes = await namedConversationScopes(summaries.map(summary => summary.location));
+    return summaries.map(summary => ({
+      id: summary.conversation.id,
+      state: summary.conversation.state,
+      scope: scopes.get(`${summary.location.transport}:${summary.location.externalId}`)!,
+      createdAt: summary.conversation.createdAt,
+      lastActivityAt: summary.lastActivityAt,
+      turnCount: summary.turnCount,
+      ...(summary.firstText ? { firstText: summary.firstText } : {}),
+    }));
+  },
+  messages: async (conversationId, limit, after) => {
+    const page = await store.listConversationMessages(conversationId, limit, after);
+    if (!page) return undefined;
+    const scopes = await namedConversationScopes([page.location]);
+    const scope = scopes.get(`${page.location.transport}:${page.location.externalId}`)!;
+    return {
+      conversation: { id: page.conversation.id, state: page.conversation.state, scope, createdAt: page.conversation.createdAt },
+      messages: page.messages.map(item => {
+        const text = item.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        const attachments = item.turn.content.filter(block => block.type === "artifact_reference").length;
+        return {
+          turnId: item.turn.id,
+          sequence: item.turn.sequence,
+          at: item.turn.createdAt,
+          author: { principalId: item.turn.actorPrincipalId, ...(item.actorDisplayName ? { displayName: item.actorDisplayName } : {}), isOwner: item.turn.actorPrincipalId === "owner" },
+          text,
+          ...(attachments ? { attachments } : {}),
+          ...(item.turn.replyToTurnId ? { replyToTurnId: item.turn.replyToTurnId } : {}),
+          observed: !item.turn.primaryRunId,
+          ...(item.reply ? { reply: item.reply } : {}),
+        };
+      }),
+      hasMore: page.hasMore,
+    };
+  },
 }, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
