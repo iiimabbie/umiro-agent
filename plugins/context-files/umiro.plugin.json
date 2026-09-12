@@ -5,7 +5,7 @@
   "coreApi": "0",
   "entry": "./dist/src/index.js",
   "permissions": {
-    "capabilities": ["context.files.read", "owner.profile.write"],
+    "capabilities": ["context.files.read", "owner.profile.write", "skill.manage"],
     "visibility": { "kind": "all" },
     "instructionAuthority": "full"
   },
@@ -16,11 +16,12 @@
     "required": ["workspacePath"],
     "properties": {
       "workspacePath": { "type": "string", "minLength": 1 },
+      "configFile": { "type": "string", "minLength": 1 },
       "skills": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
     }
   },
   "contributes": {
     "contextProviders": ["context.bootstrap", "context.soul", "context.agent", "context.owner", "context.memory", "context.skills", "context.conversation_history"],
-    "tools": ["owner_profile_add", "owner_profile_replace"]
+    "tools": ["owner_profile_add", "owner_profile_replace", "skill_install", "skill_uninstall", "skill_list"]
   }
 }

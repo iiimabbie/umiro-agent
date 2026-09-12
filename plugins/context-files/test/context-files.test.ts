@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import { createPlugin } from "../src/index.js";
+
+const exec = promisify(execFile);
 
 test("built-in context provider loads OWNER with the other workspace files", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-context-"));
@@ -56,4 +60,64 @@ test("bootstrap is owner-only and disappears after both identity files leave shi
   await plugin.start?.();
   await assert.rejects(access(join(root, "BOOTSTRAP.md")));
   await plugin.stop?.();
+});
+
+test("skill tools install, list, activate immediately, persist config, and uninstall recoverably", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-skills-workspace-"));
+  const source = await mkdtemp(join(tmpdir(), "umiro-skill-source-"));
+  const configFile = join(root, "umiro.json");
+  await writeFile(configFile, `${JSON.stringify({ model: "test", skills: [] })}\n`);
+  await writeFile(join(source, "SKILL.md"), "---\nname: Traveler\ndescription: Plan a trip\n---\n# Workflow\n");
+  const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root, configFile, skills: [] }, getSecret: () => undefined });
+  await plugin.start?.();
+  const tools = plugin.contributions.tools ?? [];
+  const install = tools.find(tool => tool.name === "skill_install")!;
+  const list = tools.find(tool => tool.name === "skill_list")!;
+  const uninstall = tools.find(tool => tool.name === "skill_uninstall")!;
+  const context = { operationId: "op", signal: new AbortController().signal, execution: {} } as never;
+
+  const installed = await install.execute({ source, name: "travel" }, context);
+  assert.equal(installed.ok, true);
+  assert.equal(installed.effectStatus, "confirmed");
+  assert.deepEqual((JSON.parse(await readFile(configFile, "utf8")) as { skills: string[] }).skills, ["travel"]);
+  const catalog = plugin.contributions.contextProviders!.find(provider => provider.id === "context.skills")!;
+  assert.match((await catalog.load({ runId: "r", execution: { actor: { id: "owner", kind: "human", roles: ["owner"] } } as never, prompt: "" }))[0]?.content ?? "", /Traveler: Plan a trip/);
+  const listed = await list.execute({}, context);
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.ok ? listed.output : undefined, { skills: [{ name: "travel", enabled: true, description: "Plan a trip" }] });
+
+  const removed = await uninstall.execute({ name: "travel" }, context);
+  assert.equal(removed.ok, true);
+  assert.equal(removed.effectStatus, "confirmed");
+  assert.deepEqual((JSON.parse(await readFile(configFile, "utf8")) as { skills: string[] }).skills, []);
+  assert.equal((await catalog.load({ runId: "r", execution: { actor: { id: "owner", kind: "human", roles: ["owner"] } } as never, prompt: "" })).length, 0);
+  await assert.rejects(access(join(root, "skills", "travel")));
+  assert.ok((await readdir(join(root, ".trash"))).some(name => name.startsWith("skill-travel-")));
+});
+
+test("skill_install accepts a Git URL and rejects a repository without SKILL.md", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-skills-git-workspace-"));
+  const repository = await mkdtemp(join(tmpdir(), "umiro-skill-git-"));
+  const invalidRepository = await mkdtemp(join(tmpdir(), "umiro-skill-invalid-git-"));
+  const configFile = join(root, "umiro.json");
+  await writeFile(configFile, `${JSON.stringify({ model: "test", skills: [] })}\n`);
+  for (const [directory, skill] of [[repository, true], [invalidRepository, false]] as const) {
+    await exec("git", ["init", directory]);
+    if (skill) await writeFile(join(directory, "SKILL.md"), "---\ndescription: Git-installed skill\n---\n# Skill\n");
+    else await writeFile(join(directory, "README.md"), "not a skill\n");
+    await exec("git", ["-C", directory, "add", "."]);
+    await exec("git", ["-C", directory, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+  }
+  const plugin = createPlugin({ pluginId: "context-files", namespace: "context-files", permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, config: { workspacePath: root, configFile, skills: [] }, getSecret: () => undefined });
+  await plugin.start?.();
+  const install = plugin.contributions.tools!.find(tool => tool.name === "skill_install")!;
+  const context = { operationId: "op", signal: new AbortController().signal, execution: {} } as never;
+  const installed = await install.execute({ source: `file://${repository}`, name: "from-git" }, context);
+  assert.equal(installed.ok, true);
+  assert.equal(installed.effectStatus, "confirmed");
+  assert.match(await readFile(join(root, "skills", "from-git", "SKILL.md"), "utf8"), /Git-installed skill/);
+  const invalid = await install.execute({ source: `file://${invalidRepository}`, name: "invalid" }, context);
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.ok ? "" : invalid.error.message, /regular SKILL\.md/);
+  await assert.rejects(access(join(root, "skills", "invalid")));
 });

@@ -4,9 +4,11 @@ import type { JsonObject } from "@umiro/core/ports";
 import type { ContextProvider, ContextRole } from "@umiro/core/context";
 import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
 import type { ToolDefinition, ToolExecutionResult } from "@umiro/core/tool";
+import { createSkillTools, parseSkillFrontmatter } from "./skill-tools.js";
 
 interface ContextFilesConfig {
   readonly workspacePath: string;
+  readonly configFile?: string;
   readonly skills?: readonly string[];
 }
 
@@ -32,27 +34,12 @@ function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
 }
 
-function skillFrontmatter(content: string): { readonly name?: string; readonly description?: string } {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!match) return {};
-  const values: Record<string, string> = {};
-  for (const line of match[1]!.split(/\r?\n/)) {
-    const separator = line.indexOf(":");
-    if (separator < 1) continue;
-    const key = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
-    if ((key === "name" || key === "description") && value) values[key] = value;
-  }
-  return { ...(values.name ? { name: values.name } : {}), ...(values.description ? { description: values.description.split(/\r?\n/)[0]! } : {}) };
-}
-
-function skillsProvider(config: ContextFilesConfig, getRoot: () => string): ContextProvider {
+function skillsProvider(enabled: ReadonlySet<string>, getRoot: () => string): ContextProvider {
   return {
     id: "context.skills",
     role: "skills",
     priority: 350,
     async load() {
-      const enabled = new Set(config.skills ?? []);
       if (!enabled.size) return [];
       const root = join(getRoot(), "skills");
       let entries: string[];
@@ -66,7 +53,7 @@ function skillsProvider(config: ContextFilesConfig, getRoot: () => string): Cont
           const directoryStat = await lstat(directoryPath);
           const skillStat = await lstat(skillPath);
           if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory() || skillStat.isSymbolicLink() || !skillStat.isFile()) continue;
-          const meta = skillFrontmatter(await readFile(skillPath, "utf8"));
+          const meta = parseSkillFrontmatter(await readFile(skillPath, "utf8"));
           summaries.push(`- ${meta.name ?? directory}: ${meta.description ?? "(no description)"} → skills/${directory}/SKILL.md`);
         } catch (error) { if (!isMissing(error)) throw error; }
       }
@@ -140,6 +127,7 @@ function bootstrapProvider(config: ContextFilesConfig, getRoot: () => string): C
 
 export function createPlugin(context: PluginSetupContext): PluginInstance {
   const config = context.config as unknown as ContextFilesConfig;
+  const enabledSkills = new Set(config.skills ?? []);
   let workspaceRoot = ""; let writeQueue = Promise.resolve();
   const ownerPath = () => join(workspaceRoot, "OWNER.md");
   const bootstrapPath = () => join(workspaceRoot, FILES.bootstrap);
@@ -173,6 +161,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
   const tools = [
     tool("owner_profile_add", "Append one durable fact to OWNER.md. Owner only.", { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string", minLength: 1 } } }, async input => serial(async () => { const current = await readFile(ownerPath(), "utf8").catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? "# OWNER\n" : Promise.reject(error)); const content = String(input.content).trim(); if (current.includes(content)) return { added: false }; await ownerWrite(`${current.trim()}\n\n${content}`); return { added: true }; })),
     tool("owner_profile_replace", "Replace one exact occurrence in OWNER.md. Owner only.", { type: "object", additionalProperties: false, required: ["oldText", "newText"], properties: { oldText: { type: "string", minLength: 1 }, newText: { type: "string" } } }, async input => serial(async () => { const current = await readFile(ownerPath(), "utf8"); const oldText = String(input.oldText); if (current.split(oldText).length !== 2) throw new Error("oldText must match exactly once"); await ownerWrite(current.replace(oldText, String(input.newText))); return { replaced: true }; })),
+    ...createSkillTools({ workspaceRoot: () => workspaceRoot, ...(config.configFile ? { configFile: config.configFile } : {}), enabled: enabledSkills, serial, ...(context.logger ? { logger: context.logger } : {}) }),
   ];
   const history: ContextProvider = { id: "context.conversation_history", role: "conversation-history", priority: 700, async load(request) {
     const blocks = [];
@@ -201,7 +190,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
         provider("agent", config, () => workspaceRoot),
         provider("owner", config, () => workspaceRoot),
         provider("memory", config, () => workspaceRoot),
-        skillsProvider(config, () => workspaceRoot),
+        skillsProvider(enabledSkills, () => workspaceRoot),
         history,
       ],
       tools,

@@ -57,8 +57,8 @@ for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.co
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
 const pluginEntries = orderPluginEnableEntries(await Promise.all([...byPath.values()].map(async configured => {
   const module = await loadPluginModule(configured.path);
-  if (module.manifest.id !== "context-files" || config.skills === undefined) return { configured, module };
-  return { configured: { ...configured, config: { ...(configured.config ?? {}), skills: [...config.skills] } }, module };
+  if (module.manifest.id !== "context-files") return { configured, module };
+  return { configured: { ...configured, config: { ...(configured.config ?? {}), configFile: paths.configFile, ...(config.skills === undefined ? {} : { skills: [...config.skills] }) } }, module };
 })));
 const configured = pluginEntries.map(entry => entry.configured);
 const modules = pluginEntries.map(entry => entry.module);
