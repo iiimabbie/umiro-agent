@@ -1,46 +1,53 @@
-# ümiro
+<div align="center">
 
-Native, self-hosted Discord agent with a durable execution core, persistent memory, scheduled work, and a composable plugin system.
+<img src="assets/umiro-header.png" alt="ümiro" width="700">
 
-`ümiro` is the product name. Repositories, packages, CLI commands, services, and environment variables use `umiro`.
+**English** · [繁體中文](README.zh-TW.md)
 
-## What is included
+**A self-hosted personal AI agent for Discord, with a durable execution core.**
 
-- Discord message, thread, DM, delivery, identity, and slash-command adapter
-- Persistent conversations, Runs, tool evidence, crash recovery, and deduplication in SQLite
-- Shared `SOUL.md`, `AGENT.md`, and five structured `memory/*.md` files for one consistent bot personality and durable recall
-- 隨 release 出貨的內掛：context-files、memory/search、scheduler、subagent、host-tools、discord-tools
-- 需另外安裝的外掛：People、Soul Guardian、Coder profile 與其他 domain capabilities
-- Permission-aware FTS and optional, user-configured Gemini or OpenAI-compatible semantic search
-- Durable cron and one-shot reminders that execute as normal agent Runs
-- GitHub plugin installation and lifecycle commands
-- Native user daemon with versioned upgrades and rollback
+[![node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen)](https://nodejs.org)
+[![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+</div>
+
+ümiro runs one agent with one personality across your Discord server. Every conversation, tool call and reply is recorded in SQLite, so the agent survives restarts mid-task, remembers what was said, and can be audited afterwards — while the model endpoint, the data and the permissions stay under your control.
+
+> [!WARNING]
+> ümiro can run shell commands and act on connected services. Run it only on machines and Discord servers you trust, and review its permissions before opening it to other people.
+
+## Features
+
+| | |
+|---|---|
+| **Discord native** | Mentions, replies, DMs, threads and forum posts; slash commands; per-channel trigger policy (ignore / observe / respond) |
+| **Durable execution** | Conversation → Turn → Run → Step → Operation in SQLite; crash recovery, approval gates and cancellation per Run |
+| **Memory that scales** | Five structured memory files with tiered loading, full-text search over every past turn and tool result, optional semantic recall with embeddings |
+| **Permissions** | Owner and member authority levels; every tool declares a capability and a tier; permissions only ever shrink when delegated |
+| **Subagents** | Up to two parallel child runs per supervisor, one level deep, with cancel and reply-now; profiles supplied by plugins |
+| **Scheduling** | Durable cron jobs and one-shot reminders that execute as ordinary agent Runs |
+| **Plugins** | One manifest and runtime for built-in and external plugins; install from GitHub, enable, configure, update, remove |
+| **Control panel** | Local web UI: read conversations as chat, manage plugins, schedules, workspace files and configuration |
 
 ## Requirements
 
-- Linux with Node.js 24 or newer
-- pnpm through Corepack
-- A Discord bot token and owner Discord user ID
-- An OpenAI Responses-compatible model endpoint
+- Linux with Node.js 24 or newer and pnpm (via Corepack)
+- A Discord bot token and your Discord user ID
+- An OpenAI-compatible model endpoint (Responses or Chat Completions)
 
-## Install from source
+## Quick start
 
 ```bash
-git clone https://github.com/iiimabbie/umiro-V2.git
-cd umiro-V2
+git clone https://github.com/iiimabbie/umiro-agent.git
+cd umiro-agent
 corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm build
 pnpm umiro install
-```
-
-Add the installed command to your shell path:
-
-```bash
 export PATH="$HOME/.umiro-v2/bin:$PATH"
 ```
 
-Copy the example secrets file, fill in its values, and install it with owner-only permissions:
+Provide credentials and start the daemon:
 
 ```bash
 cp .env.example .env
@@ -50,76 +57,130 @@ umiro start
 umiro status
 ```
 
+On first contact the agent walks the owner through a short setup: name, voice, how to address you. The setup protocol removes itself once `SOUL.md` and `OWNER.md` are filled in.
+
 > [!IMPORTANT]
-> Do not run V1 and V2 with the same Discord token at the same time. Both processes would consume the same event stream.
+> Do not run this and the previous generation of ümiro with the same Discord token at the same time; both would consume the same event stream.
 
 ## Configuration
 
-The default installation root is `~/.umiro-v2/`. Set `UMIRO_HOME` to use an isolated profile or test installation.
+Everything lives under one installation root, `~/.umiro-v2/` by default (`UMIRO_HOME` overrides it).
 
 | Path | Purpose |
 |---|---|
 | `bin/umiro` | Management CLI |
-| `app/releases/` | Versioned application bundles |
-| `app/current` | Active release |
-| `config/umiro.json` | Model and application configuration |
-| `config/secrets.env` | Tokens and API credentials (`0600`) |
-| `workspace/` | Bot identity, operating guidance, memory, and people files |
-| `data/umiro.sqlite` | Durable canonical state and rebuildable projections |
-| `state/` | Service unit, process state, and logs |
+| `app/releases/`, `app/current` | Versioned releases and the active one |
+| `config/umiro.json` | Model, Discord, embedding and web UI settings |
+| `config/secrets.env` | Tokens and API keys, mode `0600` |
+| `workspace/` | The agent's identity and memory — see below |
+| `data/umiro.sqlite` | Conversations, runs, search index, embeddings |
+| `state/` | Service unit, process state, logs |
 
-Required secrets:
+### Secrets
 
 ```dotenv
 DISCORD_TOKEN=
 UMIRO_OWNER_DISCORD_ID=
 LLM_BASE_URL=http://localhost:8317/v1
 LLM_API_KEY=
+LLM_MODEL=
 ```
 
-Semantic memory search is opt-in. A new installation uses `"embedding": { "provider": "disabled" }`, so full-text search works without an embedding service. Enable either Gemini or any OpenAI-compatible embedding endpoint explicitly; model names and endpoints are user configuration, and credentials stay in `config/secrets.env`.
+### Workspace
 
-Workspace skills are also opt-in. Put a skill in `workspace/skills/<name>/SKILL.md`, add its directory name to the top-level `skills` array in `config/umiro.json` (or edit it through the local Web UI), then restart the daemon. Umiro injects only the skill's frontmatter summary; the Markdown body remains a workspace file that the agent can read when needed.
+The workspace is plain Markdown the agent reads on every run and edits through its tools.
+
+| File | Role |
+|---|---|
+| `SOUL.md` | Who the agent is: name, voice, values, boundaries |
+| `AGENT.md` | How it works: where information belongs, verification, delegation, safety |
+| `OWNER.md` | Who it serves and your standing directives |
+| `memory/PREFERENCES.md`, `memory/LESSONS.md` | Loaded in full every run |
+| `memory/WORKFLOWS.md`, `memory/ONGOING.md`, `memory/FACTS.md` | Only headings are loaded; entries are fetched on demand or recalled by search |
+| `skills/<name>/SKILL.md` | Optional skills; enable them in `config/umiro.json` |
+
+### Discord
 
 ```bash
-# Gemini; reads the key from GOOGLE_API_KEY by default
-umiro embedding configure --provider gemini --model gemini-embedding-2
+umiro discord configure --allowed-guilds <id,...> --allowed-channels <id,...> \
+  --ambient-channels <id,...> --ignored-channels <id,...> \
+  --respond-to-bots false --queue-mode queue
+umiro discord status
+```
 
-# A local or hosted OpenAI-compatible endpoint; authentication is optional
+Slash commands in Discord: `/new` starts a fresh conversation in the channel (the current one is archived), `/stop` cancels the active run, `/model` and `/queue` adjust the session.
+
+### Semantic search
+
+Full-text search works out of the box. Embeddings are opt-in:
+
+```bash
+umiro embedding configure --provider gemini --model gemini-embedding-2
 umiro embedding configure --provider openai-compatible \
   --model nomic-embed-text --base-url http://localhost:11434/v1
-
-# For an authenticated compatible endpoint, name the environment variable
-umiro embedding configure --provider openai-compatible \
-  --model custom-embed --base-url https://example.com/v1 \
-  --api-key-env UMIRO_EMBEDDING_API_KEY
-
-umiro embedding disable
 umiro embedding status
 ```
 
-## CLI
+## Control panel
 
-```text
-umiro install
-umiro upgrade
-umiro rollback
-umiro init
-umiro configure --from-env .env
-umiro embedding configure | disable | status
-umiro start | stop | status
-umiro plugin install <path-or-github-url> [--workspace package]
+```bash
+umiro web token     # print the access token
+umiro web status
+```
+
+The panel binds to loopback only (`http://127.0.0.1:3210` by default). It shows each channel's current conversation and archived ones as a chat log, plus plugins, schedules, workspace files, configuration, usage and logs.
+
+## Plugins
+
+Built-in plugins ship with each release and can be disabled but not removed: `context-files`, `memory`, `scheduler`, `subagent`, `host-tools`, `discord-tools`. Without any external plugin, ümiro is a complete agent.
+
+External plugins add capabilities and are installed separately. The official collection lives at [umiro-plugins](https://github.com/iiimabbie/umiro-plugins):
+
+| Plugin | What it adds |
+|---|---|
+| `people` | Records of the people the agent meets, attached to the prompt when they appear |
+| `soul-guardian` | Scheduled integrity checks on `SOUL.md` and `AGENT.md`, with one-click restore |
+| `coder` | A subagent profile for coding tasks |
+| `google` | Gmail, Calendar, Tasks and Drive tools with OAuth |
+| `tool-activity` | A live "what the agent is doing" message in Discord while a run uses tools |
+| `daily-report` | Scheduled daily summary |
+
+```bash
+umiro plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
 umiro plugin list
 umiro plugin enable | disable | update | remove <source>
 umiro plugin configure <source> --config '{"key":"value"}'
 ```
 
-GitHub monorepo example:
+Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin declares the capabilities it needs; the host caps them at what the calling principal is allowed to do.
 
-```bash
-umiro plugin install https://github.com/iiimabbie/umiro-plugins.git \
-  --workspace daily-report
+## CLI
+
+```text
+umiro install | upgrade | rollback | uninstall [--purge]
+umiro start | stop | status
+umiro configure --from-env <file>
+umiro discord configure | status
+umiro embedding configure | disable | status
+umiro web status | token
+umiro backup | restore
+umiro plugin install | list | enable | disable | update | remove | configure
 ```
+
+## Architecture
+
+```text
+apps/cli                  installation and lifecycle CLI
+apps/gateway              daemon: composition root, Discord ingress, control panel
+packages/core             domain contracts and the execution runtime (no I/O)
+packages/adapter-discord  Discord transport
+packages/model-openai     OpenAI-compatible model adapter
+packages/storage-sqlite   durable state, search and embedding projections
+plugins/*                 built-in plugins
+templates/workspace       first-run workspace files
+```
+
+`@umiro/core` knows nothing about Discord, SQLite or any plugin. The gateway wires adapters, storage, model providers and enabled plugin contributions together. Adapters and the composition root are system layers, not plugins.
 
 ## Development
 
@@ -129,17 +190,6 @@ pnpm test
 pnpm build
 ```
 
-The repository is a pnpm workspace. `@umiro/core` is protocol-neutral and does not depend on Discord, SQLite, or individual plugins. The gateway is the composition root that connects adapters, storage, model providers, and enabled plugin contributions.
+## Migrating from the previous generation
 
-For Plugin ownership, Core is not a Plugin; 內掛 use the `builtin:<id>` source, are owned by the release, and may be disabled but not removed; 外掛 are installed separately and may be independently updated or removed. Both Plugin kinds use the same manifest, permissions, lifecycle, and runtime. A checkout under `plugins/umiro-plugins` does not change an external Plugin into an 內掛; that directory is an external repository submodule. Adapters and Composition are separate system layers, not Plugin kinds.
-
-```text
-apps/cli                  installation and lifecycle CLI
-apps/gateway              native daemon composition root
-packages/core             domain contracts and execution runtime
-packages/adapter-discord  official Discord adapter
-packages/model-openai     OpenAI-compatible model adapter
-packages/storage-sqlite   durable storage and projections
-plugins/*                 內掛（built-in Plugins）隨 release 出貨
-templates/workspace       safe first-run workspace files
-```
+The earlier ümiro ([umiro-agent-v1](https://github.com/iiimabbie/umiro-agent-v1)) stored sessions as JSON files and is no longer maintained. There is no automatic migration: install this version alongside it under its own `UMIRO_HOME`, copy `SOUL.md`, `OWNER.md` and any skills you want to keep into the new workspace, and move the old memory content into the five `memory/*.md` files. Switch the Discord token over once you are satisfied.
