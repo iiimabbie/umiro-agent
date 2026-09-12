@@ -18,7 +18,7 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   const owner = await providers.find(provider => provider.id === "context.owner")!.load(request);
   assert.equal(owner[0]?.content, "owner");
   const skills = await providers.find(provider => provider.id === "context.skills")!.load(request);
-  assert.match(skills[0]?.content ?? "", /Traveler: Plan trips.*workspace\/skills\/travel\/SKILL\.md/);
+  assert.match(skills[0]?.content ?? "", /Traveler: Plan trips.*skills\/travel\/SKILL\.md/);
   const ownerTools = plugin.contributions.tools ?? [];
   const add = ownerTools.find(tool => tool.name === "owner_profile_add")!;
   const replace = ownerTools.find(tool => tool.name === "owner_profile_replace")!;

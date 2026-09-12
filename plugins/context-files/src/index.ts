@@ -67,7 +67,7 @@ function skillsProvider(config: ContextFilesConfig, getRoot: () => string): Cont
           const skillStat = await lstat(skillPath);
           if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory() || skillStat.isSymbolicLink() || !skillStat.isFile()) continue;
           const meta = skillFrontmatter(await readFile(skillPath, "utf8"));
-          summaries.push(`- ${meta.name ?? directory}: ${meta.description ?? "(no description)"} → workspace/skills/${directory}/SKILL.md`);
+          summaries.push(`- ${meta.name ?? directory}: ${meta.description ?? "(no description)"} → skills/${directory}/SKILL.md`);
         } catch (error) { if (!isMissing(error)) throw error; }
       }
       if (!summaries.length) return [];
