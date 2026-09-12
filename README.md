@@ -79,6 +79,8 @@ LLM_API_KEY=
 
 Semantic memory search is opt-in. A new installation uses `"embedding": { "provider": "disabled" }`, so full-text search works without an embedding service. Enable either Gemini or any OpenAI-compatible embedding endpoint explicitly; model names and endpoints are user configuration, and credentials stay in `config/secrets.env`.
 
+Workspace skills are also opt-in. Put a skill in `workspace/skills/<name>/SKILL.md`, add its directory name to the top-level `skills` array in `config/umiro.json` (or edit it through the local Web UI), then restart the daemon. Umiro injects only the skill's frontmatter summary; the Markdown body remains a workspace file that the agent can read when needed.
+
 ```bash
 # Gemini; reads the key from GOOGLE_API_KEY by default
 umiro embedding configure --provider gemini --model gemini-embedding-2
