@@ -11,7 +11,7 @@ const HTML = readFileSync(new URL("./control-panel/index.html", import.meta.url)
 const JS = readFileSync(new URL("./control-panel/app.js", import.meta.url), "utf8");
 const CSS = readFileSync(new URL("./control-panel/app.css", import.meta.url), "utf8");
 
-const BASE_EDITABLE_FILES = ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"] as const;
+const BASE_EDITABLE_FILES = ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"] as const;
 const KNOWN_EDITABLE_FILES = new Set([...BASE_EDITABLE_FILES, "PEOPLE.md"]);
 const MAX_BODY = 1024 * 1024;
 
@@ -222,7 +222,9 @@ export class ControlPanelServer {
         const result = await this.options.conversations.messages(conversationId, Number(limitRaw), afterRaw === null ? undefined : Number(afterRaw));
         return result === undefined ? json(response, 404, { error: "conversation not found" }) : json(response, 200, result);
       }
-      const match = /^\/api\/workspace\/([A-Z]+\.md)$/.exec(url.pathname); const name = match?.[1];
+      const prefix = "/api/workspace/";
+      const encodedName = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : undefined;
+      const name = encodedName === undefined ? undefined : decodeURIComponent(encodedName);
       if (name && this.editableFiles().has(name)) {
         const path = join(this.options.workspace, name);
         if (request.method === "GET") return json(response, 200, { name, content: await readFile(path, "utf8") });

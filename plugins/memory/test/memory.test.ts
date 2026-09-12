@@ -1,53 +1,109 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createPlugin } from "../src/index.js";
 
-test("memory tools apply caller visibility and atomically maintain MEMORY.md", async () => {
+const execution = { origin: { kind: "interactive" as const, transport: "discord", conversationId: "c" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority: { capabilities: ["memory.search", "memory.write", "memory.remove"], visibility: { kind: "all" as const }, instructionAuthority: "full" as const } };
+const toolContext = { execution, operationId: "op", idempotencyKey: "key", signal: new AbortController().signal };
+
+test("memory entries are created, replaced, read, removed, and projected independently", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-memory-"));
-  const observed: unknown[] = [];
+  const projections = new Map<string, readonly { sourceId: string; text: string }[]>();
+  const removedSources: string[] = [];
+  const observedSearch: unknown[] = [];
   try {
-    await writeFile(join(root, "MEMORY.md"), "# MEMORY\n");
     const plugin = createPlugin({
       pluginId: "memory", namespace: "memory", config: { workspacePath: root },
       permissionCeiling: { capabilities: ["memory.search", "memory.write", "memory.remove"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined,
-      services: { conversationSearch: { async search(query, limit, visibility) { observed.push({ query, limit, visibility }); return [{ turnId: "t", conversationId: "c", actorPrincipalId: "p", text: "found", rank: 0 }]; }, async rebuildSearchProjection() {} } },
+      services: {
+        searchDocuments: { async replaceSource(sourceId, documents) { projections.set(sourceId, documents); }, async removeSource(sourceId) { removedSources.push(sourceId); } },
+        conversationSearch: { async search(query, limit, visibility) { observedSearch.push({ query, limit, visibility }); return [{ turnId: "document:memory:entry", conversationId: "source:workspace_file:memory/LESSONS.md#Verify", actorPrincipalId: "namespace:memory", text: "Verify\nCheck the result", rank: 0, documentId: "entry", sourceType: "workspace_file", sourceId: "memory/LESSONS.md#Verify" }]; }, async rebuildSearchProjection() {} },
+      },
     });
     await plugin.start?.();
     const tools = new Map(plugin.contributions.tools?.map(tool => [tool.name, tool]));
-    const visibility = { kind: "restricted" as const, principalIds: ["p"], labels: [], resources: [] };
-    const context = { execution: { origin: { kind: "interactive" as const, transport: "discord", conversationId: "c" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority: { capabilities: ["memory.search", "memory.write", "memory.remove"], visibility, instructionAuthority: "full" as const } }, operationId: "op", idempotencyKey: "key", signal: new AbortController().signal };
-    const search = await tools.get("memory_search")!.execute({ query: "found", limit: 3 }, context);
-    assert.equal(search.ok, true); assert.equal(search.effectStatus, "not_applicable"); assert.deepEqual(observed, [{ query: "found", limit: 3, visibility }]);
-    const added = await tools.get("memory_add")!.execute({ content: "- durable fact" }, context);
-    assert.equal(added.ok, true); assert.equal(added.effectStatus, "confirmed");
-    assert.equal((await tools.get("memory_replace")!.execute({ oldText: "durable", newText: "lasting" }, context)).ok, true);
-    assert.match(await readFile(join(root, "MEMORY.md"), "utf8"), /lasting fact/);
-    assert.equal((await tools.get("memory_remove")!.execute({ text: "- lasting fact" }, context)).ok, true);
+    assert.deepEqual([...tools.keys()], ["memory_search", "memory_read", "memory_write", "memory_remove"]);
+    assert.equal(tools.get("memory_remove")?.policy.tier, "privileged");
+    assert.deepEqual(removedSources, ["MEMORY.md"]);
+
+    const created = await tools.get("memory_write")!.execute({ file: "LESSONS", heading: "Verify", content: "Check the result" }, toolContext);
+    assert.equal(created.ok, true);
+    assert.deepEqual(created.ok ? { ...(created.output as { created: boolean; file: string; heading: string }), usage: undefined } : undefined, { created: true, file: "LESSONS", heading: "Verify", usage: undefined });
+    assert.deepEqual(created.ok ? (created.output as { usage: { limit: number; entries: number } }).usage : undefined, { chars: 102, limit: 4000, percent: 3, entries: 1 });
+    assert.match(await readFile(join(root, "memory", "LESSONS.md"), "utf8"), /## Verify\nCheck the result/);
+    assert.deepEqual(projections.get("memory/LESSONS.md")?.map(item => item.sourceId), ["memory/LESSONS.md#Verify"]);
+
+    const replaced = await tools.get("memory_write")!.execute({ file: "LESSONS", heading: "Verify", content: "Check the actual outcome" }, toolContext);
+    assert.equal(replaced.ok, true);
+    assert.equal(replaced.ok ? (replaced.output as { created: boolean }).created : undefined, false);
+    assert.equal((await readFile(join(root, "memory", "LESSONS.md"), "utf8")).match(/^## /gm)?.length, 1);
+    const entry = await tools.get("memory_read")!.execute({ file: "LESSONS", heading: "Verify" }, toolContext);
+    assert.deepEqual(entry.ok ? entry.output : undefined, { file: "LESSONS", heading: "Verify", content: "Check the actual outcome" });
+    const whole = await tools.get("memory_read")!.execute({ file: "LESSONS" }, toolContext);
+    assert.match(whole.ok ? String((whole.output as { content: string }).content) : "", /# LESSONS[\s\S]*## Verify/);
+    const missing = await tools.get("memory_read")!.execute({ file: "LESSONS", heading: "Missing" }, toolContext);
+    assert.equal(missing.ok, false); assert.match(missing.ok ? "" : missing.error.message, /no heading/);
+
+    await writeFile(join(root, "memory", "FACTS.md"), "# FACTS\n\nDurable facts.\n\n## Manual entry\nThe observatory code is ORBIT-42.\n");
+    const manualPreserved = await tools.get("memory_write")!.execute({ file: "FACTS", heading: "Second entry", content: "Another fact" }, toolContext);
+    assert.equal(manualPreserved.ok, true);
+    assert.match(await readFile(join(root, "memory", "FACTS.md"), "utf8"), /## Manual entry[\s\S]*## Second entry/);
+    assert.deepEqual(projections.get("memory/FACTS.md")?.map(item => item.sourceId), ["memory/FACTS.md#Manual entry", "memory/FACTS.md#Second entry"]);
+
+    const search = await tools.get("memory_search")!.execute({ query: "ORBIT-42", limit: 3 }, toolContext);
+    assert.equal(search.ok, true); assert.equal(search.effectStatus, "not_applicable");
+    assert.deepEqual(observedSearch, [{ query: "ORBIT-42", limit: 3, visibility: execution.authority.visibility }]);
+    assert.equal(search.ok ? (search.output as { hits: Array<{ sourceId?: string }> }).hits[0]?.sourceId : undefined, "memory/LESSONS.md#Verify");
+
+    const removed = await tools.get("memory_remove")!.execute({ file: "LESSONS", heading: "Verify" }, toolContext);
+    assert.equal(removed.ok, true); assert.equal(projections.get("memory/LESSONS.md")?.length, 0);
+    assert.doesNotMatch(await readFile(join(root, "memory", "LESSONS.md"), "utf8"), /## Verify/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("memory writes report bounded usage and reject oversized content", async () => {
+test("memory writes enforce fixed files, entry and file limits without temporary residue", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-memory-limit-"));
   try {
-    await writeFile(join(root, "MEMORY.md"), "# MEMORY\n");
-    const plugin = createPlugin({
-      pluginId: "memory", namespace: "memory", config: { workspacePath: root, characterLimit: 40 },
-      permissionCeiling: { capabilities: ["memory.write"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined,
-    });
+    const plugin = createPlugin({ pluginId: "memory", namespace: "memory", config: { workspacePath: root, characterLimit: 180 }, permissionCeiling: { capabilities: ["memory.write"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined });
     await plugin.start?.();
-    const tool = new Map(plugin.contributions.tools?.map(item => [item.name, item])).get("memory_add")!;
-    const context = { execution: { origin: { kind: "interactive" as const, transport: "test", conversationId: "c" }, actor: { id: "p", kind: "human" as const, roles: ["member" as const] }, authority: { capabilities: ["memory.write"], visibility: { kind: "all" as const }, instructionAuthority: "none" as const } }, operationId: "op", idempotencyKey: "key", signal: new AbortController().signal };
-    const result = await tool.execute({ content: "- short fact" }, context);
-    assert.equal(result.ok, true);
-    const output = result.output as { usage: { chars: number; limit: number; percent: number } };
-    assert.equal(output.usage.limit, 40);
-    assert.equal(output.usage.percent, Math.round(output.usage.chars / 40 * 100));
-    const rejected = await tool.execute({ content: "x".repeat(100) }, context);
-    assert.equal(rejected.ok, false);
-    assert.match(rejected.error?.message ?? "", /character limit/);
-    assert.match(rejected.error?.message ?? "", /\[\d+\/40 chars, \d+%\]/);
+    const write = plugin.contributions.tools!.find(tool => tool.name === "memory_write")!;
+    const invalidFile = await write.execute({ file: "../OWNER", heading: "No", content: "No" }, toolContext);
+    assert.equal(invalidFile.ok, false); assert.match(invalidFile.ok ? "" : invalidFile.error.message, /file must be one of/);
+    const longHeading = await write.execute({ file: "FACTS", heading: "h".repeat(81), content: "No" }, toolContext);
+    assert.equal(longHeading.ok, false); assert.match(longHeading.ok ? "" : longHeading.error.message, /heading exceeds 80/);
+    const longEntry = await write.execute({ file: "FACTS", heading: "Large", content: "x".repeat(1501) }, toolContext);
+    assert.equal(longEntry.ok, false); assert.match(longEntry.ok ? "" : longEntry.error.message, /content exceeds 1500/);
+    const full = await write.execute({ file: "FACTS", heading: "Large", content: "x".repeat(100) }, toolContext);
+    assert.equal(full.ok, false); assert.match(full.ok ? "" : full.error.message, /FACTS\.md \d+\/180 characters.*memory_write.*memory_remove/);
+    assert.equal((await readdir(join(root, "memory"))).some(name => name.startsWith(".FACTS.md.")), false);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("first start migrates the complete legacy MEMORY.md into ONGOING and rejects symlinked memory directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-memory-migrate-"));
+  const legacy = `# MEMORY\n\n## Rules\n${"legacy detail ".repeat(140)}`;
+  try {
+    await writeFile(join(root, "MEMORY.md"), legacy);
+    const plugin = createPlugin({ pluginId: "memory", namespace: "memory", config: { workspacePath: root }, permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined });
+    await plugin.start?.();
+    await assert.rejects(access(join(root, "MEMORY.md")));
+    assert.equal(await readFile(join(root, "MEMORY.md.migrated"), "utf8"), legacy);
+    const ongoing = await readFile(join(root, "memory", "ONGOING.md"), "utf8");
+    assert.match(ongoing, /## 改版前的 MEMORY\.md[\s\S]*請逐條拆到對應檔案後刪除本條/);
+    assert.match(ongoing, /    # MEMORY[\s\S]*    ## Rules[\s\S]*legacy detail/);
+    assert.equal(ongoing.match(/^## /gm)?.length, 1);
+    for (const file of ["PREFERENCES", "LESSONS", "WORKFLOWS", "ONGOING", "FACTS"]) {
+      assert.equal((await lstat(join(root, "memory", `${file}.md`))).mode & 0o777, 0o600);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+
+  const unsafe = await mkdtemp(join(tmpdir(), "umiro-memory-symlink-"));
+  const target = await mkdtemp(join(tmpdir(), "umiro-memory-target-"));
+  try {
+    await symlink(target, join(unsafe, "memory"));
+    const plugin = createPlugin({ pluginId: "memory", namespace: "memory", config: { workspacePath: unsafe }, permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined });
+    await assert.rejects(plugin.start!(), /regular non-symlink directory/);
+  } finally { await rm(unsafe, { recursive: true, force: true }); await rm(target, { recursive: true, force: true }); }
 });

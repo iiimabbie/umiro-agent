@@ -1209,16 +1209,18 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     if (!/^[a-z0-9._-]{1,100}$/i.test(namespace) || !sourceId.trim()) throw new TypeError("invalid search source identity");
     if (documents.length > 1_000) throw new TypeError("search source has too many documents");
     this.database.transaction(() => {
-      const oldKeys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=? AND source_id=?").all(namespace, sourceId) as Array<{ document_key: string }>;
+      const oldKeys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=? AND source_group_id=?").all(namespace, sourceId) as Array<{ document_key: string }>;
       for (const { document_key } of oldKeys) this.removeEmbedding(document_key);
-      this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND source_id=?").run(namespace, sourceId);
-      this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_id=?").run(namespace, sourceId);
-      const insertDocument = this.database.prepare("INSERT INTO search_documents(namespace,source_id,document_id,source_type,text,visibility_json,occurred_at,conversation_id,actor_principal_id) VALUES (?,?,?,?,?,?,?,?,?)");
+      const oldDocumentIds = this.database.prepare("SELECT document_id FROM search_documents WHERE namespace=? AND source_group_id=?").all(namespace, sourceId) as Array<{ document_id: string }>;
+      for (const { document_id } of oldDocumentIds) this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND document_id=?").run(namespace, document_id);
+      this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_group_id=?").run(namespace, sourceId);
+      const insertDocument = this.database.prepare("INSERT INTO search_documents(namespace,source_id,source_group_id,document_id,source_type,text,visibility_json,occurred_at,conversation_id,actor_principal_id) VALUES (?,?,?,?,?,?,?,?,?,?)");
       const insertFts = this.database.prepare("INSERT INTO search_documents_fts(namespace,document_id,source_type,source_id,text) VALUES (?,?,?,?,?)");
       for (const document of documents) {
         if (!/^[a-zA-Z0-9._:-]{1,200}$/.test(document.id) || !document.text.trim() || document.text.length > 200_000) throw new TypeError("invalid search document");
-        insertDocument.run(namespace, sourceId, document.id, document.sourceType.slice(0, 100), document.text, json(document.visibility), document.occurredAt ?? null, document.conversationId ?? null, document.actorPrincipalId ?? null);
-        insertFts.run(namespace, document.id, document.sourceType.slice(0, 100), sourceId, document.text);
+        if (!document.sourceId.trim()) throw new TypeError("invalid search document source identity");
+        insertDocument.run(namespace, document.sourceId, sourceId, document.id, document.sourceType.slice(0, 100), document.text, json(document.visibility), document.occurredAt ?? null, document.conversationId ?? null, document.actorPrincipalId ?? null);
+        insertFts.run(namespace, document.id, document.sourceType.slice(0, 100), document.sourceId, document.text);
         this.enqueueEmbedding(`document:${namespace}:${document.id}`, document.text);
       }
     })();
@@ -1226,10 +1228,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   async removeSearchSource(namespace: string, sourceId: string): Promise<void> {
     this.database.transaction(() => {
-      const keys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=? AND source_id=?").all(namespace, sourceId) as Array<{ document_key: string }>;
+      const keys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=? AND source_group_id=?").all(namespace, sourceId) as Array<{ document_key: string }>;
       for (const { document_key } of keys) this.removeEmbedding(document_key);
-      this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND source_id=?").run(namespace, sourceId);
-      this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_id=?").run(namespace, sourceId);
+      const documentIds = this.database.prepare("SELECT document_id FROM search_documents WHERE namespace=? AND source_group_id=?").all(namespace, sourceId) as Array<{ document_id: string }>;
+      for (const { document_id } of documentIds) this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=? AND document_id=?").run(namespace, document_id);
+      this.database.prepare("DELETE FROM search_documents WHERE namespace=? AND source_group_id=?").run(namespace, sourceId);
     })();
   }
 

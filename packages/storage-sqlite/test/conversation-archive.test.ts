@@ -6,6 +6,7 @@ import test from "node:test";
 import { capabilities, type Run, type Step } from "@umiro/core";
 import Database from "better-sqlite3";
 import { SQLiteExecutionStore } from "../src/index.js";
+import { CONVERSATION_LOCATIONS_SCHEMA } from "../src/migrations/026-conversation-locations.js";
 
 const event = (id: string) => ({ id, occurredAt: "2026-09-09T00:00:00.000Z", identity: { transport: "discord", externalId: "user", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: id }] });
 
@@ -117,7 +118,8 @@ test("schema 26 backfills an archived Conversation location from its Discord del
     await store.ingestInputEvent({ event: event("new"), actorPrincipalId: "owner", newConversationId: "c2", newTurnId: "t2", newRunId: "r2", createdAt: "2026-09-09T00:02:00.000Z" });
     store.close();
     const database = new Database(filename);
-    database.exec("DROP TABLE conversation_locations; DELETE FROM schema_migrations WHERE version=26;");
+    database.exec("DROP TABLE conversation_locations;");
+    database.exec(CONVERSATION_LOCATIONS_SCHEMA);
     database.close();
     store = new SQLiteExecutionStore(filename);
     const archived = await store.listConversations({ state: "archived" });

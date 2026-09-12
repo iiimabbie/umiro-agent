@@ -34,12 +34,19 @@ test("indexes durable extracted attachment text through Turn artifact references
 test("namespace-scoped Plugin documents are searchable, replaceable, removable, and visibility-aware", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.replaceSearchSource("context-files", "OWNER.md", [{ id: "OWNER.md", sourceType: "workspace_file", sourceId: "OWNER.md", text: "owner prefers concise reports", visibility: { kind: "all" } }]);
+  await store.replaceSearchSource("memory", "memory/FACTS.md", [
+    { id: "fact-one", sourceType: "workspace_file", sourceId: "memory/FACTS.md#Home city", text: "Home city\nKobe harbor fact", visibility: { kind: "all" } },
+    { id: "fact-two", sourceType: "workspace_file", sourceId: "memory/FACTS.md#Favorite dish", text: "Favorite dish\nAkashiyaki fact", visibility: { kind: "all" } },
+  ]);
   await store.replaceSearchSource("people", "PEOPLE.md", [{ id: "PEOPLE.md", sourceType: "workspace_file", sourceId: "PEOPLE.md", text: "Alice prefers tea", visibility: { kind: "restricted", principalIds: ["alice"], labels: [], resources: [] } }]);
   assert.equal((await store.search("concise reports", 10, { kind: "all" }))[0]?.sourceType, "workspace_file");
+  assert.equal((await store.search("Kobe harbor", 10, { kind: "all" }))[0]?.sourceId, "memory/FACTS.md#Home city");
   assert.equal((await store.search("tea", 10, { kind: "restricted", principalIds: ["bob"], labels: [], resources: [] })).length, 0);
   assert.equal((await store.search("tea", 10, { kind: "restricted", principalIds: ["alice"], labels: [], resources: [] }))[0]?.documentId, "PEOPLE.md");
   await store.replaceSearchSource("context-files", "OWNER.md", [{ id: "OWNER.md", sourceType: "workspace_file", sourceId: "OWNER.md", text: "owner prefers detailed reports", visibility: { kind: "all" } }]);
+  await store.replaceSearchSource("memory", "memory/FACTS.md", [{ id: "fact-one", sourceType: "workspace_file", sourceId: "memory/FACTS.md#Home city", text: "Home city\nKobe port fact", visibility: { kind: "all" } }]);
   assert.equal((await store.search("concise", 10, { kind: "all" })).length, 0);
+  assert.equal((await store.search("Akashiyaki", 10, { kind: "all" })).length, 0);
   await store.removeSearchSource("people", "PEOPLE.md");
   assert.equal((await store.search("tea", 10, { kind: "all" })).length, 0);
   store.close();
@@ -79,5 +86,17 @@ test("embedding jobs survive as a rebuildable visibility-aware projection", asyn
   assert.equal((await store.claimEmbeddingJobs(10, "2026-01-01T00:00:31.000Z", "2025-12-31T23:55:31.000Z")).length, 1);
   await store.rebuildEmbeddingProjection();
   assert.equal((await store.claimEmbeddingJobs(10, "2026-01-01T00:01:00.000Z", "2025-12-31T23:56:00.000Z")).length, 1);
+  store.close();
+});
+
+test("one memory entry keeps its source identity through semantic projection", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.replaceSearchSource("memory", "memory/FACTS.md", [{ id: "fact-kobe", sourceType: "workspace_file", sourceId: "memory/FACTS.md#Kobe trip", text: "Kobe trip\nThe hotel is beside Sannomiya station.", visibility: { kind: "all" } }]);
+  const [job] = await store.claimEmbeddingJobs(10, "2026-01-01T00:00:00.000Z", "2025-12-31T23:55:00.000Z");
+  assert.equal(job?.documentKey, "document:memory:fact-kobe");
+  await store.completeEmbeddingJob(job!.documentKey, job!.contentHash, "model", [1, 0], "2026-01-01T00:00:01.000Z");
+  const [hit] = await store.semanticSearch([1, 0], "model", 5, { kind: "all" });
+  assert.equal(hit?.sourceType, "workspace_file");
+  assert.equal(hit?.sourceId, "memory/FACTS.md#Kobe trip");
   store.close();
 });

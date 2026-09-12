@@ -12,13 +12,13 @@ interface ContextFilesConfig {
   readonly skills?: readonly string[];
 }
 
-const FILES: Readonly<Record<"soul" | "agent" | "owner" | "memory" | "bootstrap", string>> = {
+const FILES: Readonly<Record<"soul" | "agent" | "owner" | "bootstrap", string>> = {
   soul: "SOUL.md",
   agent: "AGENT.md",
   owner: "OWNER.md",
-  memory: "MEMORY.md",
   bootstrap: "BOOTSTRAP.md",
 };
+const MEMORY_FILES = ["PREFERENCES", "LESSONS", "WORKFLOWS", "ONGOING", "FACTS"] as const;
 
 const PRIORITY: Readonly<Record<"soul" | "agent" | "owner" | "memory", number>> = {
   soul: 100,
@@ -72,7 +72,7 @@ function historySpeaker(item: { readonly turn: { readonly actorPrincipalId: stri
 }
 
 function provider(
-  role: "soul" | "agent" | "owner" | "memory",
+  role: "soul" | "agent" | "owner",
   config: ContextFilesConfig,
   getRoot: () => string,
 ): ContextProvider {
@@ -102,6 +102,40 @@ function provider(
         if (isMissing(error)) return [];
         throw error;
       }
+    },
+  };
+}
+
+function memoryHeadings(content: string): readonly string[] {
+  return content.replace(/\r\n?/g, "\n").split("\n").filter(line => line.startsWith("## ")).map(line => line.slice(3).trim()).filter(Boolean);
+}
+
+function memoryProvider(getRoot: () => string): ContextProvider {
+  return {
+    id: "context.memory",
+    role: "memory",
+    priority: PRIORITY.memory,
+    async load() {
+      const root = join(getRoot(), "memory");
+      try {
+        const directory = await lstat(root);
+        if (directory.isSymbolicLink() || !directory.isDirectory()) throw new Error(`memory context source must be a regular non-symlink directory: ${root}`);
+        const contents = new Map<string, string>();
+        for (const file of MEMORY_FILES) {
+          const path = join(root, `${file}.md`);
+          const stat = await lstat(path);
+          if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`memory context source must be a regular non-symlink file: ${path}`);
+          contents.set(file, await readFile(path, "utf8"));
+        }
+        const content = [
+          `<memory-preferences>\n${contents.get("PREFERENCES")!.trimEnd()}\n</memory-preferences>`,
+          `<memory-lessons>\n${contents.get("LESSONS")!.trimEnd()}\n</memory-lessons>`,
+          "<memory-index>",
+          ...(["WORKFLOWS", "ONGOING", "FACTS"] as const).map(file => `${file}: ${memoryHeadings(contents.get(file)!).join(" / ") || "(none)"}`),
+          "</memory-index>",
+        ].join("\n");
+        return [{ id: "context.memory:files", providerId: "context.memory", role: "memory", content, source: { kind: "file", ref: root }, influence: "information", instructionAuthority: "none", retention: "normal" }];
+      } catch (error) { if (isMissing(error)) return []; throw error; }
     },
   };
 }
@@ -189,7 +223,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
         provider("soul", config, () => workspaceRoot),
         provider("agent", config, () => workspaceRoot),
         provider("owner", config, () => workspaceRoot),
-        provider("memory", config, () => workspaceRoot),
+        memoryProvider(() => workspaceRoot),
         skillsProvider(enabledSkills, () => workspaceRoot),
         history,
       ],
@@ -205,6 +239,7 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
       }
       await removeBootstrapIfConfigured();
       await Promise.all((Object.keys(FILES) as Array<keyof typeof FILES>).map(role => publish(role)));
+      await context.services?.searchDocuments?.removeSource("MEMORY.md");
     },
   };
 }

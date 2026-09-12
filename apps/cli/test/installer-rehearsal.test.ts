@@ -12,9 +12,10 @@ const fixture = new URL("../../test/fixture-gateway.mjs", import.meta.url).pathn
 
 test("clean home completes install, configure, daemon, upgrade, backup, restore, rollback, and uninstall", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-installer-rehearsal-")); const home = join(root, "home"); const source = join(root, "source"); const bin = join(root, "bin");
-  await mkdir(join(source, "apps", "gateway"), { recursive: true }); await mkdir(join(source, "templates", "workspace"), { recursive: true }); await mkdir(bin);
+  await mkdir(join(source, "apps", "gateway"), { recursive: true }); await mkdir(join(source, "templates", "workspace", "memory"), { recursive: true }); await mkdir(bin);
   await writeFile(join(source, "pnpm-workspace.yaml"), "packages: []\n");
-  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"]) await writeFile(join(source, "templates", "workspace", name), `# ${name}\n`);
+  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) await writeFile(join(source, "templates", "workspace", name), `# ${name}\n`);
+  for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) await writeFile(join(source, "templates", "workspace", "memory", name), `# ${name.replace(".md", "")}\n`);
   await writeFile(join(bin, "git"), "#!/bin/sh\nprintf '%s\\n' \"${FAKE_REVISION:-testrev}\"\n");
   await writeFile(join(bin, "pnpm"), "#!/bin/sh\nif [ \"$1\" = build ]; then exit 0; fi\nfor arg do destination=$arg; done\nmkdir -p \"$destination/dist/src\"\ncase \"$destination\" in */gateway) printf '// gateway\\n' > \"$destination/dist/src/main.js\";; */cli) printf '// cli\\n' > \"$destination/dist/src/main.js\";; *) printf '{\"schemaVersion\":0}' > \"$destination/umiro.plugin.json\";; esac\n");
   await chmod(join(bin, "git"), 0o700); await chmod(join(bin, "pnpm"), 0o700);
@@ -22,7 +23,8 @@ test("clean home completes install, configure, daemon, upgrade, backup, restore,
   try {
     await exec(process.execPath, [cli, "install"], { env: environment("rev1") });
     const first = await readlink(join(home, "app", "current")); assert.match(first, /rev1/);
-    for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md"]) await access(join(home, "workspace", name));
+    for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) await access(join(home, "workspace", name));
+    for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) await access(join(home, "workspace", "memory", name));
 
     const imported = join(root, "input.env"); await writeFile(imported, "DISCORD_TOKEN=test\nLLM_BASE_URL=http://127.0.0.1:1/v1\nLLM_API_KEY=test\nUMIRO_OWNER_DISCORD_ID=owner\n");
     await exec(process.execPath, [cli, "configure", "--from-env", imported], { env: environment("rev1") });

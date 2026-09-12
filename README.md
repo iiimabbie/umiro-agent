@@ -8,7 +8,7 @@ Native, self-hosted Discord agent with a durable execution core, persistent memo
 
 - Discord message, thread, DM, delivery, identity, and slash-command adapter
 - Persistent conversations, Runs, tool evidence, crash recovery, and deduplication in SQLite
-- Shared `SOUL.md`, `AGENT.md`, and `MEMORY.md` context for one consistent bot personality
+- Shared `SOUL.md`, `AGENT.md`, and five structured `memory/*.md` files for one consistent bot personality and durable recall
 - 隨 release 出貨的內掛：context-files、memory/search、scheduler、subagent、host-tools、discord-tools
 - 需另外安裝的外掛：People、Soul Guardian、Coder profile 與其他 domain capabilities
 - Permission-aware FTS and optional, user-configured Gemini or OpenAI-compatible semantic search

@@ -90,7 +90,16 @@ function resolvedPluginConfig(manifest: PluginManifestV0 | undefined, current: R
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
   const templates = await workspaceTemplates();
-  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "MEMORY.md", "BOOTSTRAP.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
+  for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
+  const memoryDirectory = join(workspace, "memory");
+  if (await exists(memoryDirectory) || !await exists(join(workspace, "MEMORY.md"))) {
+    await mkdir(memoryDirectory, { recursive: true, mode: 0o700 });
+    for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) {
+      const target = join(memoryDirectory, name);
+      if (!await exists(target)) await cp(join(templates, "memory", name), target);
+      await chmod(target, 0o600);
+    }
+  }
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
   if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, skills: [], discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
