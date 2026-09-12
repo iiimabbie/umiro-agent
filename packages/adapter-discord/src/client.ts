@@ -32,10 +32,10 @@ export function parseButtonCustomId(value: string): { buttonSetId: string; butto
   return match ? { buttonSetId: match[1]!, buttonId: match[2]! } : undefined;
 }
 
-function commandReplyContent(name: string, result: Record<string, unknown>): string {
+export function commandReplyContent(name: string, result: Record<string, unknown>): string {
   if (name === "model" && typeof result.model === "string") return `已切換模型：${result.model}`;
   if (name === "queue" && typeof result.queueMode === "string") return `訊息模式已設定為：${result.queueMode}`;
-  if (name === "archive") return result.archived === true ? "這個對話已封存。" : "目前沒有可封存的對話。";
+  if (name === "new") return result.archived === true ? "已開新對話；舊對話已封存。" : "目前沒有進行中的對話；下一則訊息會開始新對話。";
   return "指令已完成。";
 }
 

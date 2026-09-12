@@ -394,7 +394,7 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
 });
 const builtinCommands = [
   { name: "stop", description: "Cancel an active Run.", ownerOnly: false, ephemeral: true, options: [{ name: "run_id", description: "Run identifier", type: "string" as const, required: true }] },
-  { name: "archive", description: "Archive this conversation and start fresh on the next message.", ownerOnly: true, ephemeral: true },
+  { name: "new", description: "Start a new conversation in this channel; the current one is archived.", ownerOnly: true, ephemeral: true },
   { name: "model", description: "Switch the model for this Discord session.", ownerOnly: true, ephemeral: true, options: [{ name: "name", description: "Model ID, or reset to use the global default.", type: "string" as const, required: true, autocomplete: true }, { name: "effort", description: "Reasoning effort.", type: "string" as const, required: false, choices: ["default", "low", "medium", "high", "xhigh"].map(value => ({ name: value, value })) }] },
   { name: "queue", description: "Set queue or steer mode for this Discord session.", ownerOnly: true, ephemeral: true, options: [{ name: "mode", description: "Message handling mode, or reset for the global default.", type: "string" as const, required: true, choices: ["queue", "steer", "reset"].map(value => ({ name: value, value })) }] },
 ];
@@ -407,7 +407,7 @@ const handleCommand = async (name: string, input: Record<string, string | number
     active.controller.abort(new Error("stopped by Discord user"));
     return { stopped: true, runId };
   }
-  if (name === "archive") {
+  if (name === "new") {
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
     const archived = await store.archiveBoundConversation("discord", commandContext.channelId, new Date().toISOString());
     return archived ? { archived: true, conversationId: archived.id } : { archived: false, reason: "no_active_conversation" };

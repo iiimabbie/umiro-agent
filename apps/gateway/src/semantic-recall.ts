@@ -14,7 +14,7 @@ export class SemanticRecallProvider implements ContextProvider {
       const vector = await this.embedder.embed(query, request.signal);
       const currentConversation = request.execution.origin.kind === "interactive" ? request.execution.origin.conversationId : undefined;
       // The current conversation is excluded. Do not impose an age cutoff here:
-      // `/archive` intentionally starts a new conversation, and a cutoff would
+      // `/new` intentionally starts a new conversation, and a cutoff would
       // make the just-archived conversation disappear for the next 48 hours.
       const hits = await this.search.semanticSearch(vector, this.embedder.model, this.options.limit ?? 5, request.execution.authority.visibility, { ...(currentConversation ? { excludeConversationId: currentConversation } : {}), minSimilarity: this.options.minSimilarity ?? 0.55 });
       if (!hits.length) return [];
