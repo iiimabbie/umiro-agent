@@ -20,6 +20,7 @@ const app = join(home, "app");
 const currentRelease = join(app, "current");
 const previousRelease = join(app, "previous");
 const sourceTemplates = resolve(new URL("../../../../templates/workspace", import.meta.url).pathname);
+const VERSION = "0.1.0";
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
 interface UmiroConfig { model: string; protocol?: "openai_responses" | "openai_chat_completions"; modelCapabilities?: string[]; profiles?: Record<string, { model: string; protocol?: "openai_responses" | "openai_chat_completions"; capabilities?: string[]; reasoningEffort?: string }>; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; skills?: string[]; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 
@@ -118,13 +119,13 @@ async function locateSourceRoot(): Promise<string> {
 async function deployRelease(): Promise<string> {
   const sourceRoot = await locateSourceRoot(); await exec("pnpm", ["build"], { cwd: sourceRoot });
   const revision = await exec("git", ["rev-parse", "--short", "HEAD"], { cwd: sourceRoot }).then(result => result.stdout.trim()).catch(() => "source");
-  const releaseId = `${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 17)}-${revision}-${randomBytes(4).toString("hex")}`;
+  const releaseId = `${VERSION}-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 17)}-${revision}-${randomBytes(4).toString("hex")}`;
   const release = join(app, "releases", releaseId); await mkdir(release, { recursive: true, mode: 0o700 });
   const targets: Array<[string, string]> = [["@umiro/gateway", "gateway"], ["@umiro/cli", "cli"], ["@umiro/plugin-context-files", "plugins/context-files"], ["@umiro/plugin-memory", "plugins/memory"], ["@umiro/plugin-scheduler", "plugins/scheduler"], ["@umiro/plugin-subagent", "plugins/subagent"], ["@umiro/plugin-host-tools", "plugins/host-tools"], ["@umiro/plugin-discord-tools", "plugins/discord-tools"]];
   try {
     for (const [filter, destination] of targets) await exec("pnpm", ["--filter", filter, "deploy", "--prod", join(release, destination)], { cwd: sourceRoot });
     await cp(join(sourceRoot, "templates"), join(release, "templates"), { recursive: true });
-    await writeFile(join(release, "install-manifest.json"), `${JSON.stringify({ releaseId, revision, sourceRoot, installedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(join(release, "install-manifest.json"), `${JSON.stringify({ releaseId, version: VERSION, revision, sourceRoot, installedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
   } catch (error) { await rm(release, { recursive: true, force: true }); throw error; }
   const former = await readlink(currentRelease).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
   const temporaryLink = join(app, `.current-${crypto.randomUUID()}`); await symlink(join("releases", releaseId), temporaryLink); await rename(temporaryLink, currentRelease);
@@ -256,8 +257,10 @@ async function waitForReady(expectedPid?: number, timeoutMs = 90_000): Promise<v
   throw new Error(`gateway did not become ready within ${timeoutMs}ms; inspect ${join(home, "state", "gateway.log")}`);
 }
 async function status(): Promise<boolean> {
-  if (await systemdActive()) { console.log(`running (systemd, ${await readinessState()})`); return true; }
-  const fallback = await fallbackProcess(); if (fallback) { console.log(`running ${fallback.pid} (${await readinessState(fallback.pid)})`); return true; }
+  const manifest: { version?: unknown; revision?: unknown } = await readFile(join(currentRelease, "install-manifest.json"), "utf8").then(raw => JSON.parse(raw) as { version?: unknown; revision?: unknown }).catch(() => ({}));
+  const release = `v${typeof manifest.version === "string" ? manifest.version : VERSION}${typeof manifest.revision === "string" ? ` (${manifest.revision})` : ""}`;
+  if (await systemdActive()) { console.log(`running (systemd, ${await readinessState()}) ${release}`); return true; }
+  const fallback = await fallbackProcess(); if (fallback) { console.log(`running ${fallback.pid} (${await readinessState(fallback.pid)}) ${release}`); return true; }
   console.log("stopped"); return false;
 }
 async function start(): Promise<void> {
@@ -425,4 +428,4 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umo install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
+if (command === "--version" || command === "version") console.log(VERSION); else if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--api-key-env"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umo --version|install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|status|plugin ...");
