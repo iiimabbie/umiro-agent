@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>ümiro 控制台</title>
+<link rel="stylesheet" href="app.css">
+<body>
+<aside class="sidebar">
+  <h1>ümiro V2 控制台</h1>
+
+  <label>Web UI Token<input id="token" type="password" autocomplete="off"></label>
+  <button id="connect">連線</button>
+  <span id="state"></span>
+
+  <nav>
+    <a href="#status" data-page="status">狀態</a>
+    <a href="#channels" data-page="channels">Discord 頻道</a>
+    <a href="#runs" data-page="runs">Runs</a>
+    <a href="#schedules" data-page="schedules">排程</a>
+    <a href="#plugins" data-page="plugins">外掛</a>
+    <a href="#workspace" data-page="workspace">Workspace</a>
+    <a href="#config" data-page="config">設定</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <section id="page-status" class="page">
+    <h2>狀態</h2>
+    <pre id="runtime"></pre>
+    <h3>Secrets 狀態</h3>
+    <pre id="secrets"></pre>
+  </section>
+
+  <section id="page-channels" class="page">
+    <h2>Discord 頻道</h2>
+    <button id="refreshChannels">重新取得名稱</button>
+    <small>名稱直接向 Discord 取得；頻道更名後會自動更新。ID 僅作為穩定識別。</small>
+    <div id="channels"></div>
+  </section>
+
+  <section id="page-runs" class="page">
+    <h2>最近 Runs</h2>
+    <button id="refreshRuns">重新整理</button>
+    <div id="runs"></div>
+    <pre id="runDetail"></pre>
+  </section>
+
+  <section id="page-schedules" class="page">
+    <h2>Cron／Reminder</h2>
+    <div class="grid">
+      <input id="scheduleName" placeholder="名稱">
+      <select id="scheduleKind">
+        <option value="cron">Cron</option>
+        <option value="once">一次性 Reminder</option>
+      </select>
+      <input id="scheduleWhen" placeholder="cron expression 或 ISO 時間">
+      <input id="scheduleTimezone" value="Asia/Taipei" placeholder="Timezone">
+      <select id="scheduleChannel">
+        <option value="">不指定 Discord 頻道</option>
+      </select>
+    </div>
+    <textarea id="schedulePrompt" placeholder="Agent prompt"></textarea>
+    <button id="createSchedule">建立</button>
+    <button id="refreshSchedules">重新整理</button>
+    <div id="schedules"></div>
+  </section>
+
+  <section id="page-plugins" class="page">
+    <h2>內掛／外掛</h2>
+    <small>內掛隨 ümiro 出貨，可停用但不可移除；外掛由使用者安裝，可獨立更新與移除。兩者都走相同 Plugin runtime。變更在重啟 daemon 後完整生效。</small>
+
+    <h3>本專案內建</h3>
+    <div id="pluginsBuiltin"></div>
+
+    <h3>外部外掛</h3>
+    <input id="pluginSource" placeholder="外掛 GitHub HTTPS URL 或本機路徑">
+    <input id="pluginWorkspace" placeholder="monorepo workspace（可留空）">
+    <button id="installPlugin">安裝外掛</button>
+    <div id="pluginsExternal"></div>
+
+    <button id="refreshPlugins">重新整理</button>
+  </section>
+
+  <section id="page-workspace" class="page">
+    <h2>Agent Workspace</h2>
+    <div class="files" id="files"></div>
+    <h3 id="filename">尚未選擇檔案</h3>
+    <textarea id="document"></textarea>
+    <button id="saveDocument">儲存文件</button>
+  </section>
+
+  <section id="page-config" class="page">
+    <h2>設定</h2>
+    <h3>API 可用模型</h3>
+    <pre id="models"></pre>
+    <div id="help"></div>
+    <textarea id="config"></textarea>
+    <button id="saveConfig">儲存設定</button>
+    <small>標示需重啟的設定會在下次 daemon 啟動生效。</small>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

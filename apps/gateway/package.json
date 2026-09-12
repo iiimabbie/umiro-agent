@@ -17,7 +17,7 @@
     "croner": "^9.1.0"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -b",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -b && node -e \"require('node:fs').cpSync('src/control-panel','dist/src/control-panel',{recursive:true})\"",
     "typecheck": "tsc -b --pretty false",
     "test": "pnpm build && node --test dist/test/*.test.js",
     "start": "node dist/src/main.js"
