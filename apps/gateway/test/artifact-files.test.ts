@@ -82,3 +82,13 @@ test("Discord imports accept CDN-transformed sizes and use the returned media ty
     assert.equal(artifact.mediaType, "image/webp");
   } finally { globalThis.fetch = previousFetch; await rm(root, { recursive: true, force: true }); }
 });
+
+test("office attachments receive durable text extraction", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-artifact-office-"));
+  const rows = new Map<string, Artifact>();
+  const service = new ArtifactFileService(root, { async createArtifact({ artifact }) { rows.set(artifact.id, artifact); }, async getArtifact(id) { return rows.get(id); }, async listArtifacts() { return [...rows.values()]; }, async updateArtifactState() {}, async deleteArtifact() {}, canAccessArtifact() { return true; } });
+  try {
+    const artifact = await service.createFromBytes({ bytes: new TextEncoder().encode("{\\rtf1\\ansi Searchable office text}"), ownerPrincipalId: "owner", filename: "note.rtf", mediaType: "application/rtf" });
+    assert.match(artifact.extractedText ?? "", /Searchable office text/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

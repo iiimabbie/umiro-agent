@@ -1,6 +1,6 @@
 {
   "name": "@umiro/gateway",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,7 +14,8 @@
     "@umiro/core": "workspace:*",
     "@umiro/model-openai": "workspace:*",
     "@umiro/storage-sqlite": "workspace:*",
-    "croner": "^9.1.0"
+    "croner": "^9.1.0",
+    "officeparser": "^7.8.0"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -b && node -e \"require('node:fs').cpSync('src/control-panel','dist/src/control-panel',{recursive:true})\"",
