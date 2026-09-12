@@ -15,7 +15,7 @@
   <nav>
     <a href="#status" data-page="status">狀態</a>
     <a href="#channels" data-page="channels">Discord 頻道</a>
-    <a href="#runs" data-page="runs">Runs</a>
+    <a href="#archived" data-page="archived">封存</a>
     <a href="#schedules" data-page="schedules">排程</a>
     <a href="#plugins" data-page="plugins">外掛</a>
     <a href="#workspace" data-page="workspace">Workspace</a>
@@ -29,6 +29,11 @@
     <pre id="runtime"></pre>
     <h3>Secrets 狀態</h3>
     <pre id="secrets"></pre>
+
+    <h3>Runs（除錯）</h3>
+    <button id="refreshRuns">重新整理</button>
+    <div id="runs"></div>
+    <pre id="runDetail"></pre>
   </section>
 
   <section id="page-channels" class="page">
@@ -36,13 +41,13 @@
     <button id="refreshChannels">重新取得名稱</button>
     <small>名稱直接向 Discord 取得；頻道更名後會自動更新。ID 僅作為穩定識別。</small>
     <div id="channels"></div>
+    <div id="channelConversation"></div>
   </section>
 
-  <section id="page-runs" class="page">
-    <h2>最近 Runs</h2>
-    <button id="refreshRuns">重新整理</button>
-    <div id="runs"></div>
-    <pre id="runDetail"></pre>
+  <section id="page-archived" class="page">
+    <h2>封存</h2>
+    <div id="archivedList"></div>
+    <div id="archivedConversation"></div>
   </section>
 
   <section id="page-schedules" class="page">

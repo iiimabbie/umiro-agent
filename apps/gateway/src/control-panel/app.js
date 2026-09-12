@@ -47,6 +47,7 @@ async function channels() {
     const id = document.createElement('small');
     id.textContent = ' — ' + x.id;
     d.append(name, id);
+    d.onclick = () => selectChannel(x.id, d).catch(e => alert(e.message));
     return d;
   }));
   const selected = $('scheduleChannel').value;
@@ -56,6 +57,188 @@ async function channels() {
   );
   $('scheduleChannel').value = selected;
   await Promise.all([runs(), schedules()]);
+}
+
+async function selectChannel(channelId, element) {
+  for (const el of document.querySelectorAll('#channels .channel.active')) el.classList.remove('active');
+  element.classList.add('active');
+  const target = $('channelConversation');
+  target.replaceChildren();
+  const items = await api('/api/conversations?scope=' + encodeURIComponent('discord:' + channelId) + '&state=active');
+  if (items.length === 0) {
+    const empty = document.createElement('small');
+    empty.textContent = '這個頻道目前沒有進行中的對話';
+    target.append(empty);
+    return;
+  }
+  await renderConversation(target, items[0]);
+}
+
+const STARTER_PREFIX = '[System] This is the initial message of thread';
+
+function formatMsgTime(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return hh + ':' + mm;
+  const MM = String(d.getMonth() + 1).padStart(2, '0');
+  const DD = String(d.getDate()).padStart(2, '0');
+  return MM + '-' + DD + ' ' + hh + ':' + mm;
+}
+
+function replyStateBadge(state) {
+  const labels = { failed: '失敗', cancelled: '已取消', timed_out: '逾時', waiting: '等待中', running: '執行中', queued: '排隊中' };
+  const classes = { failed: 'badge-danger', waiting: 'badge-warning', running: 'badge-info', queued: 'badge-info' };
+  const badge = document.createElement('span');
+  badge.className = 'badge' + (classes[state] ? ' ' + classes[state] : '');
+  badge.textContent = labels[state] || state;
+  return badge;
+}
+
+function renderMessage(msg) {
+  const nodes = [];
+  if (msg.sequence === 0 && msg.text.startsWith(STARTER_PREFIX)) {
+    const el = document.createElement('div');
+    el.className = 'msg starter';
+    const title = document.createElement('div');
+    title.className = 'msg-title';
+    title.textContent = '串的第一則';
+    const body = document.createElement('div');
+    body.className = 'msg-text';
+    const newlineIndex = msg.text.indexOf('\n');
+    body.textContent = newlineIndex >= 0 ? msg.text.slice(newlineIndex + 1) : '';
+    el.append(title, body);
+    nodes.push(el);
+    return nodes;
+  }
+
+  const el = document.createElement('div');
+  el.className = 'msg user' + (msg.observed ? ' observed' : '');
+  const head = document.createElement('div');
+  head.className = 'msg-head';
+  const name = document.createElement('span');
+  name.className = 'msg-name';
+  name.textContent = msg.author.displayName || msg.author.principalId;
+  head.append(name);
+  if (msg.author.isOwner) {
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = 'Owner';
+    head.append(badge);
+  }
+  const time = document.createElement('span');
+  time.className = 'msg-time';
+  time.textContent = formatMsgTime(msg.at);
+  head.append(time);
+  const body = document.createElement('div');
+  body.className = 'msg-text';
+  body.textContent = msg.text;
+  el.append(head, body);
+  if (msg.attachments && msg.attachments.length) {
+    const att = document.createElement('small');
+    att.textContent = '📎 ' + msg.attachments.length + ' 個附件';
+    el.append(att);
+  }
+  nodes.push(el);
+
+  if (msg.reply) {
+    const reply = document.createElement('div');
+    reply.className = 'msg assistant';
+    const rhead = document.createElement('div');
+    rhead.className = 'msg-head';
+    const rname = document.createElement('span');
+    rname.className = 'msg-name';
+    rname.textContent = 'ümiro';
+    rhead.append(rname);
+    if (msg.reply.state === 'succeeded') {
+      const rtime = document.createElement('span');
+      rtime.className = 'msg-time';
+      rtime.textContent = formatMsgTime(msg.reply.at);
+      rhead.append(rtime);
+    } else {
+      rhead.append(replyStateBadge(msg.reply.state));
+    }
+    reply.append(rhead);
+    if (msg.reply.state === 'succeeded' && msg.reply.text) {
+      const rbody = document.createElement('div');
+      rbody.className = 'msg-text';
+      rbody.textContent = msg.reply.text;
+      reply.append(rbody);
+    }
+    if (msg.reply.usage) {
+      const usage = document.createElement('small');
+      usage.className = 'msg-usage';
+      usage.textContent = msg.reply.usage.inputTokens + ' in / ' + msg.reply.usage.outputTokens + ' out';
+      reply.append(usage);
+    }
+    nodes.push(reply);
+  }
+  return nodes;
+}
+
+async function renderConversation(container, summary) {
+  container.replaceChildren();
+
+  const header = document.createElement('div');
+  header.className = 'chat-header';
+  const title = document.createElement('span');
+  const location = (summary.scope.parentName ? summary.scope.parentName + ' / ' : '') + '#' + (summary.scope.name || summary.scope.externalId);
+  title.textContent = summary.scope.guildName ? summary.scope.guildName + ' · ' + location : location;
+  const meta = document.createElement('small');
+  meta.textContent = summary.turnCount + ' 則 · 開始於 ' + new Date(summary.createdAt).toLocaleString();
+  header.append(title, meta);
+
+  const chat = document.createElement('div');
+  chat.className = 'chat';
+
+  const loadMoreBtn = document.createElement('button');
+  loadMoreBtn.textContent = '載入更多';
+  loadMoreBtn.hidden = true;
+
+  container.append(header, chat, loadMoreBtn);
+
+  let after;
+  async function loadPage() {
+    const query = 'limit=200' + (after !== undefined ? '&after=' + after : '');
+    const data = await api('/api/conversations/' + encodeURIComponent(summary.id) + '/messages?' + query);
+    for (const msg of data.messages) {
+      chat.append(...renderMessage(msg));
+      after = msg.sequence;
+    }
+    loadMoreBtn.hidden = !data.hasMore;
+  }
+  loadMoreBtn.onclick = () => loadPage().catch(e => alert(e.message));
+  await loadPage();
+}
+
+async function archived() {
+  const items = await api('/api/conversations?state=archived&limit=100');
+  $('archivedConversation').replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement('small');
+    empty.textContent = '（無）';
+    $('archivedList').replaceChildren(empty);
+    return;
+  }
+  $('archivedList').replaceChildren(...items.map(x => {
+    const d = document.createElement('div');
+    d.className = 'archived-item';
+    const location = (x.scope.parentName ? x.scope.parentName + ' / ' : '') + '#' + (x.scope.name || x.scope.externalId);
+    const line1 = document.createElement('div');
+    line1.textContent = x.scope.guildName ? x.scope.guildName + ' · ' + location : location;
+    const line2 = document.createElement('div');
+    line2.textContent = x.firstText || '（無文字）';
+    const line3 = document.createElement('small');
+    line3.textContent = new Date(x.createdAt).toLocaleString() + ' → ' + new Date(x.lastActivityAt).toLocaleString() + ' · ' + x.turnCount + ' 則';
+    d.append(line1, line2, line3);
+    d.onclick = () => {
+      for (const el of document.querySelectorAll('#archivedList .archived-item.active')) el.classList.remove('active');
+      d.classList.add('active');
+      renderConversation($('archivedConversation'), x).catch(e => alert(e.message));
+    };
+    return d;
+  }));
 }
 
 async function schedules() {
@@ -212,7 +395,7 @@ async function connect() {
 }
 
 async function load(name) {
-  const x = await api('/api/workspace/' + name);
+  const x = await api('/api/workspace/' + encodeURIComponent(name));
   file = name;
   $('filename').textContent = name;
   $('document').value = x.content;
@@ -220,7 +403,7 @@ async function load(name) {
 
 $('connect').onclick = () => connect().catch(e => $('state').textContent = e.message);
 $('saveConfig').onclick = () => api('/api/config', { method: 'PUT', body: $('config').value }).then(() => alert('已儲存')).catch(e => alert(e.message));
-$('saveDocument').onclick = () => file ? api('/api/workspace/' + file, { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }).then(() => alert('已儲存')).catch(e => alert(e.message)) : alert('請先選檔案');
+$('saveDocument').onclick = () => file ? api('/api/workspace/' + encodeURIComponent(file), { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }).then(() => alert('已儲存')).catch(e => alert(e.message)) : alert('請先選檔案');
 $('refreshSchedules').onclick = () => schedules().catch(e => alert(e.message));
 $('createSchedule').onclick = () => {
   const kind = $('scheduleKind').value;
@@ -251,7 +434,7 @@ $('token').value = localStorage.umiroToken || '';
 
 const pages = [...document.querySelectorAll('.page')];
 const navLinks = [...document.querySelectorAll('nav a')];
-const pageLoaders = { channels, runs, schedules, plugins };
+const pageLoaders = { channels, archived, schedules, plugins };
 
 function currentPageName() {
   const hash = (location.hash || '#status').slice(1);
