@@ -28,6 +28,7 @@ import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextP
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 import { importDiscordAttachments } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
+import { describeImageArtifacts } from "./image-description.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -510,6 +511,12 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
   await delivery.drain();
+  if (profile.capabilities.includes("vision") && importedArtifacts.some(artifact => artifact.mediaType.toLowerCase().startsWith("image/")) && store.updateArtifactExtractedText) {
+    void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort).then(async descriptions => {
+      for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description!, new Date().toISOString());
+      if (descriptions.length) await store.rebuildSearchProjection();
+    }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets) } }));
+  }
 };
 discord.onSteer(async message => {
   const activeSession = activeSessions.get(message.threadId ?? message.channelId);
