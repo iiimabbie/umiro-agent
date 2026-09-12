@@ -2,13 +2,13 @@ import type { JsonObject } from "@umiro/core/ports";
 import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
 import type { ToolDefinition, ToolExecutionContext, ToolExecutionResult } from "@umiro/core/tool";
 
-const ok = (output: unknown): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: "confirmed" });
+const ok = (output: unknown, sideEffect: ToolDefinition["policy"]["sideEffect"]): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: sideEffect === "none" ? "not_applicable" : "confirmed" });
 const fail = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "scheduler_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
 
 export function createPlugin(setup: PluginSetupContext): PluginInstance {
   const scheduler = setup.services?.scheduler; if (!scheduler) throw new Error("scheduler service is unavailable");
   const config = setup.config as { timezone?: string; model?: string };
-  const define = (definition: Omit<ToolDefinition, "execute"> & { execute: (input: JsonObject, context: ToolExecutionContext) => Promise<unknown> }): ToolDefinition => ({ ...definition, async execute(input, context) { try { return ok(await definition.execute(input, context)); } catch (error) { return fail(error); } } });
+  const define = (definition: Omit<ToolDefinition, "execute"> & { execute: (input: JsonObject, context: ToolExecutionContext) => Promise<unknown> }): ToolDefinition => ({ ...definition, async execute(input, context) { try { return ok(await definition.execute(input, context), definition.policy.sideEffect); } catch (error) { return fail(error); } } });
   const create = async (input: JsonObject, context: ToolExecutionContext, schedule: { kind: "cron"; expression: string } | { kind: "once"; at: string }) => {
     const destination = typeof input.channelId === "string" && input.channelId ? { kind: "discord", channelId: input.channelId } : undefined;
     return scheduler.create({ name: String(input.name), enabled: true, schedule, timezone: typeof input.timezone === "string" ? input.timezone : (config.timezone ?? "Asia/Taipei"), jobRef: "agent.prompt", input: { prompt: String(input.prompt), ...(config.model ? { model: config.model } : {}) }, creatorPrincipalId: context.execution.actor.id, creatorRoles: context.execution.actor.roles, authority: context.execution.authority, ...(destination ? { destination } : {}), misfirePolicy: typeof input.misfirePolicy === "string" ? input.misfirePolicy as "catch_up" | "coalesce" | "skip" : "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }, context.idempotencyKey);

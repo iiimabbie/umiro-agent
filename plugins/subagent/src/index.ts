@@ -5,7 +5,7 @@ import type { ToolDefinition, ToolExecutionResult } from "@umiro/core/tool";
 import { intersectVisibility, type AuthorityScopeRequest } from "@umiro/core/authorization";
 import type { BudgetCeiling, OutputContract } from "@umiro/core/delegation";
 
-const ok = (output: unknown): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: "confirmed" });
+const ok = (output: unknown, sideEffect: ToolDefinition["policy"]["sideEffect"]): ToolExecutionResult => ({ ok: true, output: output as never, effectStatus: sideEffect === "none" ? "not_applicable" : "confirmed" });
 const fail = (error: unknown): ToolExecutionResult => ({ ok: false, effectStatus: "not_applicable", error: { code: "subagent_error", message: error instanceof Error ? error.message : String(error), retryable: false } });
 const instructionRank = { none: 0, scoped: 1, full: 2 } as const;
 function narrowAuthority(left: AuthorityScopeRequest, right: AuthorityScopeRequest): AuthorityScopeRequest {
@@ -44,25 +44,25 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       const requestedBudget = input.budgetCeiling && typeof input.budgetCeiling === "object" && !Array.isArray(input.budgetCeiling) ? input.budgetCeiling as BudgetCeiling : undefined;
       const budgetCeiling = narrowBudget(selected?.budgetCeiling, requestedBudget);
       const result = await childRuns.start({ parentRunId: parent, idempotencyKey: String(input.idempotencyKey), task, authorityScope: narrowAuthority(selected?.authorityScope ?? {}, requestedAuthority), model: selected?.model ?? String(input.model), prompt: selected ? compilePrompt(selected.instructions, task, typeof input.prompt === "string" ? input.prompt : undefined) : String(input.prompt), ...(budgetCeiling ? { budgetCeiling } : {}), signal: context.signal });
-      return ok(result);
+      return ok(result, "idempotent");
     } catch (error) { return fail(error); }
   } };
   const wait: ToolDefinition = { name: "subagent_wait", description: "Wait until any selected Child Run reports back so the Parent can coordinate the others.", inputSchema: { type: "object", additionalProperties: false, properties: { childRunIds: { type: "array", maxItems: 2, items: { type: "string", minLength: 1 } } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute(input, context) {
-    try { const parent = parentRunId(context); if (!parent) throw new Error("subagent wait requires a Parent Run context"); const ids = Array.isArray(input.childRunIds) ? input.childRunIds.filter((value): value is string => typeof value === "string") : []; return ok(await childRuns.waitForAny(parent, ids, context.signal)); }
+    try { const parent = parentRunId(context); if (!parent) throw new Error("subagent wait requires a Parent Run context"); const ids = Array.isArray(input.childRunIds) ? input.childRunIds.filter((value): value is string => typeof value === "string") : []; return ok(await childRuns.waitForAny(parent, ids, context.signal), "none"); }
     catch (error) { return fail(error); }
   } };
   const cancel: ToolDefinition = { name: "subagent_cancel", description: "Cancel one active Child Run created by this Parent Run.", inputSchema: { type: "object", additionalProperties: false, required: ["childRunId"], properties: { childRunId: { type: "string", minLength: 1 } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" }, async execute(input, context) {
     try {
       const parent = parentRunId(context);
       if (!parent) throw new Error("subagent cancellation requires a parent Run context");
-      return ok(await childRuns.cancel(parent, String(input.childRunId)));
+      return ok(await childRuns.cancel(parent, String(input.childRunId)), "idempotent");
     } catch (error) { return fail(error); }
   } };
   const replyNow: ToolDefinition = { name: "reply_now", description: "Send one durable intermediate reply while this Parent Run continues coordinating Child Runs.", inputSchema: { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", minLength: 1, maxLength: 2_000 } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent" }, async execute(input, context) {
     try {
       const runId = parentRunId(context);
       if (!runId) throw new Error("intermediate reply requires a Parent Run context");
-      return ok(await replies.send(runId, String(input.text), context.signal));
+      return ok(await replies.send(runId, String(input.text), context.signal), "idempotent");
     } catch (error) { return fail(error); }
   } };
   return { contributions: { tools: [delegate, wait, cancel, replyNow] } };

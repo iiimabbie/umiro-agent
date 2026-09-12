@@ -9,4 +9,7 @@ test("cron tool creates a channel-optional agent trigger with caller authority",
   const authority = { capabilities: ["scheduler.write"], visibility: { kind: "restricted" as const, principalIds: ["member"], labels: [], resources: [] }, instructionAuthority: "scoped" as const };
   const result = await tool.execute({ name: "job", schedule: "0 9 * * *", prompt: "work" }, { execution: { origin: { kind: "interactive", transport: "discord", conversationId: "c" }, actor: { id: "member", kind: "human", roles: ["member"] }, authority }, operationId: "op", idempotencyKey: "key", signal: new AbortController().signal });
   assert.equal(result.ok, true); assert.deepEqual(created, [{ input: { name: "job", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Asia/Taipei", jobRef: "agent.prompt", input: { prompt: "work" }, creatorPrincipalId: "member", creatorRoles: ["member"], authority, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15000 }, key: "key" }]);
+  const list = plugin.contributions.tools?.find(candidate => candidate.name === "schedule_list")!;
+  const listed = await list.execute({}, { execution: { origin: { kind: "interactive", transport: "discord", conversationId: "c" }, actor: { id: "member", kind: "human", roles: ["member"] }, authority }, operationId: "op-list", signal: new AbortController().signal });
+  assert.equal(listed.ok, true); assert.equal(listed.effectStatus, "not_applicable");
 });
