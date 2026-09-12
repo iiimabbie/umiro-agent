@@ -1,7 +1,7 @@
 {
   "schemaVersion": 0,
   "id": "context-files",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "coreApi": "0",
   "entry": "./dist/src/index.js",
   "permissions": {

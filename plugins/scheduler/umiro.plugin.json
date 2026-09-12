@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 0, "id": "scheduler", "version": "0.0.0", "coreApi": "0", "entry": "./dist/src/index.js",
+  "schemaVersion": 0, "id": "scheduler", "version": "0.1.0", "coreApi": "0", "entry": "./dist/src/index.js",
   "permissions": { "capabilities": ["scheduler.read", "scheduler.write", "scheduler.remove"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
   "namespace": "scheduler",
   "configSchema": { "type": "object", "additionalProperties": false, "properties": { "timezone": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 } } },
