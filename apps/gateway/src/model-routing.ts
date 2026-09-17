@@ -12,9 +12,14 @@ export class OpenAIProtocolRouter implements ModelPort {
   constructor(
     private readonly responses: ModelPort,
     private readonly chatCompletions: ModelPort,
-    private readonly protocolsByModel: ReadonlyMap<string, OpenAIProtocol>,
-    private readonly defaultProtocol: OpenAIProtocol,
+    private protocolsByModel: ReadonlyMap<string, OpenAIProtocol>,
+    private defaultProtocol: OpenAIProtocol,
   ) {}
+
+  configure(protocolsByModel: ReadonlyMap<string, OpenAIProtocol>, defaultProtocol: OpenAIProtocol): void {
+    this.protocolsByModel = protocolsByModel;
+    this.defaultProtocol = defaultProtocol;
+  }
 
   generate(request: ModelRequest): Promise<ModelResponse> {
     const protocol = this.protocolsByModel.get(request.model) ?? this.defaultProtocol;

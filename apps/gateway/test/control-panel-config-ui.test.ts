@@ -11,9 +11,11 @@ test("control-panel settings use typed controls instead of one raw config textar
 
   assert.match(html, /id="configForm"/);
   assert.doesNotMatch(html, /<textarea id="config"/);
+  assert.doesNotMatch(html, /查看 API 可用模型/);
   assert.doesNotThrow(() => new Script(script));
   assert.match(script, /path: 'model', type: 'model'/);
   assert.match(script, /input\.type = 'radio'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'url'/);
   assert.match(script, /document\.createElement\('select'\)/);
+  assert.match(script, /className = 'config-tooltip'/);
 });

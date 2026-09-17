@@ -165,19 +165,20 @@ function renderConfigForm(schema, config, models) {
       wrapper.className = 'config-field' + (field.wide ? ' config-wide' : '');
       const label = document.createElement('label');
       label.className = 'config-label';
-      label.textContent = explanation.label;
+      label.tabIndex = 0;
+      const labelText = document.createElement('span');
+      labelText.textContent = explanation.label;
+      const tooltip = document.createElement('span');
+      tooltip.className = 'config-tooltip';
+      tooltip.setAttribute('role', 'tooltip');
+      tooltip.textContent = explanation.description + '\n\n預設：' + JSON.stringify(explanation.defaultValue) + '\n' + (explanation.restartRequired ? '儲存後需重啟' : '儲存後即時生效') + '\n\n風險：' + explanation.risk;
+      label.append(labelText, tooltip);
       const path = document.createElement('div');
       path.className = 'config-path';
       path.textContent = field.path;
-      const description = document.createElement('p');
-      description.className = 'config-description';
-      description.textContent = explanation.description;
-      const meta = document.createElement('small');
-      meta.className = 'config-meta';
-      meta.textContent = '預設：' + JSON.stringify(explanation.defaultValue) + ' · ' + (explanation.restartRequired ? '需重啟' : '即時生效') + ' · 風險：' + explanation.risk;
       const value = getPath(config, field.path);
       const controlValue = value === undefined && field.type !== 'json' ? explanation.defaultValue : value;
-      wrapper.append(label, path, description, meta, configControl(field, controlValue, models));
+      wrapper.append(label, path, configControl(field, controlValue, models));
       grid.append(wrapper);
     }
     section.append(title, grid);
@@ -596,13 +597,12 @@ async function connect() {
     api('/api/runtime'),
     api('/api/secrets'),
     api('/api/workspace'),
-    api('/api/models').then(items => ({ items, error: '' })).catch(e => ({ items: [], error: '模型探索失敗：' + e.message })),
+    api('/api/models').catch(() => []),
   ]);
-  const models = modelResult.items.filter(model => typeof model === 'string');
+  const models = modelResult.filter(model => typeof model === 'string');
   renderConfigForm(schema, config, models);
   $('runtime').textContent = JSON.stringify(runtime, null, 2);
   $('secrets').textContent = Object.entries(secrets).map(([name, set]) => name + '：' + (set ? '已設定' : '未設定')).join('\n');
-  $('models').textContent = modelResult.error || models.join('\n') || 'API 沒有回傳可用模型';
   $('files').replaceChildren(...names.map(n => {
     const b = document.createElement('button');
     b.textContent = n;
@@ -627,9 +627,11 @@ $('connect').onclick = () => connect().catch(e => $('state').textContent = e.mes
 $('saveConfig').onclick = () => {
   try {
     const next = readConfigForm();
-    api('/api/config', { method: 'PUT', body: JSON.stringify(next) }).then(() => {
+    api('/api/config', { method: 'PUT', body: JSON.stringify(next) }).then(result => {
       loadedConfig = next;
-      alert('已儲存');
+      const applied = result.applied?.length ? '\n即時套用：' + result.applied.join('、') : '';
+      const restart = result.restartRequired?.length ? '\n需重啟：' + result.restartRequired.join('、') : '';
+      alert('已儲存' + applied + restart);
     }).catch(e => alert(e.message));
   } catch (error) { alert(error instanceof Error ? error.message : String(error)); }
 };

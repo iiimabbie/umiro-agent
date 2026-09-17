@@ -141,7 +141,7 @@ export class HeadlessRunEngine {
   private readonly now: () => string;
   private readonly createId: NonNullable<HeadlessRunEngineOptions["createId"]>;
   private readonly toolRuntime: ToolRuntime;
-  private readonly maxParallelToolCalls: number;
+  private maxParallelToolCalls: number;
 
   constructor(
     private readonly modelPort: ModelPort,
@@ -154,6 +154,11 @@ export class HeadlessRunEngine {
     this.maxParallelToolCalls = options.maxParallelToolCalls ?? 2;
     if (!Number.isSafeInteger(this.maxParallelToolCalls) || this.maxParallelToolCalls <= 0) throw new TypeError("maxParallelToolCalls must be a positive safe integer");
     this.toolRuntime = new ToolRuntime(tools, store, { now: this.now, createId: kind => this.createId(kind) });
+  }
+
+  setMaxParallelToolCalls(value: number): void {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError("maxParallelToolCalls must be a positive safe integer");
+    this.maxParallelToolCalls = value;
   }
 
   private async artifactIdsForRun(runId: string): Promise<readonly string[]> {

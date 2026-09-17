@@ -13,7 +13,10 @@ test("model profiles route to their configured OpenAI protocol", async () => {
   assert.equal((await router.generate(request("local"))).text, "chat");
   assert.equal((await router.generate(request("reasoner"))).text, "responses");
   assert.equal((await router.generate(request("unlisted"))).text, "responses");
-  assert.deepEqual(calls, ["chat:local", "responses:reasoner", "responses:unlisted"]);
+  router.configure(modelProtocolMap([{ model: "reasoner", protocol: "openai_chat_completions" }]), "openai_chat_completions");
+  assert.equal((await router.generate(request("reasoner"))).text, "chat");
+  assert.equal((await router.generate(request("unlisted-after-reload"))).text, "chat");
+  assert.deepEqual(calls, ["chat:local", "responses:reasoner", "responses:unlisted", "chat:reasoner", "chat:unlisted-after-reload"]);
 });
 
 test("protocol routing rejects invalid values and ambiguous model assignments", () => {

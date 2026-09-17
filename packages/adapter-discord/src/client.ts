@@ -278,6 +278,9 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
 
   async setRespondToBots(enabled: boolean): Promise<void> { this.respondToBots = enabled; }
   respondsToBots(): boolean { return this.respondToBots; }
+  async setPresence(presence: DiscordPresenceConfig): Promise<void> {
+    this.client.user?.setPresence({ status: presence.status ?? "online", activities: presence.activity ? [{ name: presence.activity, type: ActivityType.Playing }] : [] });
+  }
 
   private async refreshApplicationEmojis(): Promise<void> {
     try {

@@ -1,6 +1,6 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
@@ -42,17 +42,28 @@ const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 type ConfigModelProfile = { readonly model: string; readonly protocol?: OpenAIProtocol; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
 type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly protocol: OpenAIProtocol; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
-const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; skills?: readonly string[]; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
-const defaultProtocol = parseOpenAIProtocol(config.protocol);
-const configuredProfiles = Object.fromEntries(Object.entries(config.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? defaultProtocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
-const defaultModelProfile: RuntimeModelProfile = { id: "default", model: config.model, protocol: defaultProtocol, capabilities: [...(config.modelCapabilities ?? [])] };
+type GatewayConfig = { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; skills?: readonly string[]; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as GatewayConfig;
+const compileModelProfiles = (value: GatewayConfig): { defaultProtocol: OpenAIProtocol; defaultProfile: RuntimeModelProfile; profiles: Record<string, RuntimeModelProfile> } => {
+  const protocol = parseOpenAIProtocol(value.protocol);
+  const profiles = Object.fromEntries(Object.entries(value.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? protocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
+  return { defaultProtocol: protocol, defaultProfile: { id: "default", model: value.model, protocol, capabilities: [...(value.modelCapabilities ?? [])] }, profiles };
+};
+const initialModels = compileModelProfiles(config);
+let defaultProtocol = initialModels.defaultProtocol;
+let configuredProfiles = initialModels.profiles;
+let defaultModelProfile = initialModels.defaultProfile;
 function resolveModelProfile(selection?: string): RuntimeModelProfile {
   if (!selection || selection === "default") return defaultModelProfile;
   return configuredProfiles[selection] ?? { id: selection, model: selection, protocol: defaultProtocol, capabilities: [] };
 }
 const allModelCapabilities = [...new Set([...(config.modelCapabilities ?? []), ...Object.values(configuredProfiles).flatMap(profile => profile.capabilities)])] as ModelCapability[];
-const contextMaxTokens = config.contextMaxTokens ?? 24_000;
-const discordPolicy = parseDiscordTriggerPolicy(config.discord);
+const startupHostedCapabilities = new Set(allModelCapabilities.filter(capability => capability.startsWith("hosted_")));
+let contextMaxTokens = config.contextMaxTokens ?? 24_000;
+let discordPolicy = parseDiscordTriggerPolicy(config.discord);
+let runtimePricing = config.pricing;
+let runtimeMaxParallelTools = config.subagent?.maxParallelTools ?? 2;
+let runtimeMaxConcurrentChildren = config.subagent?.maxConcurrentChildren ?? 2;
 const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
 const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
 const byPath = new Map<string, { path: string; config?: JsonObject }>();
@@ -114,7 +125,9 @@ if (extractionBackfill.failed > 0) logger.write({ level: "warn", event: "artifac
 const embedder = createConfiguredEmbedder(config.embedding);
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder.forBackground?.() ?? embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);
-if (embedder) providers.register(new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }));
+const semanticRecall = embedder ? new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }) : undefined;
+let runtimeRecall = { limit: config.embedding?.provider === "disabled" ? undefined : config.embedding?.recallLimit, minSimilarity: config.embedding?.provider === "disabled" ? undefined : config.embedding?.minSimilarity };
+if (semanticRecall) providers.register(semanticRecall);
 const scheduler = new DurableScheduler(store);
 const legacyServices = {
   configDirectory: `${paths.config}/plugin-config`,
@@ -122,7 +135,7 @@ const legacyServices = {
     const execution = { origin: { kind: "event" as const, pluginId: "legacy" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority: ownerAuthority };
     const fullPrompt = options?.systemPrompt ? `${options.systemPrompt}\n\n${prompt}` : prompt;
     const runId = crypto.randomUUID(); const assembledContext = await contextEngine.assemble({ runId, execution, prompt: fullPrompt, maxCharacters: 100_000, maxTokens: contextMaxTokens });
-    const result = await engine.run({ runId, context: execution, model: options?.model ?? config.model, prompt: fullPrompt, assembledContext, ...(options?.maxTurns ? { maxModelTurns: options.maxTurns } : {}) });
+    const result = await engine.run({ runId, context: execution, model: options?.model ?? defaultModelProfile.model, prompt: fullPrompt, assembledContext, ...(options?.maxTurns ? { maxModelTurns: options.maxTurns } : {}) });
     if (result.status !== "succeeded") throw new Error(`legacy plugin agent Run ended ${result.status}`); return { text: result.text };
   },
   sendText: (input: { channelId: string; content: string }) => discord.sendText(input.channelId, input.content),
@@ -180,9 +193,9 @@ if (hostedImageGeneration) tools.register({
     } catch (error) { return { ok: false, effectStatus: "unknown", error: { code: "hosted_image_generation_failed", message: error instanceof Error ? error.message : "hosted image generation failed", retryable: false } }; }
   },
 });
-const engine = new HeadlessRunEngine(modelPort, tools, store, { maxParallelToolCalls: config.subagent?.maxParallelTools ?? 2 });
+const engine = new HeadlessRunEngine(modelPort, tools, store, { maxParallelToolCalls: runtimeMaxParallelTools });
 const contextEngine = new ContextEngine(providers);
-const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: config.subagent?.maxConcurrentChildren ?? 2, resolveModel: selection => resolveDelegatedModel(selection, defaultModelProfile.model, configuredProfiles) });
+const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: runtimeMaxConcurrentChildren, resolveModel: selection => resolveDelegatedModel(selection, defaultModelProfile.model, configuredProfiles) });
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
 readiness.storage = true;
@@ -307,6 +320,11 @@ const replies = { async send(runId: string, text: string, signal?: AbortSignal) 
   return { deliveryId };
 } };
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
+const embeddingRuntimeIdentity = (value: EmbeddingConfig | undefined): unknown => {
+  if (!value || value.provider === "disabled") return { provider: "disabled" };
+  return { provider: value.provider, model: value.model, ...(value.provider === "openai-compatible" ? { baseUrl: value.baseUrl } : {}), ...(value.apiKeyEnv ? { apiKeyEnv: value.apiKeyEnv } : {}), ...(value.requestsPerMinute !== undefined ? { requestsPerMinute: value.requestsPerMinute } : {}) };
+};
+const changed = (left: unknown, right: unknown): boolean => !isDeepStrictEqual(left, right);
 const namedConversationScopes = async (locations: readonly ConversationLocation[]) => {
   const discordIds = locations.filter(location => location.transport === "discord").map(location => location.externalId);
   const catalog = new Map((await discord.listChannels(discordIds)).map(channel => [channel.id, channel]));
@@ -333,7 +351,56 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
     return { ok: true, output: result.stdout.trim(), restartRequired: true };
   },
-}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
+}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), applyConfig: async raw => {
+  const next = raw as unknown as GatewayConfig;
+  const applied: string[] = [];
+  const restartRequired: string[] = [];
+  const applyIfChanged = (path: string, before: unknown, after: unknown, apply: () => void): void => { if (!changed(before, after)) return; apply(); applied.push(path); };
+  const restartIfChanged = (path: string, before: unknown, after: unknown): void => { if (changed(before, after)) restartRequired.push(path); };
+
+  restartIfChanged("skills", config.skills, next.skills);
+  restartIfChanged("embedding.provider", embeddingRuntimeIdentity(config.embedding), embeddingRuntimeIdentity(next.embedding));
+  restartIfChanged("authority", config.authority, next.authority);
+  restartIfChanged("plugins", config.plugins, next.plugins);
+  restartIfChanged("webUi", config.webUi, next.webUi);
+
+  const nextModels = compileModelProfiles(next);
+  const nextCapabilities = [...new Set([...nextModels.defaultProfile.capabilities, ...Object.values(nextModels.profiles).flatMap(profile => profile.capabilities)])];
+  const unsupportedHostedCapability = nextCapabilities.some(capability => capability.startsWith("hosted_") && !startupHostedCapabilities.has(capability));
+  const modelsChanged = changed({ defaultProtocol, defaultModelProfile, configuredProfiles }, { defaultProtocol: nextModels.defaultProtocol, defaultModelProfile: nextModels.defaultProfile, configuredProfiles: nextModels.profiles });
+  if (modelsChanged && unsupportedHostedCapability) restartRequired.push("model", "protocol", "profiles", "modelCapabilities");
+  else if (modelsChanged) {
+    defaultProtocol = nextModels.defaultProtocol;
+    defaultModelProfile = nextModels.defaultProfile;
+    configuredProfiles = nextModels.profiles;
+    modelPort.configure(modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
+    applied.push("model", "protocol", "profiles", "modelCapabilities");
+  }
+
+  applyIfChanged("contextMaxTokens", contextMaxTokens, next.contextMaxTokens ?? 24_000, () => { contextMaxTokens = next.contextMaxTokens ?? 24_000; });
+  applyIfChanged("pricing", runtimePricing, next.pricing, () => { runtimePricing = next.pricing; });
+
+  const nextDiscordPolicy = parseDiscordTriggerPolicy(next.discord);
+  if (changed(discordPolicy, nextDiscordPolicy)) {
+    const authorities = resolveRuntimeAuthorities(config.authority, granted, [...(nextDiscordPolicy.allowedChannels ?? []), ...(nextDiscordPolicy.ambientChannels ?? [])]);
+    identities.setAuthorities(authorities.ownerAuthority, authorities.memberAuthority);
+    discordPolicy = nextDiscordPolicy;
+    await discord.setRespondToBots(discordPolicy.respondToBots === true);
+    await discord.setPresence(discordPolicy.presence ?? {});
+    applied.push("discord");
+  }
+
+  applyIfChanged("subagent.maxParallelTools", runtimeMaxParallelTools, next.subagent?.maxParallelTools ?? 2, () => { runtimeMaxParallelTools = next.subagent?.maxParallelTools ?? 2; engine.setMaxParallelToolCalls(runtimeMaxParallelTools); });
+  applyIfChanged("subagent.maxConcurrentChildren", runtimeMaxConcurrentChildren, next.subagent?.maxConcurrentChildren ?? 2, () => { runtimeMaxConcurrentChildren = next.subagent?.maxConcurrentChildren ?? 2; childRuns.setMaxActiveChildrenPerPrincipal(runtimeMaxConcurrentChildren); });
+
+  const nextRecall = { limit: next.embedding?.provider === "disabled" ? undefined : next.embedding?.recallLimit, minSimilarity: next.embedding?.provider === "disabled" ? undefined : next.embedding?.minSimilarity };
+  if (changed(runtimeRecall, nextRecall) && !restartRequired.includes("embedding.provider")) {
+    semanticRecall?.configure({ ...(nextRecall.limit !== undefined ? { limit: nextRecall.limit } : {}), ...(nextRecall.minSimilarity !== undefined ? { minSimilarity: nextRecall.minSimilarity } : {}) });
+    runtimeRecall = nextRecall;
+    applied.push("embedding.recallLimit", "embedding.minSimilarity");
+  }
+  return { applied: [...new Set(applied)], restartRequired: [...new Set(restartRequired)] };
+}, audit: (event, data) => logger.write({ level: "info", event, message: "Authenticated control-panel mutation completed", occurredAt: new Date().toISOString(), data }), runs: {
   list: async (limit: number) => Promise.all((await store.listRuns(limit)).map(async run => { const output = await store.getRunOutput(run.id); const origin = run.context.origin; const binding = run.conversationId ? await store.getConversationBinding(run.conversationId) : undefined; return { id: run.id, state: run.state, origin: origin.kind, ...(binding?.transport === "discord" ? { channelId: binding.externalId } : {}), createdAt: run.createdAt, updatedAt: run.updatedAt, ...(output ? { usage: output.usage } : {}) }; })),
   get: async (id: string) => { const run = await store.getRun(id); if (!run) return undefined; return { run, steps: await store.listSteps(id), operations: await store.listOperations(id), modelCalls: await store.listModelCalls(id), output: await store.getRunOutput(id), audit: await store.listAuditEvents(id) }; },
 }, conversations: {
@@ -375,7 +442,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
       hasMore: page.hasMore,
     };
   },
-}, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, config.pricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
+}, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
   const module = modules[index]!;
@@ -392,7 +459,7 @@ scheduler.setDispatcher(async (trigger, occurrence, signal) => {
   const execution = { origin: { kind: "schedule" as const, scheduleId: trigger.id }, actor: { id: trigger.creatorPrincipalId, kind: trigger.creatorRoles.includes("system") ? "system" as const : "human" as const, roles: trigger.creatorRoles }, authority: intersectAuthority(trigger.authority, ownerAuthority) };
   const prompt = `[Scheduled task: ${trigger.name}; originally due ${occurrence.scheduledFor}]\n\n${trigger.input.prompt}`;
   const assembledContext = await contextEngine.assemble({ runId: occurrence.runId, execution, prompt, maxCharacters: 100_000, maxTokens: contextMaxTokens, ...(signal ? { signal } : {}) });
-  const result = await engine.run({ runId: occurrence.runId, context: execution, model: typeof trigger.input.model === "string" ? trigger.input.model : config.model, prompt, assembledContext, ...(trigger.destination ? { deliveryDestination: trigger.destination } : {}), ...(signal ? { signal } : {}) });
+  const result = await engine.run({ runId: occurrence.runId, context: execution, model: typeof trigger.input.model === "string" ? trigger.input.model : defaultModelProfile.model, prompt, assembledContext, ...(trigger.destination ? { deliveryDestination: trigger.destination } : {}), ...(signal ? { signal } : {}) });
   if (result.status !== "succeeded") throw new Error(`scheduled Run ${result.runId} ended ${result.status}`);
   await delivery.drain(signal);
 });
@@ -423,7 +490,7 @@ const handleCommand = async (name: string, input: Record<string, string | number
     if (!model) throw new TypeError("model name is required");
     if (!["default", "low", "medium", "high", "xhigh"].includes(effort)) throw new TypeError("invalid reasoning effort");
     const updated = await updateSessionPreferences(commandContext.channelId, current => ({ ...(model === "reset" ? {} : { model, reasoningEffort: effort }), ...(current?.queueMode ? { queueMode: current.queueMode } : {}) }));
-    return { model: updated.model ?? config.model, reasoningEffort: updated.reasoningEffort ?? "default", source: updated.model ? "session" : "global" };
+    return { model: updated.model ?? defaultModelProfile.model, reasoningEffort: updated.reasoningEffort ?? "default", source: updated.model ? "session" : "global" };
   }
   if (name === "queue") {
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");

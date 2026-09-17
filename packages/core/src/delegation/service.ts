@@ -52,7 +52,7 @@ export class ChildRunService {
   private readonly now: () => string;
   private readonly createId: NonNullable<ChildRunServiceOptions["createId"]>;
   private readonly maxDepth: number;
-  private readonly maxActiveChildrenPerPrincipal: number;
+  private maxActiveChildrenPerPrincipal: number;
   private readonly resolveModel: (selection: string) => string;
   private readonly activeChildren = new Map<string, AbortController>();
   private readonly activeExecutions = new Map<string, Promise<ChildRunExecutionResult>>();
@@ -69,6 +69,11 @@ export class ChildRunService {
     this.maxActiveChildrenPerPrincipal = options.maxActiveChildrenPerPrincipal ?? 2;
     this.resolveModel = options.resolveModel ?? (selection => selection);
     if (!Number.isSafeInteger(this.maxActiveChildrenPerPrincipal) || this.maxActiveChildrenPerPrincipal <= 0) throw new TypeError("maxActiveChildrenPerPrincipal must be a positive safe integer");
+  }
+
+  setMaxActiveChildrenPerPrincipal(value: number): void {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError("maxActiveChildrenPerPrincipal must be a positive safe integer");
+    this.maxActiveChildrenPerPrincipal = value;
   }
 
   async execute(request: ExecuteChildRunRequest): Promise<ChildRunExecutionResult> {

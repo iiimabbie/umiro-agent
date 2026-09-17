@@ -64,10 +64,19 @@ export interface DiscordIdentityResolverOptions {
 export class DiscordIdentityResolver implements IdentityResolver {
   private readonly now: () => string;
   private readonly createPrincipalId: () => string;
+  private ownerAuthority: Authority;
+  private memberAuthority: Authority;
 
   constructor(private readonly store: IdentityMappingStore, private readonly options: DiscordIdentityResolverOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createPrincipalId = options.createPrincipalId ?? (() => crypto.randomUUID());
+    this.ownerAuthority = options.ownerAuthority;
+    this.memberAuthority = options.memberAuthority;
+  }
+
+  setAuthorities(ownerAuthority: Authority, memberAuthority: Authority): void {
+    this.ownerAuthority = ownerAuthority;
+    this.memberAuthority = memberAuthority;
   }
 
   async resolve(identity: TransportIdentity): Promise<ResolvedIdentity> {
@@ -81,7 +90,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
     }, this.now());
     return {
       principal: { id: mapped.principalId, kind: "human", roles: owner ? ["owner"] : ["member"], identities: [{ transport: "discord", externalId: identity.externalId }], ...(mapped.displayName ? { displayName: mapped.displayName } : {}) },
-      authority: owner ? this.options.ownerAuthority : this.options.memberAuthority,
+      authority: owner ? this.ownerAuthority : this.memberAuthority,
     };
   }
 }

@@ -7,7 +7,8 @@ export class SemanticRecallProvider implements ContextProvider {
   readonly id = "context.semantic_recall";
   readonly role = "recalled-memories";
   readonly priority = 800;
-  constructor(private readonly search: EmbeddingProjection, private readonly embedder: TextEmbedder, private readonly now = () => new Date(), private readonly logger: StructuredLogger = NOOP_LOGGER, private readonly options: { readonly limit?: number; readonly minSimilarity?: number } = {}) {}
+  constructor(private readonly search: EmbeddingProjection, private readonly embedder: TextEmbedder, private readonly now = () => new Date(), private readonly logger: StructuredLogger = NOOP_LOGGER, private options: { readonly limit?: number; readonly minSimilarity?: number } = {}) {}
+  configure(options: { readonly limit?: number; readonly minSimilarity?: number }): void { this.options = options; }
   async load(request: Parameters<ContextProvider["load"]>[0]) {
     const query = request.prompt.trim(); if (!query) return [];
     try {
