@@ -4,6 +4,223 @@ let editingSchedule;
 let channelCatalog = new Map();
 let channelRefreshTimer;
 let selectedChannelId;
+let loadedConfig;
+
+const CONFIG_GROUPS = [
+  { title: '模型與 Context', fields: [
+    { path: 'model', type: 'model', required: true },
+    { path: 'protocol', type: 'select', options: [['openai_responses', 'OpenAI Responses'], ['openai_chat_completions', 'Chat Completions']] },
+    { path: 'modelCapabilities', type: 'checks', wide: true, options: [['vision', '圖片理解'], ['function_tools', '工具呼叫'], ['hosted_web_search', 'Hosted Web Search'], ['hosted_image_generation', 'Hosted Image Generation'], ['hosted_code_execution', 'Hosted Code Execution']] },
+    { path: 'contextMaxTokens', type: 'number', min: 256, max: 1000000, step: 1 },
+    { path: 'skills', type: 'list', wide: true, placeholder: '每行一個 workspace skill 名稱' },
+    { path: 'profiles', type: 'json', wide: true },
+    { path: 'pricing', type: 'json', wide: true },
+  ] },
+  { title: 'Embedding 與跨對話記憶', fields: [
+    { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
+    { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
+    { path: 'embedding.baseUrl', type: 'url', wide: true, placeholder: 'https://api.example.com/v1' },
+    { path: 'embedding.apiKeyEnv', type: 'text', placeholder: '例如 VOYAGE_API_KEY' },
+    { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
+    { path: 'embedding.recallLimit', type: 'number', min: 1, max: 20, step: 1 },
+    { path: 'embedding.minSimilarity', type: 'number', min: 0, max: 1, step: 0.01 },
+  ] },
+  { title: 'Discord', fields: [
+    { path: 'discord.ignoredChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
+    { path: 'discord.ambientChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
+    { path: 'discord.allowedChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
+    { path: 'discord.allowedGuilds', type: 'list', placeholder: '每行一個 guild ID' },
+    { path: 'discord.respondToBots', type: 'boolean' },
+    { path: 'discord.queueMode', type: 'select', options: [['queue', 'Queue：等目前工作完成'], ['steer', 'Steer：併入目前工作']] },
+    { path: 'discord.presence.status', type: 'select', options: [['online', 'Online'], ['idle', 'Idle'], ['dnd', 'Do Not Disturb'], ['invisible', 'Invisible']] },
+    { path: 'discord.presence.activity', type: 'text', placeholder: 'Bot 名稱下方顯示的文字' },
+  ] },
+  { title: '權限與 Subagent', fields: [
+    { path: 'authority.owner', type: 'json', wide: true },
+    { path: 'authority.member', type: 'json', wide: true },
+    { path: 'subagent.maxConcurrentChildren', type: 'select', optional: true, options: [['', '使用預設值'], ['1', '1'], ['2', '2']] },
+    { path: 'subagent.maxParallelTools', type: 'select', optional: true, options: [['', '使用預設值'], ['1', '1'], ['2', '2']] },
+  ] },
+  { title: '外掛與 Web UI', fields: [
+    { path: 'plugins', type: 'json', wide: true },
+    { path: 'webUi.enabled', type: 'boolean' },
+    { path: 'webUi.host', type: 'select', options: [['127.0.0.1', '127.0.0.1（IPv4 localhost）'], ['::1', '::1（IPv6 localhost）']] },
+    { path: 'webUi.port', type: 'number', min: 1, max: 65535, step: 1 },
+  ] },
+];
+
+const configFields = () => CONFIG_GROUPS.flatMap(group => group.fields);
+const fieldId = path => 'config-' + path.replace(/[^A-Za-z0-9_-]/g, '-');
+
+function getPath(value, path) {
+  return path.split('.').reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, value);
+}
+
+function setPath(value, path, next) {
+  const keys = path.split('.');
+  let current = value;
+  for (const key of keys.slice(0, -1)) {
+    if (!current[key] || typeof current[key] !== 'object' || Array.isArray(current[key])) current[key] = {};
+    current = current[key];
+  }
+  current[keys.at(-1)] = next;
+}
+
+function deletePath(value, path) {
+  const keys = path.split('.');
+  const parents = [];
+  let current = value;
+  for (const key of keys.slice(0, -1)) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return;
+    parents.push([current, key]);
+    current = current[key];
+  }
+  if (!current || typeof current !== 'object' || Array.isArray(current)) return;
+  delete current[keys.at(-1)];
+  for (const [parent, key] of parents.reverse()) {
+    if (parent[key] && typeof parent[key] === 'object' && !Array.isArray(parent[key]) && Object.keys(parent[key]).length === 0) delete parent[key];
+    else break;
+  }
+}
+
+function option(value, label) {
+  const item = document.createElement('option');
+  item.value = value;
+  item.textContent = label;
+  return item;
+}
+
+function configControl(field, value, models) {
+  const id = fieldId(field.path);
+  if (field.type === 'boolean') {
+    const box = document.createElement('div');
+    box.className = 'radio-group';
+    for (const [raw, label] of [['true', '是'], ['false', '否']]) {
+      const wrapper = document.createElement('label');
+      wrapper.className = 'radio-option';
+      const input = document.createElement('input');
+      input.type = 'radio'; input.name = id; input.value = raw; input.checked = value === (raw === 'true');
+      wrapper.append(input, label);
+      box.append(wrapper);
+    }
+    return box;
+  }
+  if (field.type === 'checks') {
+    const box = document.createElement('div');
+    box.className = 'checkbox-group';
+    const selected = new Set(Array.isArray(value) ? value : []);
+    for (const [raw, label] of field.options) {
+      const wrapper = document.createElement('label');
+      wrapper.className = 'checkbox-option';
+      const input = document.createElement('input');
+      input.type = 'checkbox'; input.value = raw; input.checked = selected.has(raw);
+      wrapper.append(input, label);
+      box.append(wrapper);
+    }
+    return box;
+  }
+  if (field.type === 'select' || field.type === 'model') {
+    const select = document.createElement('select');
+    select.id = id;
+    let options = field.type === 'model' ? models.map(model => [model, model]) : field.options;
+    if (value !== undefined && value !== null && !options.some(([raw]) => String(raw) === String(value))) options = [[String(value), String(value) + '（目前設定）'], ...options];
+    select.replaceChildren(...options.map(([raw, label]) => option(raw, label)));
+    select.value = value === undefined || value === null ? String(field.options?.[0]?.[0] ?? '') : String(value);
+    if (field.required) select.required = true;
+    return select;
+  }
+  if (field.type === 'json' || field.type === 'list') {
+    const textarea = document.createElement('textarea');
+    textarea.id = id;
+    textarea.className = field.type === 'json' ? 'config-json' : '';
+    textarea.placeholder = field.placeholder || (field.type === 'json' ? 'JSON；留空表示使用預設值' : '每行一項');
+    textarea.value = field.type === 'json' ? (value === undefined ? '' : JSON.stringify(value, null, 2)) : (Array.isArray(value) ? value.join('\n') : '');
+    return textarea;
+  }
+  const input = document.createElement('input');
+  input.id = id;
+  input.type = field.type;
+  input.placeholder = field.placeholder || '';
+  if (value !== undefined && value !== null) input.value = String(value);
+  if (field.required) input.required = true;
+  if (field.min !== undefined) input.min = String(field.min);
+  if (field.max !== undefined) input.max = String(field.max);
+  if (field.step !== undefined) input.step = String(field.step);
+  return input;
+}
+
+function renderConfigForm(schema, config, models) {
+  loadedConfig = structuredClone(config);
+  const groups = CONFIG_GROUPS.map(group => {
+    const section = document.createElement('section');
+    section.className = 'config-group';
+    const title = document.createElement('h3');
+    title.textContent = group.title;
+    const grid = document.createElement('div');
+    grid.className = 'config-grid';
+    for (const field of group.fields) {
+      const explanation = schema[field.path];
+      if (!explanation) continue;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'config-field' + (field.wide ? ' config-wide' : '');
+      const label = document.createElement('label');
+      label.className = 'config-label';
+      label.textContent = explanation.label;
+      const path = document.createElement('div');
+      path.className = 'config-path';
+      path.textContent = field.path;
+      const description = document.createElement('p');
+      description.className = 'config-description';
+      description.textContent = explanation.description;
+      const meta = document.createElement('small');
+      meta.className = 'config-meta';
+      meta.textContent = '預設：' + JSON.stringify(explanation.defaultValue) + ' · ' + (explanation.restartRequired ? '需重啟' : '即時生效') + ' · 風險：' + explanation.risk;
+      const value = getPath(config, field.path);
+      const controlValue = value === undefined && field.type !== 'json' ? explanation.defaultValue : value;
+      wrapper.append(label, path, description, meta, configControl(field, controlValue, models));
+      grid.append(wrapper);
+    }
+    section.append(title, grid);
+    return section;
+  });
+  $('configForm').replaceChildren(...groups);
+}
+
+function readConfigForm() {
+  const next = structuredClone(loadedConfig);
+  for (const field of configFields()) {
+    const id = fieldId(field.path);
+    if (field.type === 'boolean') {
+      const checked = document.querySelector('input[name="' + id + '"]:checked');
+      if (!checked) throw new Error(field.path + ' 請選擇是或否');
+      setPath(next, field.path, checked.value === 'true');
+      continue;
+    }
+    if (field.type === 'checks') {
+      setPath(next, field.path, [...document.querySelectorAll('#configForm input[type="checkbox"]')].filter(input => input.closest('.config-field')?.querySelector('.config-path')?.textContent === field.path && input.checked).map(input => input.value));
+      continue;
+    }
+    const control = $(id);
+    if (!control) continue;
+    if (!control.checkValidity()) { control.reportValidity(); throw new Error(field.path + ' 的值無效'); }
+    const raw = control.value.trim();
+    if (!raw && field.optional) { deletePath(next, field.path); continue; }
+    if (field.type === 'number') {
+      if (!raw) { deletePath(next, field.path); continue; }
+      setPath(next, field.path, Number(raw));
+    } else if (field.type === 'json') {
+      if (!raw) deletePath(next, field.path);
+      else {
+        try { setPath(next, field.path, JSON.parse(raw)); }
+        catch { throw new Error(field.path + ' 不是有效的 JSON'); }
+      }
+    } else if (field.type === 'list') {
+      setPath(next, field.path, [...new Set(raw.split(/[\n,]+/).map(item => item.trim()).filter(Boolean))]);
+    } else if (!raw && !field.required) deletePath(next, field.path);
+    else setPath(next, field.path, field.type === 'select' && /^\d+$/.test(raw) && field.options?.every(([value]) => value === '' || /^\d+$/.test(value)) ? Number(raw) : raw);
+  }
+  return next;
+}
 
 const headers = () => ({
   'authorization': 'Bearer ' + $('token').value,
@@ -373,21 +590,19 @@ async function runs() {
 
 async function connect() {
   localStorage.umiroToken = $('token').value;
-  const [schema, config, runtime, secrets, names, models] = await Promise.all([
+  const [schema, config, runtime, secrets, names, modelResult] = await Promise.all([
     api('/api/schema'),
     api('/api/config'),
     api('/api/runtime'),
     api('/api/secrets'),
     api('/api/workspace'),
-    api('/api/models').catch(e => ['模型探索失敗：' + e.message]),
+    api('/api/models').then(items => ({ items, error: '' })).catch(e => ({ items: [], error: '模型探索失敗：' + e.message })),
   ]);
-  $('help').innerHTML = Object.values(schema).map(x =>
-    '<p><b>' + x.label + '</b> — ' + x.description + '<br><small>預設：' + JSON.stringify(x.defaultValue) + '；風險：' + x.risk + (x.restartRequired ? '；需重啟' : '；即時生效') + '</small></p>'
-  ).join('');
-  $('config').value = JSON.stringify(config, null, 2);
+  const models = modelResult.items.filter(model => typeof model === 'string');
+  renderConfigForm(schema, config, models);
   $('runtime').textContent = JSON.stringify(runtime, null, 2);
   $('secrets').textContent = Object.entries(secrets).map(([name, set]) => name + '：' + (set ? '已設定' : '未設定')).join('\n');
-  $('models').textContent = models.join('\n');
+  $('models').textContent = modelResult.error || models.join('\n') || 'API 沒有回傳可用模型';
   $('files').replaceChildren(...names.map(n => {
     const b = document.createElement('button');
     b.textContent = n;
@@ -409,7 +624,15 @@ async function load(name) {
 }
 
 $('connect').onclick = () => connect().catch(e => $('state').textContent = e.message);
-$('saveConfig').onclick = () => api('/api/config', { method: 'PUT', body: $('config').value }).then(() => alert('已儲存')).catch(e => alert(e.message));
+$('saveConfig').onclick = () => {
+  try {
+    const next = readConfigForm();
+    api('/api/config', { method: 'PUT', body: JSON.stringify(next) }).then(() => {
+      loadedConfig = next;
+      alert('已儲存');
+    }).catch(e => alert(e.message));
+  } catch (error) { alert(error instanceof Error ? error.message : String(error)); }
+};
 $('saveDocument').onclick = () => file ? api('/api/workspace/' + encodeURIComponent(file), { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }).then(() => alert('已儲存')).catch(e => alert(e.message)) : alert('請先選檔案');
 $('refreshSchedules').onclick = () => schedules().catch(e => alert(e.message));
 $('createSchedule').onclick = () => {

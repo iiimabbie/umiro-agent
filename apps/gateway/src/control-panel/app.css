@@ -127,6 +127,31 @@ pre {
 }
 pre:empty { display: none; }
 
+.config-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 14px 0;
+  background: var(--field);
+}
+.config-group h3 { margin-top: 0; }
+.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+.config-field { min-width: 0; }
+.config-field.config-wide { grid-column: 1 / -1; }
+.config-label { display: block; color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.config-path { color: var(--muted); font: 12px var(--mono); overflow-wrap: anywhere; }
+.config-description { min-height: 39px; margin: 6px 0; color: var(--text); font-size: 13px; }
+.config-meta { display: block; min-height: 38px; margin-bottom: 8px; }
+.config-field textarea { height: 96px; margin-bottom: 0; }
+.config-field textarea.config-json { height: 180px; }
+.config-field input, .config-field select { margin-bottom: 0; }
+.radio-group, .checkbox-group { display: flex; flex-wrap: wrap; gap: 8px 16px; min-height: 40px; align-items: center; }
+.radio-option, .checkbox-option { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 14px; }
+.radio-option input, .checkbox-option input { width: auto; margin: 0; box-shadow: none; }
+.model-catalog { margin: 16px 0; }
+.model-catalog summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.config-error { color: #9C554C; font-size: 13px; margin: 8px 0; }
+
 .files { display: flex; flex-wrap: wrap; gap: 4px; }
 .files button { font-size: 13px; margin: 0; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
@@ -219,4 +244,5 @@ pre:empty { display: none; }
   .content { padding: 16px; }
   section { padding: 16px; }
   .grid { grid-template-columns: 1fr; }
+  .config-grid { grid-template-columns: 1fr; }
 }
