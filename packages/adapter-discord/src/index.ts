@@ -5,6 +5,7 @@ import type { ExecutionStore } from "@umiro/core/ports";
 import type { ArtifactStore } from "@umiro/core";
 export * from "./client.js";
 export * from "./emoji.js";
+export * from "./message-text.js";
 export * from "./trigger-policy.js";
 
 export interface DiscordMessageEnvelope {

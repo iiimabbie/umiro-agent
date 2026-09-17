@@ -3,6 +3,7 @@ import { normalizeDiscordMentions, type DiscordMessageEnvelope, type DiscordText
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 import { ApplicationEmojiCatalog, type ApplicationEmoji } from "./emoji.js";
+import { extractDiscordMessageText } from "./message-text.js";
 
 type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; autocomplete?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
 type DiscordCommandManager = { set(commands: readonly ApplicationCommandDataResolvable[]): Promise<unknown> };
@@ -205,13 +206,13 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     await message.unpin();
   }
 
-  async fetchMessage(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly content: string; readonly createdAt: string }> {
+  async fetchMessage(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly content: string; readonly createdAt: string; readonly replyToMessageId?: string; readonly referenceChannelId?: string }> {
     if (input.signal?.aborted) throw input.signal.reason;
     const channel = await this.client.channels.fetch(input.channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
     const message = await channel.messages.fetch(input.messageId);
     if (input.signal?.aborted) throw input.signal.reason;
-    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, content: message.content, createdAt: message.createdAt.toISOString() };
+    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, content: extractDiscordMessageText(message), createdAt: message.createdAt.toISOString(), ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}), ...(message.reference?.channelId ? { referenceChannelId: message.reference.channelId } : {}) };
   }
 
   async fetchThreadStarter(input: { readonly threadId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly authorName: string; readonly content: string; readonly threadName: string; readonly createdAt: string } | undefined> {
@@ -220,7 +221,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (!channel?.isThread() || !("messages" in channel)) return undefined;
     const message = await channel.messages.fetch(input.threadId);
     if (input.signal?.aborted) throw input.signal.reason;
-    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, authorName: message.author.displayName, content: message.content, threadName: channel.name, createdAt: message.createdAt.toISOString() };
+    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, authorName: message.author.displayName, content: extractDiscordMessageText(message), threadName: channel.name, createdAt: message.createdAt.toISOString() };
   }
 
   async createThread(input: { readonly channelId: string; readonly name: string; readonly messageId?: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }> {
@@ -267,12 +268,12 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     await message.delete();
   }
 
-  async fetchChannelMessages(input: { readonly channelId: string; readonly limit?: number; readonly signal?: AbortSignal }): Promise<readonly { readonly messageId: string; readonly authorId: string; readonly content: string; readonly createdAt: string }[]> {
+  async fetchChannelMessages(input: { readonly channelId: string; readonly limit?: number; readonly signal?: AbortSignal }): Promise<readonly { readonly messageId: string; readonly authorId: string; readonly content: string; readonly createdAt: string; readonly replyToMessageId?: string; readonly referenceChannelId?: string }[]> {
     if (input.signal?.aborted) throw input.signal.reason;
     const channel = await this.client.channels.fetch(input.channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${input.channelId}`);
     const messages = await channel.messages.fetch({ limit: Math.min(100, Math.max(1, input.limit ?? 50)) });
-    return [...messages.values()].map(item => ({ messageId: item.id, authorId: item.author.id, content: item.content, createdAt: item.createdAt.toISOString() }));
+    return [...messages.values()].map(item => ({ messageId: item.id, authorId: item.author.id, content: extractDiscordMessageText(item), createdAt: item.createdAt.toISOString(), ...(item.reference?.messageId ? { replyToMessageId: item.reference.messageId } : {}), ...(item.reference?.channelId ? { referenceChannelId: item.reference.channelId } : {}) }));
   }
 
   async setRespondToBots(enabled: boolean): Promise<void> { this.respondToBots = enabled; }
@@ -302,7 +303,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       try {
         const reference = await message.fetchReference();
         replyAuthorId = reference.author.id;
-        replyToContent = reference.content;
+        replyToContent = extractDiscordMessageText(reference);
         replyToCreatedAt = reference.createdAt.toISOString();
         replyToAttachments = [...reference.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) }));
       } catch { /* deleted or inaccessible reference */ }
@@ -318,7 +319,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       botMentioned: this.client.user ? message.mentions.users.has(this.client.user.id) : false,
       replyToBot: this.client.user ? replyAuthorId === this.client.user.id : false,
       authorName: message.author.globalName ?? message.author.username,
-      content: normalizeDiscordMentions(message.content, new Map([...message.mentions.users.values()].map(user => [user.id, user.globalName ?? user.username]))),
+      content: normalizeDiscordMentions(extractDiscordMessageText(message), new Map([...message.mentions.users.values()].map(user => [user.id, user.globalName ?? user.username]))),
       createdAt: message.createdAt.toISOString(),
       mentionedUserIds: [...message.mentions.users.keys()],
       ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}),
