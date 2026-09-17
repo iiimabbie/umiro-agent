@@ -14,6 +14,7 @@
   --success: #8C9670;
   --warning: #BFBA7C;
   --danger: #CD9E97;
+  --restart-required: #5d3e3f;
   --radius: 10px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -134,11 +135,15 @@ pre:empty { display: none; }
   margin: 14px 0;
   background: var(--field);
 }
+.config-page-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.config-page-header h2 { margin-bottom: 0; }
+.config-restart-legend { color: var(--restart-required); text-align: right; }
 .config-group h3 { margin-top: 0; }
 .config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
 .config-field { min-width: 0; }
 .config-field.config-wide { grid-column: 1 / -1; }
 .config-label { display: inline-block; position: relative; color: var(--text); font-size: 14px; font-weight: 600; margin: 0; cursor: help; }
+.config-label.config-restart-required { color: var(--restart-required); }
 .config-path { color: var(--muted); font: 12px var(--mono); overflow-wrap: anywhere; margin: 2px 0 7px; }
 .config-tooltip {
   display: none;
@@ -263,4 +268,6 @@ pre:empty { display: none; }
   section { padding: 16px; }
   .grid { grid-template-columns: 1fr; }
   .config-grid, .secret-form { grid-template-columns: 1fr; }
+  .config-page-header { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .config-restart-legend { text-align: left; }
 }

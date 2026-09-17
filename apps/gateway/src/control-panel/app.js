@@ -165,14 +165,14 @@ function renderConfigForm(schema, config, models) {
       const wrapper = document.createElement('div');
       wrapper.className = 'config-field' + (field.wide ? ' config-wide' : '');
       const label = document.createElement('label');
-      label.className = 'config-label';
+      label.className = 'config-label' + (explanation.restartRequired ? ' config-restart-required' : '');
       label.tabIndex = 0;
       const labelText = document.createElement('span');
       labelText.textContent = explanation.label;
       const tooltip = document.createElement('span');
       tooltip.className = 'config-tooltip';
       tooltip.setAttribute('role', 'tooltip');
-      tooltip.textContent = explanation.description + '\n\n預設：' + JSON.stringify(explanation.defaultValue) + '\n' + (explanation.restartRequired ? '儲存後需重啟' : '儲存後即時生效') + '\n\n風險：' + explanation.risk;
+      tooltip.textContent = explanation.description + '\n\n預設：' + JSON.stringify(explanation.defaultValue) + '\n\n風險：' + explanation.risk;
       label.append(labelText, tooltip);
       const path = document.createElement('div');
       path.className = 'config-path';
