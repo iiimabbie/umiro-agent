@@ -23,15 +23,15 @@ test("durable one-shot scheduling deduplicates occurrence and records a new Run 
 test("cron schedules validate timezone and calculate the next durable fire", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-01-01T00:00:00.000Z"));
-  const trigger = await scheduler.create({ name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Asia/Taipei", jobRef: "agent.prompt", input: { prompt: "hello" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
-  assert.equal(trigger.nextFireAt, "2026-01-01T01:00:00.000Z");
+  const trigger = await scheduler.create({ name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Europe/London", jobRef: "agent.prompt", input: { prompt: "hello" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
+  assert.equal(trigger.nextFireAt, "2026-01-01T09:00:00.000Z");
   store.close();
 });
 
 test("schedule update uses the same trigger identity and increments revision", async () => {
   const store = new SQLiteExecutionStore(":memory:"); const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-01-01T00:00:00.000Z"));
-  const trigger = await scheduler.create({ name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Asia/Taipei", jobRef: "agent.prompt", input: { prompt: "old" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
-  const updated = await scheduler.update(trigger.id, { name: "updated", schedule: { kind: "cron", expression: "0 10 * * *" }, timezone: "Asia/Taipei", input: { prompt: "new" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
+  const trigger = await scheduler.create({ name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Europe/London", jobRef: "agent.prompt", input: { prompt: "old" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
+  const updated = await scheduler.update(trigger.id, { name: "updated", schedule: { kind: "cron", expression: "0 10 * * *" }, timezone: "Europe/London", input: { prompt: "new" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
   assert.equal(updated.id, trigger.id); assert.equal(updated.revision, 1); assert.equal(updated.name, "updated"); assert.deepEqual(updated.input, { prompt: "new" });
   await assert.rejects(store.updateScheduledTrigger(trigger.id, { name: "stale", schedule: updated.schedule, timezone: updated.timezone, input: updated.input, misfirePolicy: updated.misfirePolicy, maxAttempts: updated.maxAttempts, retryBackoffMs: updated.retryBackoffMs }, 0, updated.nextFireAt, updated.updatedAt), /changed/);
   store.close();
@@ -42,9 +42,9 @@ test("plugin job sync reconciles changed declarations without re-enabling a disa
   const store = new SQLiteExecutionStore(":memory:");
   const scheduler = new DurableScheduler(store, 1000, () => now);
   const run = async () => undefined;
-  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "0 8,20 * * *", timezone: "Asia/Taipei", run }]);
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "0 8,20 * * *", timezone: "Europe/London", run }]);
   const created = await store.getScheduledTrigger("plugin-job:guardian.check");
-  assert.equal(created?.nextFireAt, "2026-01-01T12:00:00.000Z");
+  assert.equal(created?.nextFireAt, "2026-01-01T08:00:00.000Z");
   await scheduler.setEnabled("plugin-job:guardian.check", false);
 
   now = new Date("2026-01-01T00:00:30.000Z");

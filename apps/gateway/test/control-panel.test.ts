@@ -83,10 +83,10 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.equal((await fetch(`${endpoint}/api/workspace/PEOPLE.md`, { headers })).status, 404);
     assert.equal((await fetch(`${endpoint}/api/workspace/SECRET.md`, { headers })).status, 404);
     assert.deepEqual(await (await fetch(`${endpoint}/api/schedules`, { headers })).json(), schedules);
-    assert.equal((await fetch(`${endpoint}/api/schedules`, { method: "POST", headers, body: JSON.stringify({ name: "later", kind: "once", at: "2026-09-10T00:00:00.000Z", timezone: "Asia/Taipei", prompt: "提醒我" }) })).status, 201);
-    assert.deepEqual(created, { name: "later", kind: "once", at: "2026-09-10T00:00:00.000Z", timezone: "Asia/Taipei", prompt: "提醒我" });
+    assert.equal((await fetch(`${endpoint}/api/schedules`, { method: "POST", headers, body: JSON.stringify({ name: "later", kind: "once", at: "2026-09-10T00:00:00.000Z", timezone: "Europe/London", prompt: "提醒我" }) })).status, 201);
+    assert.deepEqual(created, { name: "later", kind: "once", at: "2026-09-10T00:00:00.000Z", timezone: "Europe/London", prompt: "提醒我" });
     assert.equal((await fetch(`${endpoint}/api/schedules/schedule-1`, { method: "PATCH", headers, body: JSON.stringify({ enabled: false }) })).status, 200); assert.deepEqual(enabled, ["schedule-1", false]);
-    assert.equal((await fetch(`${endpoint}/api/schedules/schedule-1`, { method: "PATCH", headers, body: JSON.stringify({ name: "weekday", kind: "cron", expression: "0 9 * * 1-5", timezone: "Asia/Taipei", prompt: "工作提醒" }) })).status, 200); assert.deepEqual(updatedSchedule, ["schedule-1", { name: "weekday", kind: "cron", expression: "0 9 * * 1-5", timezone: "Asia/Taipei", prompt: "工作提醒" }]);
+    assert.equal((await fetch(`${endpoint}/api/schedules/schedule-1`, { method: "PATCH", headers, body: JSON.stringify({ name: "weekday", kind: "cron", expression: "0 9 * * 1-5", timezone: "Europe/London", prompt: "工作提醒" }) })).status, 200); assert.deepEqual(updatedSchedule, ["schedule-1", { name: "weekday", kind: "cron", expression: "0 9 * * 1-5", timezone: "Europe/London", prompt: "工作提醒" }]);
     assert.equal((await fetch(`${endpoint}/api/schedules/schedule-1`, { method: "DELETE", headers })).status, 200); assert.equal(removed, "schedule-1");
     assert.deepEqual(await (await fetch(`${endpoint}/api/plugins`, { headers })).json(), [{ source: "builtin:memory", enabled: true }]);
     assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "configure", source: "builtin:memory", config: { limit: 10 } }) })).status, 200);

@@ -27,9 +27,9 @@ test("Discord output policy defines an explicit no-text response", async () => {
 });
 
 test("current time context is available to every Run with an explicit timezone", async () => {
-  const provider = createCurrentTimeContextProvider(() => new Date("2026-09-12T01:02:03.000Z"), "Asia/Taipei");
+  const provider = createCurrentTimeContextProvider(() => new Date("2026-09-12T01:02:03.000Z"), "Europe/London");
   const blocks = await provider.load({ runId: "scheduled", execution: {} as never, prompt: "today?" });
-  assert.match(blocks[0]?.content ?? "", /2026-09-12T01:02:03\.000Z \(Asia\/Taipei:/);
+  assert.match(blocks[0]?.content ?? "", /2026-09-12T01:02:03\.000Z \(Europe\/London:/);
   assert.equal(blocks[0]?.retention, "essential");
 });
 

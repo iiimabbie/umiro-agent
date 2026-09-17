@@ -695,6 +695,7 @@ $('refreshLogs').onclick = () => logs().catch(e => alert(e.message));
 $('refreshChannels').onclick = () => channels().catch(e => alert(e.message));
 $('refreshArchived').onclick = () => archived().catch(e => alert(e.message));
 $('token').value = localStorage.umiroToken || '';
+$('scheduleTimezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
 const pages = [...document.querySelectorAll('.page')];
 const navLinks = [...document.querySelectorAll('nav a')];
