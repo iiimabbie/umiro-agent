@@ -30,6 +30,8 @@ test("maps Discord messages and preserves stable principals", async () => {
   assert.equal(first.principal.id, "member-1");
   assert.equal(second.principal.id, "member-1");
   assert.deepEqual((await resolver.resolve({ transport: "discord", externalId: "1", principalId: null })).principal.roles, ["owner"]);
+  resolver.setOwnerDiscordId("3");
+  assert.deepEqual((await resolver.resolve({ transport: "discord", externalId: "3", principalId: null })).principal.roles, ["owner"]);
   const named = await resolver.resolve({ transport: "discord", externalId: "2", principalId: null, displayName: "小明" });
   assert.equal(named.principal.displayName, "小明");
   const event = toInputEvent({ messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum", authorId: "2", authorName: "小明", content: "hi", createdAt: "2026-01-01T00:00:00Z" });

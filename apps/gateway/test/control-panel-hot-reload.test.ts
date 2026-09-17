@@ -32,3 +32,35 @@ test("config save reports hot-applied and restart-required fields", async () => 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("secret updates expose only status and report live application", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-secret-reload-"));
+  const workspace = join(root, "workspace");
+  const configFile = join(root, "umiro.json");
+  await mkdir(workspace);
+  await writeFile(configFile, '{"model":"test"}\n');
+  let received: Readonly<Record<string, string>> | undefined;
+  let configured = false;
+  const server = new ControlPanelServer({
+    host: "127.0.0.1", port: 0, token: "token", configFile, workspace,
+    secrets: () => ({ DISCORD_TOKEN: configured }),
+    async updateSecrets(values) { received = values; configured = true; return { applied: ["DISCORD_TOKEN"], restartRequired: [] }; },
+    readiness: () => ({ storage: true, plugins: true, discord: false, scheduler: true, configurationRequired: ["DISCORD_TOKEN"] }),
+  });
+  await server.start();
+  try {
+    const endpoint = `http://127.0.0.1:${server.port()}`;
+    const headers = { authorization: "Bearer token", "content-type": "application/json" };
+    const ready = await fetch(`${endpoint}/readyz`);
+    assert.equal(ready.status, 200);
+    assert.equal((await ready.json() as { status: string }).status, "configuration_required");
+    assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: false });
+    const response = await fetch(`${endpoint}/api/secrets`, { method: "PUT", headers, body: JSON.stringify({ DISCORD_TOKEN: "new-token" }) });
+    assert.deepEqual(await response.json(), { saved: true, applied: ["DISCORD_TOKEN"], restartRequired: [] });
+    assert.deepEqual(received, { DISCORD_TOKEN: "new-token" });
+    assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: true });
+  } finally {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});

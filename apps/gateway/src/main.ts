@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
@@ -36,7 +36,7 @@ const releaseIdentity = await readFile(`${paths.app}/current/install-manifest.js
   const manifest = JSON.parse(raw) as { releaseId?: unknown; revision?: unknown; installedAt?: unknown };
   return { mode: "installed", ...(typeof manifest.releaseId === "string" ? { releaseId: manifest.releaseId } : {}), ...(typeof manifest.revision === "string" ? { revision: manifest.revision } : {}), ...(typeof manifest.installedAt === "string" ? { installedAt: manifest.installedAt } : {}) };
 }).catch(() => ({ mode: "source" }));
-const readiness = { storage: false, plugins: false, discord: false, scheduler: false, shuttingDown: false };
+const readiness: { storage: boolean; plugins: boolean; discord: boolean; scheduler: boolean; configurationRequired: string[]; shuttingDown: boolean } = { storage: false, plugins: false, discord: false, scheduler: false, configurationRequired: [], shuttingDown: false };
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -199,8 +199,7 @@ const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrinc
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
 readiness.storage = true;
-const ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim();
-if (!ownerDiscordId) throw new Error("UMIRO_OWNER_DISCORD_ID is required");
+let ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim() ?? "";
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority, memberAuthority });
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const sessionProfile = async (channelId: string) => {
@@ -304,8 +303,8 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     if (!finalized) throw new Error("button result changed repeatedly");
     return { messageContent: renderButtonRecord(finalized), disableButtonIds: finalized.usedButtonIds };
 });
-const runtimeSecrets = [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env.VOYAGE_API_KEY, process.env.GOOGLE_API_KEY, process.env.GOOGLE_CLIENT_SECRET];
-discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets) } }));
+const runtimeSecrets = () => [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env.VOYAGE_API_KEY, process.env.GOOGLE_API_KEY, process.env.GOOGLE_CLIENT_SECRET];
+discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 const replies = { async send(runId: string, text: string, signal?: AbortSignal) {
   const checkpoint = await store.getCheckpoint(runId);
@@ -338,6 +337,22 @@ const namedConversationScopes = async (locations: readonly ConversationLocation[
     }];
   }));
 };
+const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])]);
+const persistSecrets = async (values: Readonly<Record<string, string>>): Promise<void> => {
+  const source = await readFile(paths.secrets, "utf8").catch(() => "");
+  const lines = source.split(/\r?\n/);
+  for (const [name, value] of Object.entries(values)) {
+    const replacement = `${name}=${JSON.stringify(value)}`;
+    const index = lines.findIndex(line => line.startsWith(`${name}=`));
+    if (index >= 0) lines[index] = replacement;
+    else lines.push(replacement);
+  }
+  const temporary = `${paths.secrets}.${crypto.randomUUID()}.tmp`;
+  try { await writeFile(temporary, `${lines.filter((line, index) => line || index < lines.length - 1).join("\n").trimEnd()}\n`, { mode: 0o600 }); await rename(temporary, paths.secrets); }
+  catch (error) { await rm(temporary, { force: true }); throw error; }
+};
+let connectDiscordFromSecrets: () => Promise<boolean> = async () => false;
+let discordStartAttempted = false;
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
   list: () => scheduler.list(),
   create: input => scheduler.create({ name: input.name, enabled: true, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, jobRef: "agent.prompt", input: { prompt: input.prompt }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: ownerAuthority, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
@@ -351,7 +366,26 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
     return { ok: true, output: result.stdout.trim(), restartRequired: true };
   },
-}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", ...(config.embedding && "apiKeyEnv" in config.embedding && config.embedding.apiKeyEnv ? [config.embedding.apiKeyEnv] : []), ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])])].sort().map(name => [name, Boolean(process.env[name]?.trim())])), models: () => modelCatalog.listConversationModels(), applyConfig: async raw => {
+}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), updateSecrets: async values => {
+  const unexpected = Object.keys(values).find(name => !editableSecretNames.has(name));
+  if (unexpected) throw new TypeError(`secret is not editable here: ${unexpected}`);
+  await persistSecrets(values);
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  const applied: string[] = [];
+  const restartRequired: string[] = [];
+  if (values.UMIRO_OWNER_DISCORD_ID !== undefined) {
+    ownerDiscordId = values.UMIRO_OWNER_DISCORD_ID;
+    identities.setOwnerDiscordId(ownerDiscordId);
+    applied.push("UMIRO_OWNER_DISCORD_ID");
+  }
+  if (values.DISCORD_TOKEN !== undefined || values.UMIRO_OWNER_DISCORD_ID !== undefined) {
+    if (readiness.discord) { if (values.DISCORD_TOKEN !== undefined) restartRequired.push("DISCORD_TOKEN"); }
+    else if (await connectDiscordFromSecrets()) applied.push(...Object.keys(values).filter(name => name === "DISCORD_TOKEN" || name === "UMIRO_OWNER_DISCORD_ID"));
+    else if (values.DISCORD_TOKEN !== undefined) restartRequired.push("DISCORD_TOKEN");
+  }
+  for (const name of Object.keys(values)) if (name !== "DISCORD_TOKEN" && name !== "UMIRO_OWNER_DISCORD_ID") restartRequired.push(name);
+  return { applied: [...new Set(applied)], restartRequired: [...new Set(restartRequired)] };
+}, models: () => modelCatalog.listConversationModels(), applyConfig: async raw => {
   const next = raw as unknown as GatewayConfig;
   const applied: string[] = [];
   const restartRequired: string[] = [];
@@ -598,7 +632,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort).then(async descriptions => {
       for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description!, new Date().toISOString());
       if (descriptions.length) await store.rebuildSearchProjection();
-    }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets) } }));
+    }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
   }
 };
 discord.onSteer(async message => {
@@ -641,15 +675,36 @@ discord.onSteer(async message => {
   }
 });
 discord.onMessage(message => activeWork.track(handleMessage(message)));
-const token = process.env.DISCORD_TOKEN?.trim();
-if (!token) throw new Error("DISCORD_TOKEN is required");
 await controlPanel?.start();
-await discord.start(token, discordPolicy.presence);
-readiness.discord = true;
-await delivery.drain();
 scheduler.start();
 readiness.scheduler = true;
-await writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), checks: readiness })}\n`, { mode: 0o600 });
+const writeReadinessEvidence = () => writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: processStart, checks: readiness })}\n`, { mode: 0o600 });
+connectDiscordFromSecrets = async () => {
+  if (readiness.discord) return true;
+  const token = process.env.DISCORD_TOKEN?.trim();
+  const missing = [...(!token ? ["DISCORD_TOKEN"] : []), ...(!ownerDiscordId ? ["UMIRO_OWNER_DISCORD_ID"] : [])];
+  readiness.configurationRequired = missing;
+  if (missing.length > 0) { await writeReadinessEvidence(); return false; }
+  if (discordStartAttempted) return false;
+  discordStartAttempted = true;
+  try {
+    await discord.start(token!, discordPolicy.presence);
+    readiness.discord = true;
+    readiness.configurationRequired = [];
+    await delivery.drain();
+    await writeReadinessEvidence();
+    return true;
+  } catch (error) {
+    readiness.discord = false;
+    readiness.configurationRequired = ["DISCORD_CONNECTION"];
+    logger.write({ level: "error", event: "discord.start.failed", message: "Discord could not connect; Web UI remains available for configuration", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } });
+    await writeReadinessEvidence();
+    return false;
+  }
+};
+const discordConnected = await connectDiscordFromSecrets();
+if (!discordConnected && !controlPanel) throw new Error(`Discord configuration is required: ${readiness.configurationRequired.join(", ")}`);
+await writeReadinessEvidence();
 let shuttingDown = false;
 const shutdown = async (exitCode = 0) => {
   if (shuttingDown) return;

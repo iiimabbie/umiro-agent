@@ -64,15 +64,19 @@ export interface DiscordIdentityResolverOptions {
 export class DiscordIdentityResolver implements IdentityResolver {
   private readonly now: () => string;
   private readonly createPrincipalId: () => string;
+  private ownerDiscordId: string;
   private ownerAuthority: Authority;
   private memberAuthority: Authority;
 
   constructor(private readonly store: IdentityMappingStore, private readonly options: DiscordIdentityResolverOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createPrincipalId = options.createPrincipalId ?? (() => crypto.randomUUID());
+    this.ownerDiscordId = options.ownerDiscordId;
     this.ownerAuthority = options.ownerAuthority;
     this.memberAuthority = options.memberAuthority;
   }
+
+  setOwnerDiscordId(ownerDiscordId: string): void { this.ownerDiscordId = ownerDiscordId; }
 
   setAuthorities(ownerAuthority: Authority, memberAuthority: Authority): void {
     this.ownerAuthority = ownerAuthority;
@@ -81,7 +85,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
 
   async resolve(identity: TransportIdentity): Promise<ResolvedIdentity> {
     if (identity.transport !== "discord") throw new TypeError(`Discord resolver cannot resolve ${identity.transport}`);
-    const owner = identity.externalId === this.options.ownerDiscordId;
+    const owner = identity.externalId === this.ownerDiscordId;
     const mapped = await this.store.findOrCreate({
       transport: "discord",
       externalId: identity.externalId,

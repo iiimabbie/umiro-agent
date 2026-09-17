@@ -5,6 +5,7 @@ let channelCatalog = new Map();
 let channelRefreshTimer;
 let selectedChannelId;
 let loadedConfig;
+let secretNames = [];
 
 const CONFIG_GROUPS = [
   { title: '模型與 Context', fields: [
@@ -602,7 +603,21 @@ async function connect() {
   const models = modelResult.filter(model => typeof model === 'string');
   renderConfigForm(schema, config, models);
   $('runtime').textContent = JSON.stringify(runtime, null, 2);
-  $('secrets').textContent = Object.entries(secrets).map(([name, set]) => name + '：' + (set ? '已設定' : '未設定')).join('\n');
+  secretNames = Object.keys(secrets);
+  $('secretForm').replaceChildren(...secretNames.map(name => {
+    const label = document.createElement('label');
+    label.className = 'secret-field';
+    label.textContent = name;
+    const input = document.createElement('input');
+    input.id = 'secret-' + name;
+    input.type = name === 'UMIRO_OWNER_DISCORD_ID' ? 'text' : 'password';
+    input.autocomplete = 'off';
+    input.placeholder = secrets[name] ? '已設定；留空不變' : '尚未設定';
+    const status = document.createElement('small');
+    status.textContent = secrets[name] ? '已設定' : '未設定';
+    label.append(input, status);
+    return label;
+  }));
   $('files').replaceChildren(...names.map(n => {
     const b = document.createElement('button');
     b.textContent = n;
@@ -634,6 +649,17 @@ $('saveConfig').onclick = () => {
       alert('已儲存' + applied + restart);
     }).catch(e => alert(e.message));
   } catch (error) { alert(error instanceof Error ? error.message : String(error)); }
+};
+$('saveSecrets').onclick = () => {
+  const values = Object.fromEntries(secretNames.map(name => [name, $('secret-' + name).value]).filter(([, value]) => value.trim()));
+  if (!Object.keys(values).length) return alert('請填入至少一個要更新的欄位');
+  api('/api/secrets', { method: 'PUT', body: JSON.stringify(values) }).then(result => {
+    for (const name of Object.keys(values)) $('secret-' + name).value = '';
+    const applied = result.applied?.length ? '\n即時套用：' + result.applied.join('、') : '';
+    const restart = result.restartRequired?.length ? '\n需重啟：' + result.restartRequired.join('、') : '';
+    alert('Secrets 已儲存' + applied + restart);
+    return connect();
+  }).catch(e => alert(e.message));
 };
 $('saveDocument').onclick = () => file ? api('/api/workspace/' + encodeURIComponent(file), { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }).then(() => alert('已儲存')).catch(e => alert(e.message)) : alert('請先選檔案');
 $('refreshSchedules').onclick = () => schedules().catch(e => alert(e.message));

@@ -161,6 +161,10 @@ pre:empty { display: none; }
 .config-field textarea { height: 96px; margin-bottom: 0; }
 .config-field textarea.config-json { height: 180px; }
 .config-field input, .config-field select { margin-bottom: 0; }
+.secret-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 12px 0; }
+.secret-field { display: grid; gap: 4px; color: var(--text); font-size: 13px; font-weight: 600; }
+.secret-field input { margin: 0; }
+.secret-field small { color: var(--muted); font-weight: 400; }
 .radio-group, .checkbox-group { display: flex; flex-wrap: wrap; gap: 8px 16px; min-height: 40px; align-items: center; }
 .radio-option, .checkbox-option { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 14px; }
 .radio-option input, .checkbox-option input { width: auto; margin: 0; box-shadow: none; }
@@ -258,5 +262,5 @@ pre:empty { display: none; }
   .content { padding: 16px; }
   section { padding: 16px; }
   .grid { grid-template-columns: 1fr; }
-  .config-grid { grid-template-columns: 1fr; }
+  .config-grid, .secret-form { grid-template-columns: 1fr; }
 }

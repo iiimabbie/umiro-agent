@@ -10,6 +10,7 @@ test("control-panel settings use typed controls instead of one raw config textar
   const [html, script] = await Promise.all([readFile(htmlUrl, "utf8"), readFile(scriptUrl, "utf8")]);
 
   assert.match(html, /id="configForm"/);
+  assert.match(html, /id="secretForm"/);
   assert.doesNotMatch(html, /<textarea id="config"/);
   assert.doesNotMatch(html, /查看 API 可用模型/);
   assert.doesNotThrow(() => new Script(script));
@@ -18,4 +19,5 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /path: 'embedding\.baseUrl', type: 'url'/);
   assert.match(script, /document\.createElement\('select'\)/);
   assert.match(script, /className = 'config-tooltip'/);
+  assert.match(script, /api\('\/api\/secrets', \{ method: 'PUT'/);
 });

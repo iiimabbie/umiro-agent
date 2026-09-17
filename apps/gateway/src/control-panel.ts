@@ -34,10 +34,11 @@ export interface GatewayReadiness {
   readonly plugins: boolean;
   readonly discord: boolean;
   readonly scheduler: boolean;
+  readonly configurationRequired?: readonly string[];
   readonly shuttingDown?: boolean;
 }
 export interface ConfigApplyResult { readonly applied: readonly string[]; readonly restartRequired: readonly string[] }
-export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly workspaceFiles?: readonly string[]; readonly secrets?: () => Readonly<Record<string, boolean>>; readonly models?: () => Promise<readonly string[]>; readonly applyConfig?: (config: Record<string, unknown>) => Promise<ConfigApplyResult>; readonly audit?: (event: string, data: Readonly<Record<string, string | number | boolean>>) => void; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly runs?: ControlPanelRuns; readonly channels?: ControlPanelChannels; readonly conversations?: ControlPanelConversations; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly usage?: () => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
+export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly workspaceFiles?: readonly string[]; readonly secrets?: () => Readonly<Record<string, boolean>>; readonly updateSecrets?: (secrets: Readonly<Record<string, string>>) => Promise<ConfigApplyResult>; readonly models?: () => Promise<readonly string[]>; readonly applyConfig?: (config: Record<string, unknown>) => Promise<ConfigApplyResult>; readonly audit?: (event: string, data: Readonly<Record<string, string | number | boolean>>) => void; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly runs?: ControlPanelRuns; readonly channels?: ControlPanelChannels; readonly conversations?: ControlPanelConversations; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly usage?: () => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly processId?: number }
 
 export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", defaultValue: null, risk: "模型必須存在於目前 API；錯誤值會使 Run 失敗。", restartRequired: false },
@@ -163,12 +164,26 @@ export class ControlPanelServer {
       if (request.method === "GET" && url.pathname === "/readyz") {
         const checks = this.options.readiness ? await this.options.readiness() : { storage: true, plugins: true, discord: true, scheduler: true };
         const ready = checks.storage && checks.plugins && checks.discord && checks.scheduler && checks.shuttingDown !== true;
-        return json(response, ready ? 200 : 503, { status: ready ? "ready" : "not_ready", pid: this.options.processId ?? process.pid, checks });
+        const configurationRequired = !ready && checks.shuttingDown !== true && (checks.configurationRequired?.length ?? 0) > 0;
+        return json(response, ready || configurationRequired ? 200 : 503, { status: ready ? "ready" : configurationRequired ? "configuration_required" : "not_ready", pid: this.options.processId ?? process.pid, checks });
       }
       if (!this.authorized(request)) return json(response, 401, { error: "unauthorized" });
       if (request.method === "GET" && url.pathname === "/api/schema") return json(response, 200, CONFIG_EXPLANATIONS);
       if (request.method === "GET" && url.pathname === "/api/config") return json(response, 200, JSON.parse(await readFile(this.options.configFile, "utf8")));
       if (request.method === "GET" && url.pathname === "/api/secrets") return json(response, 200, this.options.secrets?.() ?? {});
+      if (request.method === "PUT" && url.pathname === "/api/secrets") {
+        if (!this.options.updateSecrets) return json(response, 503, { error: "secret configuration unavailable" });
+        const input = await body(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length === 0) throw new TypeError("at least one secret is required");
+        const values: Record<string, string> = {};
+        for (const [name, value] of Object.entries(input)) {
+          if (!/^[A-Z][A-Z0-9_]{1,79}$/.test(name) || typeof value !== "string" || !value.trim()) throw new TypeError("secret names and values are invalid");
+          values[name] = value.trim();
+        }
+        const application = await this.options.updateSecrets(values);
+        this.audit("control.secrets.saved", { fieldCount: Object.keys(values).length, restartRequired: application.restartRequired.length > 0, appliedCount: application.applied.length });
+        return json(response, 200, { saved: true, applied: application.applied, restartRequired: application.restartRequired });
+      }
       if (request.method === "GET" && url.pathname === "/api/models") { if (!this.options.models) return json(response, 503, { error: "model catalog unavailable" }); return json(response, 200, await this.options.models()); }
       if (request.method === "GET" && url.pathname === "/api/channels") { if (!this.options.channels) return json(response, 503, { error: "Discord channel catalog unavailable" }); return json(response, 200, await this.options.channels.list()); }
       if (request.method === "GET" && url.pathname === "/api/conversations") {
