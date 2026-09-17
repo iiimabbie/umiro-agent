@@ -20,4 +20,6 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /document\.createElement\('select'\)/);
   assert.match(script, /className = 'config-tooltip'/);
   assert.match(script, /api\('\/api\/secrets', \{ method: 'PUT'/);
+  assert.match(script, /await r\.text\(\)/);
+  assert.match(script, /無法連線到 ümiro Gateway/);
 });

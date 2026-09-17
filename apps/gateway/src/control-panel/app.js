@@ -237,9 +237,14 @@ const baseUrl = new URL('.',location.href);
 
 async function api(path, options = {}) {
   const target = new URL(String(path).replace(/^\/+/,''), baseUrl);
-  const r = await fetch(target, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  let r;
+  try { r = await fetch(target, { ...options, headers: { ...headers(), ...(options.headers || {}) } }); }
+  catch (error) { throw new Error('無法連線到 ümiro Gateway：' + (error instanceof Error ? error.message : String(error))); }
+  const raw = await r.text();
+  let data;
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error(r.ok ? 'ümiro Gateway 回傳了無法解讀的回應' : (raw.trim() || r.statusText)); }
+  if (!r.ok) throw new Error(data.error || raw.trim() || r.statusText);
   return data;
 }
 
