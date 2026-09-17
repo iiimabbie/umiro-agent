@@ -159,7 +159,7 @@ umo plugin configure <source> --config '{"key":"value"}'
 
 ```text
 umo install | upgrade | rollback | uninstall [--purge]
-umo start | stop | status
+umo start | stop | restart | status
 umo configure --from-env <file>
 umo discord configure | status
 umo embedding configure | disable | status

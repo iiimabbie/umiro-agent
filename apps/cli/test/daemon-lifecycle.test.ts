@@ -26,6 +26,8 @@ test("fallback daemon start waits for readiness and status reports it", async ()
     assert.match(started.stdout, /started \d+ \(ready\)/);
     const status = await exec(process.execPath, [cli, "status"], { env });
     assert.match(status.stdout, /running \d+ \(ready\)/);
+    const restarted = await exec(process.execPath, [cli, "restart"], { env });
+    assert.match(restarted.stdout, /stopped\nstarted \d+ \(ready\)/);
     await exec(process.execPath, [cli, "stop"], { env });
     assert.match((await exec(process.execPath, [cli, "status"], { env })).stdout, /stopped/);
   } finally {

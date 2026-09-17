@@ -159,7 +159,7 @@ Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin
 
 ```text
 umo install | upgrade | rollback | uninstall [--purge]
-umo start | stop | status
+umo start | stop | restart | status
 umo configure --from-env <file>
 umo discord configure | status
 umo embedding configure | disable | status
