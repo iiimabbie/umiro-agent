@@ -48,6 +48,8 @@ pnpm umo install
 export PATH="$HOME/.umiro/bin:$PATH"
 ```
 
+一般安裝不需要設定 `UMIRO_HOME`；以上指令會安裝到目前使用者自己的 `~/.umiro`。
+
 填入憑證並啟動：
 
 ```bash
@@ -82,10 +84,12 @@ umo status
 ```dotenv
 DISCORD_TOKEN=
 UMIRO_OWNER_DISCORD_ID=
-LLM_BASE_URL=http://localhost:8317/v1
+LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=
 ```
+
+請將 `LLM_BASE_URL` 設為你的 OpenAI 相容端點，並將 `LLM_MODEL` 設為該端點提供的模型；`umo configure` 會要求兩者都有值。
 
 ### Workspace
 

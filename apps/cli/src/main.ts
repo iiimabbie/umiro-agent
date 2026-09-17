@@ -2,7 +2,7 @@
 import { access, chmod, cp, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
-import { promisify } from "node:util";
+import { parseEnv, promisify } from "node:util";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -25,6 +25,7 @@ interface ManagedPlugin { source: string; path: string; workspace?: string; enab
 interface UmiroConfig { model: string; protocol?: "openai_responses" | "openai_chat_completions"; modelCapabilities?: string[]; profiles?: Record<string, { model: string; protocol?: "openai_responses" | "openai_chat_completions"; capabilities?: string[]; reasoningEffort?: string }>; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; skills?: string[]; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
+function systemTimezone(): string { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
 async function workspaceTemplates(): Promise<string> {
   const candidates = [
     ...(process.env.UMIRO_SOURCE_DIR?.trim() ? [join(resolve(process.env.UMIRO_SOURCE_DIR.trim()), "templates", "workspace")] : []),
@@ -103,7 +104,7 @@ async function init(): Promise<void> {
   }
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
-  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "gemma4:31b", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, skills: [], discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
+  if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "not-configured", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, skills: [], discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
   if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# GOOGLE_API_KEY=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
   console.log(home);
 }
@@ -137,7 +138,7 @@ async function registerBuiltins(): Promise<void> {
   const current = await loadConfig();
   const entries = (await loadPlugins()).filter(entry => !entry.source.startsWith("builtin:"));
   const builtin = (id: string, config: Record<string, unknown> = {}): ManagedPlugin => ({ source: `builtin:${id}`, path: join(currentRelease, "plugins", id), enabled: true, config });
-  await savePlugins([...entries, builtin("context-files", { workspacePath: workspace, configFile, skills: current.skills ?? [] }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: process.env.TZ || "Asia/Taipei" }), builtin("subagent"), builtin("host-tools", { workspacePath: workspace }), builtin("discord-tools", { workspacePath: workspace })]);
+  await savePlugins([...entries, builtin("context-files", { workspacePath: workspace, configFile, skills: current.skills ?? [] }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: systemTimezone() }), builtin("subagent"), builtin("host-tools", { workspacePath: workspace }), builtin("discord-tools", { workspacePath: workspace })]);
 }
 
 async function writeLaunchers(): Promise<void> {
@@ -170,7 +171,19 @@ async function upgrade(): Promise<void> {
 }
 
 async function configure(fromEnv?: string): Promise<void> {
-  if (!fromEnv) throw new Error("configure requires --from-env <path>"); const source = resolve(fromEnv); await access(source); await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 }); let content = await readFile(source, "utf8"); if (!/^UMIRO_WEB_UI_TOKEN=/m.test(content)) content = `${content.trimEnd()}\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`; await writeFile(secretsFile, content, { mode: 0o600 }); await chmod(secretsFile, 0o600); console.log(secretsFile);
+  if (!fromEnv) throw new Error("configure requires --from-env <path>");
+  const source = resolve(fromEnv); await access(source); await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 });
+  let content = await readFile(source, "utf8"); const imported = parseEnv(content);
+  const model = imported.LLM_MODEL?.trim(); const baseUrl = imported.LLM_BASE_URL?.trim();
+  if (!model) throw new Error("LLM_MODEL is required in the configuration file");
+  if (!baseUrl) throw new Error("LLM_BASE_URL is required in the configuration file");
+  const protocol = imported.LLM_PROTOCOL?.trim();
+  if (protocol && protocol !== "openai_responses" && protocol !== "openai_chat_completions") throw new Error("LLM_PROTOCOL must be openai_responses or openai_chat_completions");
+  const current = await loadConfig();
+  const configuredProtocol: UmiroConfig["protocol"] = protocol === "openai_chat_completions" || protocol === "openai_responses" ? protocol : current.protocol ?? "openai_responses";
+  await saveConfig({ ...current, model, protocol: configuredProtocol });
+  if (!/^UMIRO_WEB_UI_TOKEN=/m.test(content)) content = `${content.trimEnd()}\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`;
+  await writeFile(secretsFile, content, { mode: 0o600 }); await chmod(secretsFile, 0o600); console.log(secretsFile);
 }
 
 async function embedding(action: string, provider?: string, model?: string, baseUrl?: string, apiKeyEnv?: string, requestsPerMinute?: string, recallLimit?: string, minSimilarity?: string): Promise<void> {

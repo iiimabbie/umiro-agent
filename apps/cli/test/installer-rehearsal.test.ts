@@ -19,16 +19,19 @@ test("clean home completes install, configure, daemon, upgrade, backup, restore,
   await writeFile(join(bin, "git"), "#!/bin/sh\nprintf '%s\\n' \"${FAKE_REVISION:-testrev}\"\n");
   await writeFile(join(bin, "pnpm"), "#!/bin/sh\nif [ \"$1\" = build ]; then exit 0; fi\nfor arg do destination=$arg; done\nmkdir -p \"$destination/dist/src\"\ncase \"$destination\" in */gateway) printf '// gateway\\n' > \"$destination/dist/src/main.js\";; */cli) printf '// cli\\n' > \"$destination/dist/src/main.js\";; *) printf '{\"schemaVersion\":0}' > \"$destination/umiro.plugin.json\";; esac\n");
   await chmod(join(bin, "git"), 0o700); await chmod(join(bin, "pnpm"), 0o700);
-  const environment = (revision: string) => ({ ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, UMIRO_HOME: home, UMIRO_SOURCE_DIR: source, UMIRO_NO_SYSTEMD: "1", UMIRO_GATEWAY_ENTRY: fixture, FAKE_REVISION: revision });
+  const environment = (revision: string) => ({ ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, TZ: "Europe/London", UMIRO_HOME: home, UMIRO_SOURCE_DIR: source, UMIRO_NO_SYSTEMD: "1", UMIRO_GATEWAY_ENTRY: fixture, FAKE_REVISION: revision });
   try {
     await exec(process.execPath, [cli, "install"], { env: environment("rev1") });
     const first = await readlink(join(home, "app", "current")); assert.match(first, /rev1/);
+    const installedPlugins = JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")) as Array<{ source: string; config: Record<string, unknown> }>;
+    assert.equal(installedPlugins.find(plugin => plugin.source === "builtin:scheduler")?.config.timezone, "Europe/London");
     for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) await access(join(home, "workspace", name));
     for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) await access(join(home, "workspace", "memory", name));
 
-    const imported = join(root, "input.env"); await writeFile(imported, "DISCORD_TOKEN=test\nLLM_BASE_URL=http://127.0.0.1:1/v1\nLLM_API_KEY=test\nUMIRO_OWNER_DISCORD_ID=owner\n");
+    const imported = join(root, "input.env"); await writeFile(imported, "DISCORD_TOKEN=test\nLLM_BASE_URL=http://127.0.0.1:1/v1\nLLM_API_KEY=test\nLLM_MODEL=test-model\nUMIRO_OWNER_DISCORD_ID=owner\n");
     await exec(process.execPath, [cli, "configure", "--from-env", imported], { env: environment("rev1") });
     assert.match(await readFile(join(home, "config", "secrets.env"), "utf8"), /UMIRO_WEB_UI_TOKEN=/);
+    assert.equal(JSON.parse(await readFile(join(home, "config", "umiro.json"), "utf8")).model, "test-model");
 
     await exec(process.execPath, [cli, "start"], { env: environment("rev1") });
     assert.match((await exec(process.execPath, [cli, "status"], { env: environment("rev1") })).stdout, /\(ready\)/);

@@ -48,6 +48,8 @@ pnpm umo install
 export PATH="$HOME/.umiro/bin:$PATH"
 ```
 
+No `UMIRO_HOME` setting is needed for a normal installation; these commands install into the current user's `~/.umiro`.
+
 Provide credentials and start the daemon:
 
 ```bash
@@ -82,10 +84,12 @@ Everything lives under one installation root, `~/.umiro/` by default (`UMIRO_HOM
 ```dotenv
 DISCORD_TOKEN=
 UMIRO_OWNER_DISCORD_ID=
-LLM_BASE_URL=http://localhost:8317/v1
+LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=
 ```
+
+Set `LLM_BASE_URL` to your OpenAI-compatible endpoint and `LLM_MODEL` to a model that endpoint provides. Both are required by `umo configure`.
 
 ### Workspace
 
