@@ -24,13 +24,13 @@ test("Child Run persists and enforces all requested budget fields", async () => 
   let outputLimit: number | undefined; let selectedModel: string | undefined; let modelCalls = 0;
   const port: ModelPort = { async generate(request) { modelCalls += 1; outputLimit = request.maxOutputTokens; selectedModel = request.model; return { text: "done", toolCalls: [], finishReason: "stop", usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "done" } }; } };
   const engine = new HeadlessRunEngine(port, new ToolRegistry(), store);
-  const service = new ChildRunService(engine, store, { now: () => at, createId: ids(), resolveModel: selection => selection === "fast" ? "gemma4:31b" : selection });
+  const service = new ChildRunService(engine, store, { now: () => at, createId: ids(), resolveModel: selection => selection === "fast" ? "test-model-fast" : selection });
   const budgetCeiling = { maxModelTurns: 2, maxToolCalls: 3, maxInputTokens: 8, maxOutputTokens: 7, maxDurationMs: 1_000 };
   try {
     const result = await service.execute({ parentRunId: "root", idempotencyKey: "request-1", task, authorityScope: { capabilities: ["filesystem.read", "subagent.delegate"] }, model: "fast", prompt: "work", budgetCeiling });
     assert.equal(result.status, "succeeded");
     assert.equal(outputLimit, 7);
-    assert.equal(selectedModel, "gemma4:31b");
+    assert.equal(selectedModel, "test-model-fast");
     assert.deepEqual((await store.getDelegationByKey("root", "request-1"))?.budgetCeiling, budgetCeiling);
     assert.equal((await store.getDelegationByKey("root", "request-1"))?.state, "succeeded");
     assert.equal((await store.getRun(result.childRunId))?.context.authority.capabilities.includes("subagent.delegate"), false);

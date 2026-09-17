@@ -26,8 +26,8 @@ test("protocol routing rejects invalid values and ambiguous model assignments", 
 });
 
 test("delegated model profiles resolve default and named profiles to concrete model IDs", () => {
-  const profiles = { fast: { model: "gemma4:31b" } };
+  const profiles = { fast: { model: "test-model-fast" } };
   assert.equal(resolveDelegatedModel("default", "gemma4:latest", profiles), "gemma4:latest");
-  assert.equal(resolveDelegatedModel("fast", "gemma4:latest", profiles), "gemma4:31b");
+  assert.equal(resolveDelegatedModel("fast", "test-model-default", profiles), "test-model-fast");
   assert.equal(resolveDelegatedModel("explicit-model", "gemma4:latest", profiles), "explicit-model");
 });

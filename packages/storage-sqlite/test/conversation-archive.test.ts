@@ -36,7 +36,7 @@ test("conversation message pages preserve sequence, observations, replies, and b
   const run = (id: string, turnId: string): Run => ({ id, revision: 0, state: "queued", context: context("thread-conversation"), conversationId: "thread-conversation", turnId, resumeEligibility: "not_applicable", createdAt: "2026-09-09T00:01:00.000Z", updatedAt: "2026-09-09T00:01:00.000Z" });
   const step = (id: string, runId: string): Step => ({ id, runId, revision: 0, sequence: 0, kind: "model_call", state: "pending", createdAt: "2026-09-09T00:01:00.000Z", updatedAt: "2026-09-09T00:01:00.000Z" });
   try {
-    await store.findOrCreate({ transport: "discord", externalId: "owner-user", principalId: "owner", displayName: "iiimabbie" }, "2026-09-09T00:00:00.000Z");
+    await store.findOrCreate({ transport: "discord", externalId: "owner-user", principalId: "owner", displayName: "Test Owner" }, "2026-09-09T00:00:00.000Z");
     const threadEvent = (id: string, text: string, user = "owner-user") => ({ ...event(id), identity: { transport: "discord", externalId: user, principalId: null }, conversation: { transport: "discord", externalId: "thread-1", kind: "thread" as const }, content: [{ type: "text" as const, text }] });
     await store.ingestInputEvent({ event: threadEvent("trigger", "幫我看一下這個"), actorPrincipalId: "owner", newConversationId: "thread-conversation", newTurnId: "trigger-turn", newRunId: "success-run", createdAt: "2026-09-09T00:01:00.000Z", initialTurns: [{ id: "starter-turn", actorPrincipalId: "starter", inputEventId: "starter-event", content: [{ type: "text", text: "[System] This is the initial message\n首樓" }], createdAt: "2026-09-09T00:00:00.000Z" }] });
     await store.createRunWithStep(run("success-run", "trigger-turn"), step("success-step", "success-run"));
@@ -55,7 +55,7 @@ test("conversation message pages preserve sequence, observations, replies, and b
     assert.deepEqual(first?.messages.map(item => item.turn.sequence), [0, 1]);
     assert.equal(first?.hasMore, true);
     assert.deepEqual(first?.messages[1]?.reply, { runId: "success-run", state: "succeeded", at: "2026-09-09T00:01:02.000Z", text: "好，我看了", usage: { inputTokens: 9, outputTokens: 2, reasoningTokens: 0 } });
-    assert.equal(first?.messages[1]?.actorDisplayName, "iiimabbie");
+    assert.equal(first?.messages[1]?.actorDisplayName, "Test Owner");
     const second = await store.listConversationMessages("thread-conversation", 2, 1);
     assert.deepEqual(second?.messages.map(item => item.turn.sequence), [2, 3]);
     assert.equal(second?.hasMore, false);

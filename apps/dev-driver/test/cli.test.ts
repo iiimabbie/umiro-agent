@@ -14,15 +14,15 @@ const response: ModelResponse = {
 
 test("parses model, protocol, and a multi-word prompt", () => {
   assert.deepEqual(
-    parseCliArgs(["--model", "gemma4:31b", "--protocol=openai_responses", "hello", "world"]),
-    { model: "gemma4:31b", protocol: "openai_responses", prompt: "hello world" },
+    parseCliArgs(["--model", "test-model", "--protocol=openai_responses", "hello", "world"]),
+    { model: "test-model", protocol: "openai_responses", prompt: "hello world" },
   );
 });
 
 test("accepts pnpm's forwarded option separator", () => {
   assert.deepEqual(
-    parseCliArgs(["--", "--model", "gemma4:31b", "ping"]),
-    { model: "gemma4:31b", prompt: "ping" },
+    parseCliArgs(["--", "--model", "test-model", "ping"]),
+    { model: "test-model", prompt: "ping" },
   );
 });
 
@@ -40,7 +40,7 @@ test("sends stdin to the selected model and keeps response text on stdout", asyn
     },
   };
 
-  await runCli(["--model=gemma4:31b"], {
+  await runCli(["--model=test-model"], {
     env: { LLM_BASE_URL: "https://example.invalid/v1", LLM_API_KEY: "secret" },
     stdinIsTTY: false,
     readStdin: async () => "ping\n",
@@ -51,10 +51,10 @@ test("sends stdin to the selected model and keeps response text on stdout", asyn
     createStore: () => new SQLiteExecutionStore(":memory:"),
   });
 
-  assert.equal(requestModel, "gemma4:31b");
+  assert.equal(requestModel, "test-model");
   assert.equal(requestText, "ping");
   assert.equal(stdout, "pong\n");
-  assert.match(stderr, /model: gemma4:31b/);
+  assert.match(stderr, /model: test-model/);
   assert.doesNotMatch(stderr, /secret/);
 });
 
@@ -66,7 +66,7 @@ test("discovers a default model when none is configured", async () => {
     readStdin: async () => "",
     writeStdout: () => undefined,
     writeStderr: () => undefined,
-    listModels: async () => ["gemma4:31b"],
+    listModels: async () => ["test-model"],
     createModel: () => ({
       async generate(request) {
         selectedModel = request.model;
@@ -75,5 +75,5 @@ test("discovers a default model when none is configured", async () => {
     }),
     createStore: () => new SQLiteExecutionStore(":memory:"),
   });
-  assert.equal(selectedModel, "gemma4:31b");
+  assert.equal(selectedModel, "test-model");
 });
