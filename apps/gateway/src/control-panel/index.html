@@ -16,6 +16,8 @@
 
   <nav>
     <a href="#status" data-page="status">狀態</a>
+    <a href="#runs" data-page="runs">Runs</a>
+    <a href="#usage" data-page="usage">Usage／Logs</a>
     <a href="#channels" data-page="channels">Discord 頻道</a>
     <a href="#archived" data-page="archived">封存</a>
     <a href="#schedules" data-page="schedules">排程</a>
@@ -35,10 +37,21 @@
     <div id="secretForm" class="secret-form"></div>
     <button id="saveSecrets">儲存 Secrets</button>
 
-    <h3>Runs（除錯）</h3>
+  </section>
+
+  <section id="page-runs" class="page">
+    <h2>Runs</h2>
     <button id="refreshRuns">重新整理</button>
     <div id="runs"></div>
     <pre id="runDetail"></pre>
+  </section>
+
+  <section id="page-usage" class="page">
+    <h2>Usage／Logs</h2>
+    <button id="refreshUsage">重新整理 Usage</button>
+    <button id="refreshLogs">重新整理 Logs</button>
+    <pre id="usage"></pre>
+    <pre id="logs"></pre>
   </section>
 
   <section id="page-channels" class="page">

@@ -305,10 +305,6 @@ const headers = () => ({
   'content-type': 'application/json',
 });
 
-const diagnostics = document.createElement('section');
-diagnostics.innerHTML = '<h2>Usage／Logs</h2><button id="refreshUsage">重新整理 Usage</button><button id="refreshLogs">重新整理 Logs</button><pre id="usage"></pre><pre id="logs"></pre>';
-$('page-status').appendChild(diagnostics);
-
 const baseUrl = new URL('.',location.href);
 
 async function api(path, options = {}) {
@@ -397,10 +393,16 @@ async function channels() {
 }
 
 async function selectChannel(channelId, element) {
+  const target = $('channelConversation');
+  if (selectedChannelId === channelId) {
+    selectedChannelId = undefined;
+    element.classList.remove('active');
+    target.replaceChildren();
+    return;
+  }
   selectedChannelId = channelId;
   for (const el of document.querySelectorAll('#channels .channel.active')) el.classList.remove('active');
   element.classList.add('active');
-  const target = $('channelConversation');
   target.replaceChildren();
   const items = await api('/api/conversations?scope=' + encodeURIComponent('discord:' + channelId) + '&state=active');
   if (items.length === 0) {
@@ -520,12 +522,9 @@ async function renderConversation(container, summary) {
 
   const header = document.createElement('div');
   header.className = 'chat-header';
-  const title = document.createElement('span');
-  const location = (summary.scope.parentName ? summary.scope.parentName + ' / ' : '') + '#' + (summary.scope.name || summary.scope.externalId);
-  title.textContent = summary.scope.guildName ? summary.scope.guildName + ' · ' + location : location;
   const meta = document.createElement('small');
   meta.textContent = summary.turnCount + ' 則 · 開始於 ' + new Date(summary.createdAt).toLocaleString();
-  header.append(title, meta);
+  header.append(meta);
 
   const chat = document.createElement('div');
   chat.className = 'chat';
@@ -570,6 +569,11 @@ async function archived() {
     line3.textContent = new Date(x.createdAt).toLocaleString() + ' → ' + new Date(x.lastActivityAt).toLocaleString() + ' · ' + x.turnCount + ' 則';
     d.append(line1, line2, line3);
     d.onclick = () => {
+      if (d.classList.contains('active')) {
+        d.classList.remove('active');
+        $('archivedConversation').replaceChildren();
+        return;
+      }
       for (const el of document.querySelectorAll('#archivedList .archived-item.active')) el.classList.remove('active');
       d.classList.add('active');
       renderConversation($('archivedConversation'), x).catch(reportError);
@@ -813,7 +817,7 @@ async function connect() {
     return b;
   }));
   await channels();
-  await Promise.all([plugins(), usage(), logs()]);
+  await plugins();
   clearInterval(channelRefreshTimer);
   channelRefreshTimer = setInterval(() => channels().catch(() => {}), 60000);
   $('state').textContent = '已連線';
@@ -917,7 +921,7 @@ updateScheduleControls();
 
 const pages = [...document.querySelectorAll('.page')];
 const navLinks = [...document.querySelectorAll('nav a')];
-const pageLoaders = { channels, archived, schedules, plugins };
+const pageLoaders = { channels, archived, schedules, plugins, runs, usage: async () => { await Promise.all([usage(), logs()]); } };
 
 function currentPageName() {
   const hash = (location.hash || '#status').slice(1);
