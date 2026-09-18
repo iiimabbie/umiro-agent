@@ -1,4 +1,5 @@
 import type { ModelPort, ModelRequest, ModelResponse } from "@umiro/core";
+import type { OpenAIConnectionConfig } from "@umiro/model-openai";
 
 export type OpenAIProtocol = "openai_responses" | "openai_chat_completions";
 
@@ -19,6 +20,11 @@ export class OpenAIProtocolRouter implements ModelPort {
   configure(protocolsByModel: ReadonlyMap<string, OpenAIProtocol>, defaultProtocol: OpenAIProtocol): void {
     this.protocolsByModel = protocolsByModel;
     this.defaultProtocol = defaultProtocol;
+  }
+
+  configureConnection(config: OpenAIConnectionConfig): void {
+    (this.responses as unknown as { configure?: (value: OpenAIConnectionConfig) => void }).configure?.(config);
+    (this.chatCompletions as unknown as { configure?: (value: OpenAIConnectionConfig) => void }).configure?.(config);
   }
 
   generate(request: ModelRequest): Promise<ModelResponse> {

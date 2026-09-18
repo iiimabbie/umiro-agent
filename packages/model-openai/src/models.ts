@@ -21,13 +21,15 @@ export function parseModelIds(payload: unknown): string[] {
 }
 
 export class OpenAIModelCatalog {
-  private cached?: { readonly expiresAt: number; readonly models: readonly string[] };
+  private cached: { readonly expiresAt: number; readonly models: readonly string[] } | undefined;
   private inFlight: Promise<readonly string[]> | undefined;
 
   constructor(
-    private readonly config: OpenAIConnectionConfig,
+    private config: OpenAIConnectionConfig,
     private readonly cacheTtlMs = DEFAULT_CACHE_TTL_MS,
   ) {}
+
+  configure(config: OpenAIConnectionConfig): void { this.config = config; this.cached = undefined; }
 
   async list(signal?: AbortSignal): Promise<readonly string[]> {
     if (this.cached && this.cached.expiresAt > Date.now()) return this.cached.models;

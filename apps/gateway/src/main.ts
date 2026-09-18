@@ -140,12 +140,20 @@ const activeRuns = new Map<string, { readonly controller: AbortController; reado
 const activeSessions = new Map<string, { readonly runId: string; readonly gate: SteerGate }>();
 const activeWork = new ActiveWorkTracker();
 
-const configuredBaseUrl = process.env.LLM_BASE_URL?.trim();
-const baseUrl = modelEndpoint(configuredBaseUrl);
-const apiKey = process.env.LLM_API_KEY?.trim();
-const modelConnection = { baseUrl, auth: apiKey ? "bearer" as const : "none" as const, ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 };
+let configuredBaseUrl = process.env.LLM_BASE_URL?.trim();
+let baseUrl = modelEndpoint(configuredBaseUrl);
+let apiKey = process.env.LLM_API_KEY?.trim();
+let modelConnection = { baseUrl, auth: apiKey ? "bearer" as const : "none" as const, ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 };
 const modelPort = new OpenAIProtocolRouter(new OpenAIResponsesModel(modelConnection), new OpenAIChatCompletionsModel(modelConnection), modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
 const modelCatalog = new OpenAIModelCatalog(modelConnection);
+const refreshModelConnection = (): void => {
+  configuredBaseUrl = process.env.LLM_BASE_URL?.trim();
+  baseUrl = modelEndpoint(configuredBaseUrl);
+  apiKey = process.env.LLM_API_KEY?.trim();
+  modelConnection = { baseUrl, auth: apiKey ? "bearer" as const : "none" as const, ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 };
+  modelPort.configureConnection(modelConnection);
+  modelCatalog.configure(modelConnection);
+};
 tools.register({
   name: "tool_catalog",
   description: "List registered tools and whether the current Principal has their declared capability.",
@@ -406,6 +414,10 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   for (const [name, value] of Object.entries(values)) process.env[name] = value;
   const applied: string[] = [];
   const restartRequired: string[] = [];
+  if (values.LLM_BASE_URL !== undefined || values.LLM_API_KEY !== undefined) {
+    refreshModelConnection();
+    applied.push(...Object.keys(values).filter(name => name === "LLM_BASE_URL" || name === "LLM_API_KEY"));
+  }
   if (values.UMIRO_OWNER_DISCORD_ID !== undefined) {
     ownerDiscordId = values.UMIRO_OWNER_DISCORD_ID;
     identities.setOwnerDiscordId(ownerDiscordId);
@@ -416,7 +428,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     else if (await connectDiscordFromSecrets()) applied.push(...Object.keys(values).filter(name => name === "DISCORD_TOKEN" || name === "UMIRO_OWNER_DISCORD_ID"));
     else if (values.DISCORD_TOKEN !== undefined) restartRequired.push("DISCORD_TOKEN");
   }
-  for (const name of Object.keys(values)) if (name !== "DISCORD_TOKEN" && name !== "UMIRO_OWNER_DISCORD_ID") restartRequired.push(name);
+  for (const name of Object.keys(values)) if (!["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "LLM_BASE_URL", "LLM_API_KEY"].includes(name)) restartRequired.push(name);
   refreshConfigurationRequirements();
   return { applied: [...new Set(applied)], restartRequired: [...new Set(restartRequired)] };
 }, models: async () => configuredBaseUrl ? modelCatalog.listConversationModels() : [], applyConfig: async raw => {
@@ -427,7 +439,9 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   const restartIfChanged = (path: string, before: unknown, after: unknown): void => { if (changed(before, after)) restartRequired.push(path); };
 
   restartIfChanged("skills", config.skills, next.skills);
-  restartIfChanged("embedding.provider", embeddingRuntimeIdentity(config.embedding), embeddingRuntimeIdentity(next.embedding));
+  if (changed(embeddingRuntimeIdentity(config.embedding), embeddingRuntimeIdentity(next.embedding))) {
+    restartRequired.push("embedding.provider", "embedding.model", "embedding.requestsPerMinute");
+  }
   restartIfChanged("authority", config.authority, next.authority);
   restartIfChanged("plugins", config.plugins, next.plugins);
   restartIfChanged("webUi", config.webUi, next.webUi);
@@ -436,13 +450,17 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   const nextCapabilities = [...new Set([...nextModels.defaultProfile.capabilities, ...Object.values(nextModels.profiles).flatMap(profile => profile.capabilities)])];
   const unsupportedHostedCapability = nextCapabilities.some(capability => capability.startsWith("hosted_") && !startupHostedCapabilities.has(capability));
   const modelsChanged = changed({ defaultProtocol, defaultModelProfile, configuredProfiles }, { defaultProtocol: nextModels.defaultProtocol, defaultModelProfile: nextModels.defaultProfile, configuredProfiles: nextModels.profiles });
-  if (modelsChanged && unsupportedHostedCapability) restartRequired.push("model", "protocol", "profiles", "modelCapabilities");
-  else if (modelsChanged) {
+  const capabilitiesChanged = changed(
+    { default: defaultModelProfile.capabilities, profiles: Object.fromEntries(Object.entries(configuredProfiles).map(([id, profile]) => [id, profile.capabilities])) },
+    { default: nextModels.defaultProfile.capabilities, profiles: Object.fromEntries(Object.entries(nextModels.profiles).map(([id, profile]) => [id, profile.capabilities])) },
+  );
+  if (capabilitiesChanged) restartRequired.push("modelCapabilities");
+  if (modelsChanged && !capabilitiesChanged && !unsupportedHostedCapability) {
     defaultProtocol = nextModels.defaultProtocol;
     defaultModelProfile = nextModels.defaultProfile;
     configuredProfiles = nextModels.profiles;
     modelPort.configure(modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
-    applied.push("model", "protocol", "profiles", "modelCapabilities");
+    applied.push("model", "protocol", "profiles");
     refreshConfigurationRequirements();
   }
 

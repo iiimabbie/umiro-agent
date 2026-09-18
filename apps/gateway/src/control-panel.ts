@@ -48,7 +48,7 @@ export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", defaultValue: null, risk: "模型必須存在於目前 API；錯誤值會使 Run 失敗。", restartRequired: false },
   protocol: { label: "模型 API protocol", description: "主要模型使用 OpenAI Responses 或 Chat Completions adapter。", defaultValue: "openai_responses", risk: "hosted web search／生圖只能搭配 Responses；同一 model ID 不可由不同 profile 指向不同 protocol。", restartRequired: false },
   profiles: { label: "模型 profiles", description: "依 profile ID 定義模型、能力與預設 reasoning；Discord session 的模型選擇會解析這些 profile。", defaultValue: {}, risk: "模型 profile 設定錯誤會使指定的 session 或 Run 失敗。", restartRequired: false },
-  modelCapabilities: { label: "模型能力", description: "模型明確支援的能力清單，例如 vision、function_tools、hosted_web_search。", defaultValue: [], risk: "未宣告會 fail closed，模型無法使用未列出的能力。", restartRequired: false },
+  modelCapabilities: { label: "模型能力", description: "模型明確支援的能力清單，例如 vision、function_tools、hosted_web_search。", defaultValue: [], risk: "未宣告會 fail closed，模型無法使用未列出的能力。", restartRequired: true },
   contextMaxTokens: { label: "Context token 上限", description: "固定文件、人物、記憶與對話歷史合計可使用的估算 token 上限。", defaultValue: 24000, risk: "過高會增加延遲與費用，過低可能放不下必要 context。", restartRequired: false },
   skills: { label: "Workspace skills", description: "啟用 workspace/skills/<name>/SKILL.md 的技能摘要；技能正文仍由模型按需讀取。", defaultValue: [], risk: "技能檔是使用者提供的內容，會影響模型的工作流程；只啟用信任的目錄。", restartRequired: true },
   pricing: { label: "模型價格", description: "依 model ID 設定 inputUsdPerMillion／outputUsdPerMillion；未設定的模型不猜測成本。", defaultValue: {}, risk: "只影響估算；錯誤價格會造成控制台成本顯示不準。", restartRequired: false },

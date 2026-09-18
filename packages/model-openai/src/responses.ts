@@ -146,7 +146,9 @@ function assertResponsesPayload(raw: ResponsesPayload, label: string): void {
 }
 
 export class OpenAIResponsesModel implements ModelPort {
-  constructor(private readonly config: OpenAIConnectionConfig) {}
+  constructor(private config: OpenAIConnectionConfig) {}
+
+  configure(config: OpenAIConnectionConfig): void { this.config = config; }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const raw = request.onTextDelta ? await streamedResponses(request, this.config) : await postOpenAIJson<ResponsesPayload>({

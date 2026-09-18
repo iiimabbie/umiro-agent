@@ -86,7 +86,9 @@ export function buildOpenAIChatBody(request: ModelRequest, config: Pick<OpenAICh
 }
 
 export class OpenAIChatCompletionsModel implements ModelPort {
-  constructor(private readonly config: OpenAIChatConfig) {}
+  constructor(private config: OpenAIChatConfig) {}
+
+  configure(config: OpenAIChatConfig): void { this.config = config; }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const raw = await postOpenAIJson<ChatCompletionResponse>({
