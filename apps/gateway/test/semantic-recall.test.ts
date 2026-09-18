@@ -38,6 +38,15 @@ test("automatic recall logs a redacted dependency failure and returns no optiona
   assert.doesNotMatch(JSON.stringify(records), /api-key|must not leak|上次怎麼決定/);
 });
 
+test("automatic recall yields when interactive embedding exceeds its latency budget", async () => {
+  const provider = new SemanticRecallProvider({
+    async prepareEmbeddingModel() {}, async claimEmbeddingJobs() { return []; }, async completeEmbeddingJob() {}, async failEmbeddingJob() {}, async rebuildEmbeddingProjection() {}, async semanticSearch() { return []; },
+  }, { model: "slow", embed: (_text, signal) => new Promise<readonly number[]>((_resolve, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true })) }, undefined, undefined, { timeoutMs: 10 });
+  const started = Date.now();
+  assert.deepEqual(await provider.load(request()), []);
+  assert.ok(Date.now() - started < 250);
+});
+
 test("automatic recall does not swallow caller cancellation", async () => {
   const controller = new AbortController();
   controller.abort(new Error("caller cancelled"));

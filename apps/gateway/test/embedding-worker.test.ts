@@ -56,6 +56,20 @@ test("embedding failures are observable, redacted, and safely degrade to FTS", a
   store.close();
 });
 
+test("interactive hybrid search does not wait indefinitely for semantic embedding", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.createConversationWithTurn(
+    { id: "c", revision: 0, state: "active", createdAt: "now", updatedAt: "now" },
+    { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "p", inputEventId: "e", content: [{ type: "text", text: "fast lexical evidence" }], createdAt: "now" },
+  );
+  const embedder = { model: "slow", embed: (_text: string, signal?: AbortSignal) => new Promise<readonly number[]>((_resolve, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true })) };
+  const started = Date.now();
+  const hits = await new HybridConversationSearch(store, embedder, undefined, 10).search("lexical", 5, { kind: "all" });
+  assert.equal(hits[0]?.turnId, "t");
+  assert.ok(Date.now() - started < 250);
+  store.close();
+});
+
 test("a superseded projection job does not abort the embedding worker", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   await store.createConversationWithTurn(

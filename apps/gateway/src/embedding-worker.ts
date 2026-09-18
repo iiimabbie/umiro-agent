@@ -105,6 +105,7 @@ export class RateLimitedTextEmbedder implements TextEmbedder {
 }
 
 type Fetcher = typeof fetch;
+const INTERACTIVE_EMBEDDING_TIMEOUT_MS = 2_000;
 
 function report(logger: StructuredLogger, record: Parameters<StructuredLogger["write"]>[0]): void {
   try { logger.write(record); } catch { /* Observability must not alter execution behavior. */ }
@@ -220,12 +221,12 @@ export class EmbeddingWorker {
 }
 
 export class HybridConversationSearch implements ConversationSearch {
-  constructor(private readonly store: ConversationSearch & EmbeddingProjection, private readonly embedder?: TextEmbedder, private readonly logger: StructuredLogger = NOOP_LOGGER) {}
+  constructor(private readonly store: ConversationSearch & EmbeddingProjection, private readonly embedder?: TextEmbedder, private readonly logger: StructuredLogger = NOOP_LOGGER, private readonly interactiveTimeoutMs = INTERACTIVE_EMBEDDING_TIMEOUT_MS) {}
   async search(query: string, limit: number, visibility: VisibilityScope): Promise<readonly SearchHit[]> {
     const lexical = await this.store.search(query, limit, visibility);
     if (!this.embedder) return lexical;
     let semantic: readonly SearchHit[] = [];
-    try { semantic = await this.store.semanticSearch(await this.embedder.embed(query), this.embedder.model, limit, visibility); }
+    try { semantic = await this.store.semanticSearch(await this.embedder.embed(query, AbortSignal.timeout(this.interactiveTimeoutMs)), this.embedder.model, limit, visibility); }
     catch (error) {
       report(this.logger, { level: "warn", event: "embedding.search.degraded", message: "Semantic search failed; returning full-text results", occurredAt: new Date().toISOString(), data: { model: this.embedder.model, errorName: errorName(error) } });
       return lexical;

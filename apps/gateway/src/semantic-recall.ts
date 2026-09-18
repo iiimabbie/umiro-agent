@@ -7,12 +7,14 @@ export class SemanticRecallProvider implements ContextProvider {
   readonly id = "context.semantic_recall";
   readonly role = "recalled-memories";
   readonly priority = 800;
-  constructor(private readonly search: EmbeddingProjection, private readonly embedder: TextEmbedder, private readonly now = () => new Date(), private readonly logger: StructuredLogger = NOOP_LOGGER, private options: { readonly limit?: number; readonly minSimilarity?: number } = {}) {}
-  configure(options: { readonly limit?: number; readonly minSimilarity?: number }): void { this.options = options; }
+  constructor(private readonly search: EmbeddingProjection, private readonly embedder: TextEmbedder, private readonly now = () => new Date(), private readonly logger: StructuredLogger = NOOP_LOGGER, private options: { readonly limit?: number; readonly minSimilarity?: number; readonly timeoutMs?: number } = {}) {}
+  configure(options: { readonly limit?: number; readonly minSimilarity?: number }): void { this.options = { ...this.options, ...options }; }
   async load(request: Parameters<ContextProvider["load"]>[0]) {
     const query = request.prompt.trim(); if (!query) return [];
     try {
-      const vector = await this.embedder.embed(query, request.signal);
+      const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 2_000);
+      const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+      const vector = await this.embedder.embed(query, signal);
       const currentConversation = request.execution.origin.kind === "interactive" ? request.execution.origin.conversationId : undefined;
       // The current conversation is excluded. Do not impose an age cutoff here:
       // `/new` intentionally starts a new conversation, and a cutoff would
