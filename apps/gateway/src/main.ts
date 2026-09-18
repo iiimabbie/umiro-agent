@@ -531,20 +531,20 @@ const handleCommand = async (name: string, input: Record<string, string | number
     const reminders = schedules.filter(item => item.enabled && item.jobRef === "agent.prompt" && item.schedule.kind === "once").length;
     const pluginJobs = schedules.filter(item => item.enabled && item.jobRef.startsWith("plugin:")).length;
     const runState = active ? `執行中（${active.runId}）` : "閒置";
-    return { content: [
-      `ümiro ${release}`,
-      `Discord: ${discord.identity()?.tag ?? "未連線"}`,
-      `模型: ${profile.model}（reasoning: ${profile.reasoningEffort}）`,
-      `訊息模式: ${profile.queueMode}`,
-      `目前 Run: ${runState}`,
-      `Tokens: ${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out（${usage.calls} calls）`,
-      `Active Sessions: ${activeSessions.size}`,
-      `Cron: ${activeSchedules} active / ${schedules.filter(item => item.jobRef === "agent.prompt" && item.schedule.kind === "cron").length} total`,
-      `Reminders: ${reminders} pending`,
-      `Plugin Jobs: ${pluginJobs} scheduled`,
-      `Plugins: ${plugins.length ? plugins.map(item => `${item.id} (${item.state})`).join(", ") : "none"}`,
-      `Skills: ${config.skills?.length ? config.skills.join(", ") : "none"}`,
-    ].join("\\n") };
+    const fields = [
+      { name: "Model", value: `\`${profile.model}\``, inline: true },
+      { name: "Reasoning", value: `\`${profile.reasoningEffort}\``, inline: true },
+      { name: "Queue Mode", value: `\`${profile.queueMode}\``, inline: true },
+      { name: "Current Run", value: runState, inline: true },
+      { name: "Tokens", value: `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out（${usage.calls} calls）`, inline: false },
+      { name: "Active Sessions", value: `${activeSessions.size}`, inline: true },
+      { name: "Crons", value: `${activeSchedules} active / ${schedules.filter(item => item.jobRef === "agent.prompt" && item.schedule.kind === "cron").length} total`, inline: true },
+      { name: "Reminders", value: `${reminders} pending`, inline: true },
+      { name: "Plugin Jobs", value: `${pluginJobs} scheduled`, inline: true },
+      { name: "Plugins", value: plugins.length ? plugins.map(item => `${item.id} (${item.state})`).join(", ") : "none", inline: false },
+      { name: "Skills", value: config.skills?.length ? config.skills.join(", ") : "none", inline: false },
+    ];
+    return { content: `ümiro ${release} · ${discord.identity()?.tag ?? "未連線"}`, embed: { title: "Umiro Status", color: 0x5865f2, fields, timestamp: new Date().toISOString() } };
   }
   if (name === "restart") {
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
