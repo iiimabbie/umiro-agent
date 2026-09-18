@@ -50,14 +50,23 @@ export PATH="$HOME/.umiro/bin:$PATH"
 
 一般安裝不需要設定 `UMIRO_HOME`；以上指令會安裝到目前使用者自己的 `~/.umiro`。
 
-填入憑證並啟動：
+啟動 daemon，再開啟本機設定介面：
+
+```bash
+umo start
+umo web token
+umo status
+```
+
+`umo start` 會印出 Web UI 位址（預設為 `http://127.0.0.1:3210`）。在模型端點、模型、Discord token 與 Owner ID 設定完成前，gateway 會維持在設定模式。使用 `umo web token` 印出的 token 登入。
+
+自動化或無頭環境仍可在啟動前匯入憑證：
 
 ```bash
 cp .env.example .env
 $EDITOR .env
 umo configure --from-env .env
 umo start
-umo status
 ```
 
 第一次接觸時，agent 會帶 Owner 走一段簡短的設定：名字、語氣、怎麼稱呼你。`SOUL.md` 與 `OWNER.md` 填好後，設定流程會自行移除。
@@ -89,7 +98,7 @@ LLM_API_KEY=
 LLM_MODEL=
 ```
 
-請將 `LLM_BASE_URL` 設為你的 OpenAI 相容端點，並將 `LLM_MODEL` 設為該端點提供的模型；`umo configure` 會要求兩者都有值。
+請將 `LLM_BASE_URL` 設為你的 OpenAI 相容端點，並將 `LLM_MODEL` 設為該端點提供的模型；使用 `umo configure` 匯入時會要求兩者都有值，也可以啟動後從 Web UI 完成設定。
 
 ### Workspace
 

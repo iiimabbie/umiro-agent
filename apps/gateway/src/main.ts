@@ -29,6 +29,7 @@ import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextP
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 import { importDiscordAttachments } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
+import { configurationRequirements, modelEndpoint } from "./setup-mode.js";
 import { describeImageArtifacts } from "./image-description.js";
 import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
@@ -131,8 +132,8 @@ const activeRuns = new Map<string, { readonly controller: AbortController; reado
 const activeSessions = new Map<string, { readonly runId: string; readonly gate: SteerGate }>();
 const activeWork = new ActiveWorkTracker();
 
-const baseUrl = process.env.LLM_BASE_URL?.trim();
-if (!baseUrl) throw new Error("LLM_BASE_URL is required");
+const configuredBaseUrl = process.env.LLM_BASE_URL?.trim();
+const baseUrl = modelEndpoint(configuredBaseUrl);
 const apiKey = process.env.LLM_API_KEY?.trim();
 const modelConnection = { baseUrl, auth: apiKey ? "bearer" as const : "none" as const, ...(apiKey ? { apiKey } : {}), timeoutMs: 120_000 };
 const modelPort = new OpenAIProtocolRouter(new OpenAIResponsesModel(modelConnection), new OpenAIChatCompletionsModel(modelConnection), modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
@@ -185,6 +186,17 @@ await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
 await scheduler.recover();
 readiness.storage = true;
 let ownerDiscordId = process.env.UMIRO_OWNER_DISCORD_ID?.trim() ?? "";
+let discordConnectionFailed = false;
+const refreshConfigurationRequirements = (): void => {
+  readiness.configurationRequired = configurationRequirements({
+    baseUrl: process.env.LLM_BASE_URL,
+    model: defaultModelProfile.model,
+    discordToken: process.env.DISCORD_TOKEN,
+    ownerDiscordId,
+    discordConnectionFailed,
+  });
+};
+refreshConfigurationRequirements();
 const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAuthority, memberAuthority });
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const sessionProfile = async (channelId: string) => {
@@ -322,7 +334,7 @@ const namedConversationScopes = async (locations: readonly ConversationLocation[
     }];
   }));
 };
-const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_API_KEY", EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])]);
+const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])]);
 const persistSecrets = async (values: Readonly<Record<string, string>>): Promise<void> => {
   const source = await readFile(paths.secrets, "utf8").catch(() => "");
   const lines = source.split(/\r?\n/);
@@ -397,8 +409,9 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     else if (values.DISCORD_TOKEN !== undefined) restartRequired.push("DISCORD_TOKEN");
   }
   for (const name of Object.keys(values)) if (name !== "DISCORD_TOKEN" && name !== "UMIRO_OWNER_DISCORD_ID") restartRequired.push(name);
+  refreshConfigurationRequirements();
   return { applied: [...new Set(applied)], restartRequired: [...new Set(restartRequired)] };
-}, models: () => modelCatalog.listConversationModels(), applyConfig: async raw => {
+}, models: async () => configuredBaseUrl ? modelCatalog.listConversationModels() : [], applyConfig: async raw => {
   const next = raw as unknown as GatewayConfig;
   const applied: string[] = [];
   const restartRequired: string[] = [];
@@ -422,6 +435,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     configuredProfiles = nextModels.profiles;
     modelPort.configure(modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
     applied.push("model", "protocol", "profiles", "modelCapabilities");
+    refreshConfigurationRequirements();
   }
 
   applyIfChanged("contextMaxTokens", contextMaxTokens, next.contextMaxTokens ?? 24_000, () => { contextMaxTokens = next.contextMaxTokens ?? 24_000; });
@@ -747,6 +761,11 @@ discord.onSteer(async message => {
 });
 discord.onMessage(message => activeWork.track(handleMessage(message)));
 await controlPanel?.start();
+if (controlPanel) {
+  const host = webUiConfig.host === "::1" ? "[::1]" : webUiConfig.host ?? "127.0.0.1";
+  console.log(`Web UI: http://${host}:${controlPanel.port() ?? webUiConfig.port ?? 3210}`);
+  console.log("Access token: run `umo web token`");
+}
 scheduler.start();
 readiness.scheduler = true;
 const writeReadinessEvidence = () => writeFile(`${paths.state}/gateway.ready`, `${JSON.stringify({ pid: process.pid, startedAt: processStart, checks: readiness })}\n`, { mode: 0o600 });
@@ -754,22 +773,24 @@ connectDiscordFromSecrets = async () => {
   if (readiness.discord) return true;
   const token = process.env.DISCORD_TOKEN?.trim();
   const missing = [...(!token ? ["DISCORD_TOKEN"] : []), ...(!ownerDiscordId ? ["UMIRO_OWNER_DISCORD_ID"] : [])];
-  readiness.configurationRequired = missing;
+  refreshConfigurationRequirements();
   if (missing.length > 0) { await writeReadinessEvidence(); return false; }
   if (discordStartAttempted) return false;
   discordStartAttempted = true;
   try {
     await discord.start(token!, discordPolicy.presence);
+    discordConnectionFailed = false;
     const identity = discord.identity();
     if (identity) await completePendingRestart(pendingRestartFile, identity.tag).catch(error => logger.write({ level: "error", event: "discord.restart_completion_failed", message: "Restart completed but the Discord interaction could not be updated", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
     readiness.discord = true;
-    readiness.configurationRequired = [];
+    refreshConfigurationRequirements();
     await delivery.drain();
     await writeReadinessEvidence();
     return true;
   } catch (error) {
     readiness.discord = false;
-    readiness.configurationRequired = ["DISCORD_CONNECTION"];
+    discordConnectionFailed = true;
+    refreshConfigurationRequirements();
     logger.write({ level: "error", event: "discord.start.failed", message: "Discord could not connect; Web UI remains available for configuration", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } });
     await writeReadinessEvidence();
     return false;

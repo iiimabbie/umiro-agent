@@ -26,6 +26,8 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /path: 'model', type: 'model'/);
   assert.match(script, /input\.type = 'radio'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'url'/);
+  assert.match(script, /LLM_BASE_URL: \{ label: 'LLM Base URL'/);
+  assert.match(script, /field\.type === 'model' && models\.length === 0/);
   assert.match(script, /document\.createElement\('select'\)/);
   assert.match(script, /className = 'config-tooltip'/);
   assert.match(script, /config-restart-required/);

@@ -141,14 +141,15 @@
       <h2>設定</h2>
       <small class="config-restart-legend">此顏色的欄位名稱需重啟</small>
     </div>
-    <h3>Secrets</h3>
-    <small>已設定的值不會回傳到瀏覽器。只填入要新增或更換的欄位。</small>
-    <div id="secretForm" class="secret-form"></div>
-    <button id="saveSecrets">儲存 Secrets</button>
-
     <h3>一般設定</h3>
     <p>修改後按下儲存。滑鼠停在欄位名稱上可查看用途、預設值與風險。</p>
     <div class="config-toolbar"><input id="configSearch" type="search" placeholder="搜尋設定欄位…"><nav id="configNav" aria-label="設定分類"></nav></div>
+    <section id="config-secrets" class="config-group">
+      <h3 id="secretsHeading" tabindex="-1">Secrets</h3>
+      <small>已設定的值不會回傳到瀏覽器。只填入要新增或更換的欄位。</small>
+      <div id="secretForm" class="secret-form"></div>
+      <button id="saveSecrets">儲存 Secrets</button>
+    </section>
     <div id="configForm"></div>
     <div class="sticky-actions"><span id="configSaveState" class="save-state"></span><button id="saveConfig">儲存設定</button><button id="restartGateway" type="button" hidden>立即重啟</button></div>
   </section>

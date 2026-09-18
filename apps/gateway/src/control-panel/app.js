@@ -64,29 +64,29 @@ function markWorkspaceDirty() {
 
 const CONFIG_GROUPS = [
   { title: '模型與 Context', fields: [
-    { path: 'model', type: 'model', required: true },
     { path: 'protocol', type: 'select', options: [['openai_responses', 'OpenAI Responses'], ['openai_chat_completions', 'Chat Completions']] },
+    { path: 'model', type: 'model', required: true },
     { path: 'modelCapabilities', type: 'checks', wide: true, options: [['vision', '圖片理解'], ['function_tools', '工具呼叫'], ['hosted_web_search', 'Hosted Web Search'], ['hosted_image_generation', 'Hosted Image Generation'], ['hosted_code_execution', 'Hosted Code Execution']] },
     { path: 'contextMaxTokens', type: 'number', min: 256, max: 1000000, step: 1 },
-    { path: 'skills', type: 'list', wide: true, placeholder: '每行一個 workspace skill 名稱' },
     { path: 'profiles', type: 'json', wide: true },
     { path: 'pricing', type: 'json', wide: true },
+    { path: 'skills', type: 'list', wide: true, placeholder: '每行一個 workspace skill 名稱' },
   ] },
   { title: 'Embedding 與跨對話記憶', fields: [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
-    { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
     { path: 'embedding.baseUrl', type: 'url', wide: true, placeholder: 'https://api.example.com/v1' },
+    { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
     { path: 'embedding.recallLimit', type: 'number', min: 1, max: 20, step: 1 },
     { path: 'embedding.minSimilarity', type: 'number', min: 0, max: 1, step: 0.01 },
   ] },
   { title: 'Discord', fields: [
+    { path: 'discord.allowedGuilds', type: 'list', placeholder: '每行一個 guild ID' },
+    { path: 'discord.allowedChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
     { path: 'discord.ignoredChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
     { path: 'discord.ambientChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
-    { path: 'discord.allowedChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
-    { path: 'discord.allowedGuilds', type: 'list', placeholder: '每行一個 guild ID' },
-    { path: 'discord.respondToBots', type: 'boolean' },
     { path: 'discord.queueMode', type: 'select', options: [['queue', 'Queue：等目前工作完成'], ['steer', 'Steer：併入目前工作']] },
+    { path: 'discord.respondToBots', type: 'boolean' },
     { path: 'discord.presence.status', type: 'select', options: [['online', 'Online'], ['idle', 'Idle'], ['dnd', 'Do Not Disturb'], ['invisible', 'Invisible']] },
     { path: 'discord.presence.activity', type: 'text', placeholder: 'Bot 名稱下方顯示的文字' },
   ] },
@@ -107,8 +107,27 @@ const CONFIG_GROUPS = [
 const configFields = () => CONFIG_GROUPS.flatMap(group => group.fields);
 const fieldId = path => 'config-' + path.replace(/[^A-Za-z0-9_-]/g, '-');
 const SECRET_PRESENTATION = {
+  LLM_BASE_URL: { label: 'LLM Base URL', description: 'OpenAI-compatible API 的端點，例如 https://api.openai.com/v1。重新啟動 Gateway 後套用。' },
   UMIRO_EMBEDDING_API_KEY: { label: 'Embedding API Key', description: '供目前選擇的 Embedding provider 使用，密鑰只寫入 secrets.env。' },
 };
+const SECRET_ORDER = ['LLM_BASE_URL', 'LLM_API_KEY', 'UMIRO_EMBEDDING_API_KEY', 'DISCORD_TOKEN', 'UMIRO_OWNER_DISCORD_ID', 'UMIRO_WEB_UI_TOKEN'];
+
+function configHeaderOffset() {
+  return window.matchMedia('(max-width: 800px)').matches ? document.querySelector('.sidebar').getBoundingClientRect().height : 0;
+}
+
+function jumpToConfig(section) {
+  const heading = section?.querySelector('h3');
+  if (!heading) return;
+  heading.tabIndex = -1;
+  heading.focus({ preventScroll: true });
+  const offset = configHeaderOffset() + document.querySelector('.config-toolbar').getBoundingClientRect().height + 12;
+  window.scrollTo({ top: window.scrollY + heading.getBoundingClientRect().top - offset, behavior: 'smooth' });
+}
+
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty('--config-header-offset', configHeaderOffset() + 'px');
+}).observe(document.querySelector('.sidebar'));
 
 function getPath(value, path) {
   return path.split('.').reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, value);
@@ -150,6 +169,15 @@ function option(value, label) {
 
 function configControl(field, value, models) {
   const id = fieldId(field.path);
+  if (field.type === 'model' && models.length === 0) {
+    const input = document.createElement('input');
+    input.id = id;
+    input.type = 'text';
+    input.placeholder = '輸入 API 提供的模型 ID';
+    input.value = value === 'not-configured' ? '' : String(value ?? '');
+    input.required = true;
+    return input;
+  }
   if (field.type === 'boolean') {
     const box = document.createElement('div');
     box.className = 'radio-group';
@@ -213,9 +241,14 @@ function renderConfigForm(schema, config, models) {
   const nav = $('configNav');
   nav.replaceChildren(...CONFIG_GROUPS.map((group, index) => {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = group.title;
-    button.onclick = () => document.getElementById('config-group-' + index)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    button.onclick = () => jumpToConfig($('config-group-' + index));
     return button;
   }));
+  const secretsButton = document.createElement('button');
+  secretsButton.type = 'button';
+  secretsButton.textContent = 'Secrets';
+  secretsButton.onclick = () => jumpToConfig($('config-secrets'));
+  nav.prepend(secretsButton);
   const groups = CONFIG_GROUPS.map((group, groupIndex) => {
     const section = document.createElement('section');
     section.className = 'config-group'; section.id = 'config-group-' + groupIndex; section.dataset.configGroup = group.title;
@@ -799,7 +832,7 @@ async function connect() {
   const models = modelResult.filter(model => typeof model === 'string');
   renderConfigForm(schema, config, models);
   renderRuntime(runtime);
-  secretNames = Object.keys(secrets);
+  secretNames = [...SECRET_ORDER.filter(name => Object.hasOwn(secrets, name)), ...Object.keys(secrets).filter(name => !SECRET_ORDER.includes(name)).sort()];
   $('secretForm').replaceChildren(...secretNames.map(name => {
     const presentation = SECRET_PRESENTATION[name];
     const label = document.createElement('label');
@@ -915,6 +948,22 @@ $('mobileMenu').onclick = () => {
   const open = document.querySelector('.sidebar nav').classList.toggle('mobile-open');
   $('mobileMenu').setAttribute('aria-expanded', String(open));
 };
+function closeMobileMenu() {
+  document.querySelector('.sidebar nav').classList.remove('mobile-open');
+  $('mobileMenu').setAttribute('aria-expanded', 'false');
+}
+document.querySelector('.sidebar nav').addEventListener('click', event => {
+  if (event.target.closest('a')) closeMobileMenu();
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('.sidebar nav, #mobileMenu')) closeMobileMenu();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && $('mobileMenu').getAttribute('aria-expanded') === 'true') {
+    closeMobileMenu();
+    $('mobileMenu').focus();
+  }
+});
 $('configSearch').oninput = filterConfigFields;
 $('scheduleKind').onchange = updateScheduleControls;
 $('scheduleFrequency').onchange = updateScheduleControls;

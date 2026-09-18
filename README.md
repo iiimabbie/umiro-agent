@@ -50,14 +50,23 @@ export PATH="$HOME/.umiro/bin:$PATH"
 
 No `UMIRO_HOME` setting is needed for a normal installation; these commands install into the current user's `~/.umiro`.
 
-Provide credentials and start the daemon:
+Start the daemon and open the local setup UI:
+
+```bash
+umo start
+umo web token
+umo status
+```
+
+`umo start` prints the Web UI URL (`http://127.0.0.1:3210` by default). The gateway stays available in setup mode until the model endpoint, model, Discord token, and owner ID are configured in the UI. Use the token printed by `umo web token` to sign in.
+
+For automated or headless setup, credentials can still be imported before startup:
 
 ```bash
 cp .env.example .env
 $EDITOR .env
 umo configure --from-env .env
 umo start
-umo status
 ```
 
 On first contact the agent walks the owner through a short setup: name, voice, how to address you. The setup protocol removes itself once `SOUL.md` and `OWNER.md` are filled in.
