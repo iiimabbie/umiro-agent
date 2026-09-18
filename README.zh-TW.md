@@ -119,6 +119,8 @@ Discord 內的 slash 指令：`/new` 在本頻道開新對話（目前這段封�
 
 全文搜尋開箱即用；embedding 需自行啟用：
 
+需要驗證的 provider 請在控制台直接填寫 Embedding API Key，或在 `config/secrets.env` 設定 `UMIRO_EMBEDDING_API_KEY`。
+
 ```bash
 umo embedding configure --provider gemini --model gemini-embedding-2
 umo embedding configure --provider openai-compatible \

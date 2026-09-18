@@ -119,6 +119,8 @@ Slash commands in Discord: `/new` starts a fresh conversation in the channel (th
 
 Full-text search works out of the box. Embeddings are opt-in:
 
+Set `UMIRO_EMBEDDING_API_KEY` in `config/secrets.env` or the control panel when the provider requires authentication.
+
 ```bash
 umo embedding configure --provider gemini --model gemini-embedding-2
 umo embedding configure --provider openai-compatible \

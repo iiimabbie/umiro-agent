@@ -76,7 +76,6 @@ const CONFIG_GROUPS = [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
     { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
     { path: 'embedding.baseUrl', type: 'url', wide: true, placeholder: 'https://api.example.com/v1' },
-    { path: 'embedding.apiKeyEnv', type: 'text', placeholder: '例如 VOYAGE_API_KEY' },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
     { path: 'embedding.recallLimit', type: 'number', min: 1, max: 20, step: 1 },
     { path: 'embedding.minSimilarity', type: 'number', min: 0, max: 1, step: 0.01 },
@@ -107,6 +106,9 @@ const CONFIG_GROUPS = [
 
 const configFields = () => CONFIG_GROUPS.flatMap(group => group.fields);
 const fieldId = path => 'config-' + path.replace(/[^A-Za-z0-9_-]/g, '-');
+const SECRET_PRESENTATION = {
+  UMIRO_EMBEDDING_API_KEY: { label: 'Embedding API Key', description: '供目前選擇的 Embedding provider 使用，密鑰只寫入 secrets.env。' },
+};
 
 function getPath(value, path) {
   return path.split('.').reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, value);
@@ -789,9 +791,11 @@ async function connect() {
   renderRuntime(runtime);
   secretNames = Object.keys(secrets);
   $('secretForm').replaceChildren(...secretNames.map(name => {
+    const presentation = SECRET_PRESENTATION[name];
     const label = document.createElement('label');
     label.className = 'secret-field';
-    label.textContent = name;
+    label.textContent = presentation?.label ?? name;
+    if (presentation?.description) label.title = presentation.description;
     const input = document.createElement('input');
     input.id = 'secret-' + name;
     input.type = name === 'UMIRO_OWNER_DISCORD_ID' ? 'text' : 'password';

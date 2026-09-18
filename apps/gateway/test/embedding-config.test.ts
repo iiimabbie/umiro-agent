@@ -8,8 +8,8 @@ test("embedding is opt-in and an explicit disabled provider remains off", () => 
   assert.equal(createConfiguredEmbedder({ provider: "disabled" }, {}), undefined);
 });
 
-test("configured providers use user-selected models and credential variables", () => {
-  const gemini = createConfiguredEmbedder({ provider: "gemini", model: "custom-gemini", apiKeyEnv: "MY_EMBED_KEY" }, { MY_EMBED_KEY: "secret" });
+test("configured providers use user-selected models and the managed embedding secret", () => {
+  const gemini = createConfiguredEmbedder({ provider: "gemini", model: "custom-gemini" }, { UMIRO_EMBEDDING_API_KEY: "secret" });
   assert.ok(gemini instanceof GeminiEmbedder);
   assert.equal(gemini.model, "gemini:custom-gemini");
 
@@ -18,10 +18,10 @@ test("configured providers use user-selected models and credential variables", (
   assert.match(compatible.model, /^openai-compatible:[a-f0-9]{12}:local-model$/);
 });
 
-test("an explicitly configured credential must exist", () => {
+test("Gemini requires the managed embedding secret", () => {
   assert.throws(
-    () => createConfiguredEmbedder({ provider: "openai-compatible", model: "private-model", baseUrl: "https://embed.example/v1", apiKeyEnv: "PRIVATE_KEY" }, {}),
-    /PRIVATE_KEY/,
+    () => createConfiguredEmbedder({ provider: "gemini", model: "custom-gemini" }, {}),
+    /Embedding API key is not configured/,
   );
 });
 
