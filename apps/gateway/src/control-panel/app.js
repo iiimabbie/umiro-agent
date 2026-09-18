@@ -74,8 +74,9 @@ const CONFIG_GROUPS = [
   ] },
   { title: 'Embedding 與跨對話記憶', fields: [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
-    { path: 'embedding.baseUrl', type: 'url', wide: true, placeholder: 'https://api.example.com/v1' },
     { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
+    { path: 'embedding.baseUrl', type: 'secret', secretName: 'UMIRO_EMBEDDING_BASE_URL', wide: true, placeholder: 'https://api.example.com/v1' },
+    { path: 'embedding.apiKey', type: 'secret', secretName: 'UMIRO_EMBEDDING_API_KEY', wide: true },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
     { path: 'embedding.recallLimit', type: 'number', min: 1, max: 20, step: 1 },
     { path: 'embedding.minSimilarity', type: 'number', min: 0, max: 1, step: 0.01 },
@@ -111,6 +112,7 @@ const SECRET_PRESENTATION = {
   UMIRO_EMBEDDING_API_KEY: { label: 'Embedding API Key', description: '供目前選擇的 Embedding provider 使用，密鑰只寫入 secrets.env。' },
 };
 const SECRET_ORDER = ['LLM_BASE_URL', 'LLM_API_KEY', 'UMIRO_EMBEDDING_API_KEY', 'DISCORD_TOKEN', 'UMIRO_OWNER_DISCORD_ID', 'UMIRO_WEB_UI_TOKEN'];
+let secretStatus = {};
 
 function configHeaderOffset() {
   return window.matchMedia('(max-width: 800px)').matches ? document.querySelector('.sidebar').getBoundingClientRect().height : 0;
@@ -223,6 +225,14 @@ function configControl(field, value, models) {
     textarea.value = field.type === 'json' ? (value === undefined ? '' : JSON.stringify(value, null, 2)) : (Array.isArray(value) ? value.join('\n') : '');
     return textarea;
   }
+  if (field.type === 'secret') {
+    const input = document.createElement('input');
+    input.id = id;
+    input.type = 'password';
+    input.autocomplete = 'new-password';
+    input.placeholder = field.placeholder || (secretStatus[field.secretName] ? '已設定；留空不變' : '尚未設定');
+    return input;
+  }
   const input = document.createElement('input');
   input.id = id;
   input.type = field.type;
@@ -300,6 +310,7 @@ function filterConfigFields() {
 function readConfigForm() {
   const next = structuredClone(loadedConfig);
   for (const field of configFields()) {
+    if (field.type === 'secret') continue;
     const id = fieldId(field.path);
     if (field.type === 'boolean') {
       const checked = document.querySelector('input[name="' + id + '"]:checked');
@@ -830,9 +841,10 @@ async function connect() {
     api('/api/models').catch(() => []),
   ]);
   const models = modelResult.filter(model => typeof model === 'string');
+  secretStatus = secrets;
   renderConfigForm(schema, config, models);
   renderRuntime(runtime);
-  secretNames = [...SECRET_ORDER.filter(name => Object.hasOwn(secrets, name)), ...Object.keys(secrets).filter(name => !SECRET_ORDER.includes(name)).sort()];
+  secretNames = [...SECRET_ORDER.filter(name => !name.startsWith('UMIRO_EMBEDDING_') && Object.hasOwn(secrets, name)), ...Object.keys(secrets).filter(name => !name.startsWith('UMIRO_EMBEDDING_') && !SECRET_ORDER.includes(name)).sort()];
   $('secretForm').replaceChildren(...secretNames.map(name => {
     const presentation = SECRET_PRESENTATION[name];
     const label = document.createElement('label');
@@ -889,9 +901,21 @@ $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
   try {
     const next = readConfigForm();
     const result = await api('/api/config', { method: 'PUT', body: JSON.stringify(next) });
+    const embeddingSecrets = Object.fromEntries([
+      ['UMIRO_EMBEDDING_BASE_URL', $('config-embedding-baseUrl')?.value.trim()],
+      ['UMIRO_EMBEDDING_API_KEY', $('config-embedding-apiKey')?.value.trim()],
+    ].filter(([, value]) => value));
+    let secretResult = { restartRequired: [] };
+    if (Object.keys(embeddingSecrets).length) {
+      secretResult = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(embeddingSecrets) });
+      for (const name of Object.keys(embeddingSecrets)) secretStatus[name] = true;
+      $('config-embedding-baseUrl').value = '';
+      $('config-embedding-apiKey').value = '';
+    }
     loadedConfig = next; markConfigSaved();
-    $('restartGateway').hidden = !(result.restartRequired?.length);
-    const messages = [...(result.applied?.length ? ['即時套用：' + result.applied.join('、')] : []), ...(result.restartRequired?.length ? ['需重啟：' + result.restartRequired.join('、')] : [])];
+    const restartRequired = [...new Set([...(result.restartRequired ?? []), ...(secretResult.restartRequired ?? [])])];
+    $('restartGateway').hidden = !restartRequired.length;
+    const messages = [...(result.applied?.length ? ['即時套用：' + result.applied.join('、')] : []), ...(restartRequired.length ? ['需重啟：' + restartRequired.join('、')] : [])];
     showToast('設定已儲存' + (messages.length ? '；' + messages.join('；') : ''), 'success');
   } catch (error) { reportError(error); }
 }, '儲存中…');

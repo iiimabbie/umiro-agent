@@ -10,7 +10,7 @@ import { loadPluginManifest, loadPluginModule } from "./plugin-loader.js";
 import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
-import { createConfiguredEmbedder, EMBEDDING_API_KEY_SECRET, type EmbeddingConfig } from "./embedding-config.js";
+import { createConfiguredEmbedder, EMBEDDING_API_KEY_SECRET, EMBEDDING_BASE_URL_SECRET, type EmbeddingConfig } from "./embedding-config.js";
 import { reconcilePluginSchedules, DurableScheduler, previewNextFire, type PluginRuntimeState } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
@@ -119,7 +119,15 @@ const cleanupExpiredPluginState = async (): Promise<void> => {
 await cleanupExpiredPluginState();
 const pluginStateCleanupTimer = setInterval(() => { void cleanupExpiredPluginState().catch(error => logger.write({ level: "warn", event: "plugin_state.expired_cleanup_failed", message: "Expired Plugin state cleanup failed", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } })); }, 60 * 60 * 1_000);
 pluginStateCleanupTimer.unref?.();
-const embedder = createConfiguredEmbedder(config.embedding);
+let embedder: ReturnType<typeof createConfiguredEmbedder>;
+try {
+  embedder = createConfiguredEmbedder(config.embedding);
+} catch (error) {
+  // Embeddings are optional. Keep the gateway and Web UI available so an
+  // operator can finish provider/endpoint/secret configuration there.
+  embedder = undefined;
+  logger.write({ level: "warn", event: "embedding.config.unavailable", message: "Embedding is unavailable; continuing without semantic search", occurredAt: new Date().toISOString(), data: { provider: config.embedding?.provider ?? "disabled", errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
+}
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder.forBackground?.() ?? embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);
 const conversationHistory = new PluginConversationHistory(store);
@@ -300,7 +308,7 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
     if (!finalized) throw new Error("button result changed repeatedly");
     return { messageContent: renderButtonRecord(finalized), disableButtonIds: finalized.usedButtonIds };
 });
-const runtimeSecrets = () => [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env[EMBEDDING_API_KEY_SECRET], process.env.GOOGLE_CLIENT_SECRET];
+const runtimeSecrets = () => [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env[EMBEDDING_BASE_URL_SECRET], process.env[EMBEDDING_API_KEY_SECRET], process.env.GOOGLE_CLIENT_SECRET];
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
 const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
 const replies = { async send(runId: string, text: string, signal?: AbortSignal) {
@@ -318,7 +326,7 @@ const replies = { async send(runId: string, text: string, signal?: AbortSignal) 
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
 const embeddingRuntimeIdentity = (value: EmbeddingConfig | undefined): unknown => {
   if (!value || value.provider === "disabled") return { provider: "disabled" };
-  return { provider: value.provider, model: value.model, ...(value.provider === "openai-compatible" ? { baseUrl: value.baseUrl } : {}), ...(value.requestsPerMinute !== undefined ? { requestsPerMinute: value.requestsPerMinute } : {}) };
+  return { provider: value.provider, model: value.model, ...(value.requestsPerMinute !== undefined ? { requestsPerMinute: value.requestsPerMinute } : {}) };
 };
 const changed = (left: unknown, right: unknown): boolean => !isDeepStrictEqual(left, right);
 const namedConversationScopes = async (locations: readonly ConversationLocation[]) => {
@@ -334,7 +342,7 @@ const namedConversationScopes = async (locations: readonly ConversationLocation[
     }];
   }));
 };
-const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])]);
+const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_BASE_URL_SECRET, EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => module.manifest.requiredSecrets ?? [])]);
 const persistSecrets = async (values: Readonly<Record<string, string>>): Promise<void> => {
   const source = await readFile(paths.secrets, "utf8").catch(() => "");
   const lines = source.split(/\r?\n/);

@@ -14,6 +14,9 @@ test("model capabilities are explicit and reject unknown values", () => {
   assert.throws(() => validateControlConfig({ model: "gemma4", pricing: { gemma4: { inputUsdPerMillion: -1, outputUsdPerMillion: 0 } } }), /pricing/);
   assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { apiKey: "must-not-live-here" } }), /must use SecretSource/);
   assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { provider: "disabled", credentialVariable: "SOME_KEY" } }), /unsupported embedding field/);
+  assert.deepEqual(validateControlConfig({ model: "gemma4", embedding: { provider: "disabled" } }).embedding, { provider: "disabled" });
+  assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible" } }), /embedding.model/);
+  assert.deepEqual(validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible", model: "local" } }).embedding, { provider: "openai-compatible", model: "local" });
   assert.throws(() => validateControlConfig({ model: "gemma4", plugins: [{ path: "/plugin", config: { token: "secret" } }] }), /must use SecretSource/);
   assert.deepEqual(validateControlConfig({ model: "gemma4", authority: { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } } }).authority, { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } });
   assert.deepEqual(validateControlConfig({ model: "gemma4", subagent: { maxConcurrentChildren: 2, maxParallelTools: 1 } }).subagent, { maxConcurrentChildren: 2, maxParallelTools: 1 });

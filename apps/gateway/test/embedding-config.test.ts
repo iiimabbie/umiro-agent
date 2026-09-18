@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createConfiguredEmbedder } from "../src/embedding-config.js";
+import { createConfiguredEmbedder, EMBEDDING_BASE_URL_SECRET } from "../src/embedding-config.js";
 import { GeminiEmbedder, OpenAICompatibleEmbedder, RateLimitedTextEmbedder } from "../src/embedding-worker.js";
 
 test("embedding is opt-in and an explicit disabled provider remains off", () => {
@@ -13,7 +13,7 @@ test("configured providers use user-selected models and the managed embedding se
   assert.ok(gemini instanceof GeminiEmbedder);
   assert.equal(gemini.model, "gemini:custom-gemini");
 
-  const compatible = createConfiguredEmbedder({ provider: "openai-compatible", model: "local-model", baseUrl: "http://localhost:11434/v1" }, {});
+  const compatible = createConfiguredEmbedder({ provider: "openai-compatible", model: "local-model" }, { [EMBEDDING_BASE_URL_SECRET]: "http://localhost:11434/v1" });
   assert.ok(compatible instanceof OpenAICompatibleEmbedder);
   assert.match(compatible.model, /^openai-compatible:[a-f0-9]{12}:local-model$/);
 });
@@ -26,15 +26,17 @@ test("Gemini requires the managed embedding secret", () => {
 });
 
 test("recall tuning is bounded for provider-specific score distributions", () => {
-  assert.ok(createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", recallLimit: 3, minSimilarity: 0.42 }, {}));
-  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", recallLimit: 0 }, {}), /recallLimit/);
-  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", minSimilarity: 1.1 }, {}), /minSimilarity/);
+  const environment = { [EMBEDDING_BASE_URL_SECRET]: "https://embed.example/v1" };
+  assert.ok(createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", recallLimit: 3, minSimilarity: 0.42 }, environment));
+  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", recallLimit: 0 }, environment), /recallLimit/);
+  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", minSimilarity: 1.1 }, environment), /minSimilarity/);
 });
 
 test("provider request limits are opt-in and bounded", () => {
-  assert.ok(createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", requestsPerMinute: 3 }, {}) instanceof RateLimitedTextEmbedder);
-  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", requestsPerMinute: 0 }, {}), /requestsPerMinute/);
-  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", baseUrl: "https://embed.example/v1", requestsPerMinute: 601 }, {}), /requestsPerMinute/);
+  const environment = { [EMBEDDING_BASE_URL_SECRET]: "https://embed.example/v1" };
+  assert.ok(createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", requestsPerMinute: 3 }, environment) instanceof RateLimitedTextEmbedder);
+  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", requestsPerMinute: 0 }, environment), /requestsPerMinute/);
+  assert.throws(() => createConfiguredEmbedder({ provider: "openai-compatible", model: "custom", requestsPerMinute: 601 }, environment), /requestsPerMinute/);
 });
 
 test("OpenAI-compatible embedder calls the configured endpoint", async () => {

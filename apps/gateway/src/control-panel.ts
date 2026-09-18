@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { parseDiscordTriggerPolicy } from "@umiro/adapter-discord";
 import { validateAuthorityConfig } from "./authority-config.js";
+import { validateEmbeddingConfig } from "./embedding-config.js";
 import { assertConfigContainsNoSecrets } from "@umiro/core/config";
 
 const HTML = readFileSync(new URL("./control-panel/index.html", import.meta.url), "utf8");
@@ -53,7 +54,8 @@ export const CONFIG_EXPLANATIONS = {
   pricing: { label: "模型價格", description: "依 model ID 設定 inputUsdPerMillion／outputUsdPerMillion；未設定的模型不猜測成本。", defaultValue: {}, risk: "只影響估算；錯誤價格會造成控制台成本顯示不準。", restartRequired: false },
   "embedding.provider": { label: "Embedding provider", description: "disabled、gemini 或 openai-compatible；disabled 時只用 FTS。", defaultValue: "disabled", risk: "啟用後會把可索引文字送往所選 provider。", restartRequired: true },
   "embedding.model": { label: "Embedding model", description: "啟用 embedding 時使用的模型 ID，不可寫死為內建模型。", defaultValue: null, risk: "更換模型或維度會觸發 projection 重建。", restartRequired: true },
-  "embedding.baseUrl": { label: "Embedding API URL", description: "OpenAI-compatible embedding endpoint 的基底 URL。", defaultValue: null, risk: "內容會傳送到此 endpoint；只能使用信任的服務。", restartRequired: true },
+  "embedding.baseUrl": { label: "Embedding API URL", description: "OpenAI-compatible embedding endpoint；與 API key 一起儲存在 secrets.env。", defaultValue: null, risk: "內容會傳送到此 endpoint；只能使用信任的服務。", restartRequired: true },
+  "embedding.apiKey": { label: "Embedding API Key", description: "Embedding provider 的密鑰；只寫入 secrets.env，不會回傳已設定值。", defaultValue: null, risk: "這是 provider 憑證，只應填入信任的服務。", restartRequired: true },
   "embedding.recallLimit": { label: "跨對話記憶筆數", description: "每輪自動注入最多幾筆其他 Conversation 的向量搜尋結果。", defaultValue: 5, risk: "調高會佔用更多 context，也可能引入不相關記憶。", restartRequired: false },
   "embedding.minSimilarity": { label: "跨對話記憶門檻", description: "0–1 的向量相似度下限；不同 provider／model 的分數分佈不同，可依實際 recall 調整。", defaultValue: 0.55, risk: "調低會提高 recall，但可能注入不相關資料；調高可能漏掉應記得的對話。", restartRequired: false },
   "embedding.requestsPerMinute": { label: "Embedding 每分鐘請求上限", description: "背景建索引、自動 recall 與手動搜尋共用的 provider RPM；前景查詢會優先於等待中的背景工作。省略表示不由 ümiro 限速。", defaultValue: null, risk: "設得高於帳號額度會收到 rate limit；設得過低會延後背景索引。", restartRequired: true },
@@ -133,10 +135,10 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
   if (config.embedding !== undefined) {
     if (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding)) throw new TypeError("embedding must be an object");
     const embedding = config.embedding as Record<string, unknown>;
-    const allowedEmbeddingFields = new Set(["provider", "model", "baseUrl", "recallLimit", "minSimilarity", "requestsPerMinute"]);
+    const allowedEmbeddingFields = new Set(["provider", "model", "recallLimit", "minSimilarity", "requestsPerMinute"]);
     const unknownEmbeddingField = Object.keys(embedding).find(key => !allowedEmbeddingFields.has(key));
     if (unknownEmbeddingField) throw new TypeError(`unsupported embedding field: ${unknownEmbeddingField}`);
-    if (embedding.requestsPerMinute !== undefined && (!Number.isSafeInteger(embedding.requestsPerMinute) || Number(embedding.requestsPerMinute) < 1 || Number(embedding.requestsPerMinute) > 600)) throw new TypeError("embedding.requestsPerMinute must be between 1 and 600");
+    validateEmbeddingConfig(embedding);
   }
   if (config.webUi !== undefined) {
     if (!config.webUi || typeof config.webUi !== "object" || Array.isArray(config.webUi)) throw new TypeError("webUi must be an object");

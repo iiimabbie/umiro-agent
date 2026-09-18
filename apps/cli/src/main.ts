@@ -55,6 +55,16 @@ async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> {
 }
 async function loadConfig(): Promise<UmiroConfig> { return JSON.parse(await readFile(configFile, "utf8")) as UmiroConfig; }
 async function saveConfig(config: UmiroConfig): Promise<void> { await writeFile(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }); }
+async function saveSecret(name: string, value: string): Promise<void> {
+  const source = await readFile(secretsFile, "utf8").catch(() => "");
+  const lines = source.split(/\r?\n/);
+  const replacement = `${name}=${JSON.stringify(value)}`;
+  const index = lines.findIndex(line => line.startsWith(`${name}=`));
+  if (index >= 0) lines[index] = replacement;
+  else lines.push(replacement);
+  await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 });
+  await writeFile(secretsFile, `${lines.filter((line, index) => line || index < lines.length - 1).join("\n").trimEnd()}\n`, { mode: 0o600 });
+}
 
 async function migrateLegacyEmbeddingSecret(): Promise<void> {
   const config = await loadConfig();
@@ -130,7 +140,7 @@ async function init(): Promise<void> {
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
   if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "not-configured", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, skills: [], discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
-  if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
+  if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# UMIRO_EMBEDDING_BASE_URL=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
   await migrateLegacyEmbeddingSecret();
   console.log(home);
 }
@@ -227,10 +237,9 @@ async function embedding(action: string, provider?: string, model?: string, base
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 20)) throw new Error("--recall-limit must be between 1 and 20");
   if (similarity !== undefined && (!Number.isFinite(similarity) || similarity < 0 || similarity > 1)) throw new Error("--min-similarity must be between 0 and 1");
   const tuning = { ...(rpm !== undefined ? { requestsPerMinute: rpm } : {}), ...(limit !== undefined ? { recallLimit: limit } : {}), ...(similarity !== undefined ? { minSimilarity: similarity } : {}) };
-  const next = provider === "gemini"
-    ? { provider, model: model.trim(), ...tuning }
-    : { provider, model: model.trim(), baseUrl: baseUrl!.trim(), ...tuning };
+  const next = { provider, model: model.trim(), ...tuning };
   await saveConfig({ ...config, embedding: next });
+  if (provider === "openai-compatible") await saveSecret("UMIRO_EMBEDDING_BASE_URL", baseUrl!.trim());
   console.log(`embedding configured: ${provider}/${model.trim()}`);
 }
 

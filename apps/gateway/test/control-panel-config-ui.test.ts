@@ -25,7 +25,7 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(css, /:root\[data-theme="dark"\]\s*\{[\s\S]*color-scheme: dark/);
   assert.match(script, /path: 'model', type: 'model'/);
   assert.match(script, /input\.type = 'radio'/);
-  assert.match(script, /path: 'embedding\.baseUrl', type: 'url'/);
+  assert.match(script, /path: 'embedding\.baseUrl', type: 'secret'/);
   assert.match(script, /LLM_BASE_URL: \{ label: 'LLM Base URL'/);
   assert.match(script, /field\.type === 'model' && models\.length === 0/);
   assert.match(script, /document\.createElement\('select'\)/);
