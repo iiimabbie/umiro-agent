@@ -24,6 +24,8 @@ export async function syncApplicationCommands(guilds: readonly DiscordCommandMan
 }
 
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
+export interface DiscordRestartInteraction { readonly applicationId: string; readonly token: string }
+export type DiscordRestartHandler = (interaction: DiscordRestartInteraction) => Promise<void>;
 export interface DiscordButtonInteraction extends DiscordInteractionContext { readonly buttonSetId: string; readonly buttonId: string; readonly messageContent: string }
 export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "button" | "emoji" | "typing"; readonly channelId?: string; readonly messageId?: string }
 export type DiscordAdapterErrorHandler = (error: unknown, context: DiscordAdapterErrorContext) => void;
@@ -51,6 +53,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
   private steerHandler?: (message: DiscordMessageEnvelope) => Promise<boolean>;
   private commands: readonly DiscordCommandDefinition[] = [];
   private commandHandler?: (name: string, input: Record<string, string | number | boolean>, context: { userId: string; channelId: string; guildId?: string }) => Promise<Record<string, unknown>>;
+  private restartHandler?: DiscordRestartHandler;
   private autocompleteHandler?: (name: string, option: string, value: string, context: DiscordInteractionContext) => Promise<readonly { readonly name: string; readonly value: string }[]>;
   private buttonHandler?: (interaction: DiscordButtonInteraction) => Promise<{ readonly messageContent?: string; readonly ephemeralContent?: string; readonly disableButtonIds?: readonly string[] }>;
   private errorHandler?: DiscordAdapterErrorHandler;
@@ -65,6 +68,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
    * event was durably accepted by the active Run. */
   onSteer(handler: (message: DiscordMessageEnvelope) => Promise<boolean>): void { this.steerHandler = handler; }
   onCommand(commands: typeof this.commands, handler: NonNullable<typeof this.commandHandler>): void { this.commands = commands; this.commandHandler = handler; }
+  onRestart(handler: DiscordRestartHandler): void { this.restartHandler = handler; }
   onAutocomplete(handler: NonNullable<typeof this.autocompleteHandler>): void { this.autocompleteHandler = handler; }
   onButton(handler: NonNullable<typeof this.buttonHandler>): void { this.buttonHandler = handler; }
   onError(handler: DiscordAdapterErrorHandler): void { this.errorHandler = handler; }
@@ -351,13 +355,16 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     if (!this.commandHandler) return;
     const definition = this.commands.find(command => command.name === interaction.commandName);
     await interaction.deferReply({ ephemeral: definition?.ephemeral ?? true });
+    let restartAnnounced = false;
     try {
       const input = Object.fromEntries(interaction.options.data.flatMap(option => option.value === undefined ? [] : [[option.name, option.value]])) as Record<string, string | number | boolean>;
       const result = await this.commandHandler(interaction.commandName, input, { userId: interaction.user.id, channelId: interaction.channelId, ...(interaction.guildId ? { guildId: interaction.guildId } : {}) });
       const content = this.prepareText(commandReplyContent(interaction.commandName, result));
       const embeds = commandReplyEmbeds(result);
       await interaction.editReply({ content, ...(embeds.length ? { embeds } : {}) });
-    } catch { await interaction.editReply({ content: "指令執行失敗，請稍後再試。" }); }
+      restartAnnounced = interaction.commandName === "restart";
+      if (interaction.commandName === "restart" && this.restartHandler) await this.restartHandler({ applicationId: interaction.applicationId, token: interaction.token });
+    } catch { await interaction.editReply({ content: restartAnnounced ? "重啟取消：無法保存重啟狀態。" : "指令執行失敗，請稍後再試。" }); }
   }
 
   private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {

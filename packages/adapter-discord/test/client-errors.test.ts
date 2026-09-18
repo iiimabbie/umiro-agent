@@ -121,3 +121,17 @@ test("a durable button result edits the original message and disables completed 
   const components = edited?.components as Array<{ toJSON(): { components: Array<{ disabled?: boolean }> } }>;
   assert.equal(components[0]!.toJSON().components[0]!.disabled, true);
 });
+
+test("restart waits until the initial reply is visible before handing off credentials", async () => {
+  const adapter = new DiscordJsAdapter();
+  const events: string[] = [];
+  adapter.onCommand([{ name: "restart", description: "restart", ephemeral: true }], async () => ({ content: "Restarting... wait for me!" }));
+  adapter.onRestart(async interaction => { events.push(`restart:${interaction.applicationId}:${interaction.token}`); });
+  const interaction = {
+    commandName: "restart", applicationId: "application", token: "token", channelId: "channel", guildId: "guild", user: { id: "owner" }, options: { data: [] },
+    async deferReply() { events.push("defer"); },
+    async editReply(value: { content: string }) { events.push(`reply:${value.content}`); },
+  };
+  await (adapter as unknown as { handleCommand(value: unknown): Promise<void> }).handleCommand(interaction);
+  assert.deepEqual(events, ["defer", "reply:Restarting... wait for me!", "restart:application:token"]);
+});

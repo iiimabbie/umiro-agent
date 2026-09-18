@@ -31,8 +31,10 @@ import { importDiscordAttachments } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
 import { describeImageArtifacts } from "./image-description.js";
 import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
+import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 
 const paths = umiroPaths();
+const pendingRestartFile = `${paths.state}/pending-restart.json`;
 const processStart = new Date().toISOString();
 const releaseIdentity = await readFile(`${paths.app}/current/install-manifest.json`, "utf8").then(raw => {
   const manifest = JSON.parse(raw) as { releaseId?: unknown; revision?: unknown; installedAt?: unknown };
@@ -581,8 +583,7 @@ const handleCommand = async (name: string, input: Record<string, string | number
   }
   if (name === "restart") {
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
-    setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 500);
-    return { content: "已排程重啟 Gateway。" };
+    return { content: "Restarting... wait for me!" };
   }
   if (name === "plugin") {
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
@@ -600,6 +601,10 @@ const handleCommand = async (name: string, input: Record<string, string | number
   return host.executeCommand(name, input, commandContext);
 };
 discord.onCommand([...host.listCommands(), ...builtinCommands], (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => activeWork.track(handleCommand(name, input, commandContext)));
+discord.onRestart(async interaction => {
+  await savePendingRestart(pendingRestartFile, interaction);
+  setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150);
+});
 discord.onAutocomplete(async (name: string, option: string, value: string, context: DiscordInteractionContext) => {
   const pluginCommand = host.listCommands().find(command => command.name === name);
   if (name !== "model") {
@@ -755,6 +760,8 @@ connectDiscordFromSecrets = async () => {
   discordStartAttempted = true;
   try {
     await discord.start(token!, discordPolicy.presence);
+    const identity = discord.identity();
+    if (identity) await completePendingRestart(pendingRestartFile, identity.tag).catch(error => logger.write({ level: "error", event: "discord.restart_completion_failed", message: "Restart completed but the Discord interaction could not be updated", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
     readiness.discord = true;
     readiness.configurationRequired = [];
     await delivery.drain();

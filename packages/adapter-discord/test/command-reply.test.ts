@@ -9,5 +9,5 @@ test("new command reports the user intent while retaining archive evidence", () 
 });
 test("built-in operational commands render their returned content", () => {
   assert.equal(commandReplyContent("status", { content: "狀態" }), "狀態");
-  assert.equal(commandReplyContent("restart", { content: "已排程重啟 Gateway。" }), "已排程重啟 Gateway。");
+  assert.equal(commandReplyContent("restart", { content: "Restarting... wait for me!" }), "Restarting... wait for me!");
 });

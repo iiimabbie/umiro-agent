@@ -56,6 +56,23 @@ async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> {
 async function loadConfig(): Promise<UmiroConfig> { return JSON.parse(await readFile(configFile, "utf8")) as UmiroConfig; }
 async function saveConfig(config: UmiroConfig): Promise<void> { await writeFile(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }); }
 
+async function migrateLegacyEmbeddingSecret(): Promise<void> {
+  const config = await loadConfig();
+  const embedding = config.embedding;
+  const legacyName = typeof embedding?.apiKeyEnv === "string" ? embedding.apiKeyEnv.trim() : "";
+  if (!embedding || !legacyName) return;
+  if (!/^[A-Z][A-Z0-9_]{1,79}$/.test(legacyName)) throw new TypeError("embedding.apiKeyEnv contains an invalid legacy secret name");
+  const secrets = await readFile(secretsFile, "utf8");
+  if (!/^UMIRO_EMBEDDING_API_KEY=/m.test(secrets)) {
+    const legacyLine = secrets.split(/\r?\n/).find(line => line.startsWith(`${legacyName}=`));
+    const environmentValue = process.env[legacyName];
+    const encoded = legacyLine?.slice(legacyName.length + 1) ?? (environmentValue ? JSON.stringify(environmentValue) : undefined);
+    if (encoded !== undefined) await writeFile(secretsFile, `${secrets.trimEnd()}\nUMIRO_EMBEDDING_API_KEY=${encoded}\n`, { mode: 0o600 });
+  }
+  const { apiKeyEnv: _removed, ...currentEmbedding } = embedding;
+  await saveConfig({ ...config, embedding: currentEmbedding });
+}
+
 function assertPluginEntryInside(root: string, entry: string): void {
   const path = relative(root, entry);
   if (!path || path === ".." || path.startsWith(`..${sep}`)) throw new Error(`plugin entry escapes its directory: ${entry}`);
@@ -114,6 +131,7 @@ async function init(): Promise<void> {
   if (!await exists(pluginsFile)) await savePlugins([]);
   if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "not-configured", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, skills: [], discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
   if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
+  await migrateLegacyEmbeddingSecret();
   console.log(home);
 }
 
