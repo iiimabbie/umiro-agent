@@ -24,11 +24,11 @@ const VERSION = "0.1.0";
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
 interface UmiroConfig { model: string; protocol?: "openai_responses" | "openai_chat_completions"; modelCapabilities?: string[]; profiles?: Record<string, { model: string; protocol?: "openai_responses" | "openai_chat_completions"; capabilities?: string[]; reasoningEffort?: string }>; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; skills?: string[]; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 const REQUIRED_BUILTIN_PLUGINS = new Set(["context-files", "memory", "host-tools", "discord-tools"]);
-type GitHubPluginSource = { repository: string; ref?: string; subdirectory?: string };
+type GitHubPluginSource = { owner: string; repository: string; ref?: string; subdirectory?: string };
 function parseGitHubPluginSource(value: string): GitHubPluginSource | undefined {
   const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/tree\/([^/]+)\/(.+?))?\/?$/.exec(value);
   if (!match) return undefined;
-  return { repository: match[2]!, ...(match[3] ? { ref: decodeURIComponent(match[3]) } : {}), ...(match[4] ? { subdirectory: match[4].replace(/\/$/, "") } : {}) };
+  return { owner: match[1]!, repository: match[2]!, ...(match[3] ? { ref: decodeURIComponent(match[3]) } : {}), ...(match[4] ? { subdirectory: match[4].replace(/\/$/, "") } : {}) };
 }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
@@ -423,7 +423,7 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
       const pluginRoot = join(app, "plugins"); const nonce = crypto.randomUUID(); const checkout = join(pluginRoot, `.checkout-${nonce}`); const candidate = join(pluginRoot, `.candidate-${nonce}`); const previous = join(pluginRoot, `.previous-${nonce}`);
       await mkdir(pluginRoot, { recursive: true, mode: 0o700 });
       try {
-        const cloneArgs = ["clone", "--depth", "1", ...(github?.ref ? ["--branch", github.ref] : []), `https://github.com/${github!.repository}.git`, checkout];
+        const cloneArgs = ["clone", "--depth", "1", ...(github?.ref ? ["--branch", github.ref] : []), `https://github.com/${github!.owner}/${github!.repository}.git`, checkout];
         await exec("git", cloneArgs);
         if (github?.subdirectory || selectedWorkspace) { const selected = github?.subdirectory ? join(checkout, github.subdirectory) : (await exists(join(checkout, selectedWorkspace!)) ? join(checkout, selectedWorkspace!) : join(checkout, "packages", selectedWorkspace!)); await access(join(selected, "package.json")); await cp(selected, candidate, { recursive: true }); }
         else await rename(checkout, candidate);
