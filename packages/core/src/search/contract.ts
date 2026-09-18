@@ -31,6 +31,8 @@ export interface PluginSearchDocuments {
 export interface SearchDocumentProjection {
   replaceSearchSource(namespace: string, sourceId: string, documents: readonly SearchDocumentInput[]): Promise<void>;
   removeSearchSource(namespace: string, sourceId: string): Promise<void>;
+  listSearchNamespaces(): Promise<readonly string[]>;
+  removeSearchNamespace(namespace: string): Promise<void>;
 }
 
 export interface EmbeddingJob {

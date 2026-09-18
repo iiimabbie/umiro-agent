@@ -228,6 +228,11 @@ export class PluginHost {
       } catch {
         // Preserve the original startup failure. Operational logging belongs to composition.
       }
+      try {
+        await this.services.searchDocumentProjection?.removeSearchNamespace(manifest.namespace);
+      } catch {
+        // Preserve the original startup failure. Operational logging belongs to composition.
+      }
       active.state = "failed";
       active.error = error instanceof Error ? error.message : String(error);
       throw error;
@@ -250,14 +255,25 @@ export class PluginHost {
     for (const command of active.instance.contributions.commands ?? []) this.commands.unregister(command.name);
     for (const skill of active.instance.contributions.skills ?? []) this.skills.unregister(skill.id);
     for (const profile of active.manifest.contributes.subagentProfiles ?? []) this.subagentProfiles.unregister(profile.id);
-    try {
-      await active.instance.stop?.();
-      active.state = "disabled";
-    } catch (error) {
+    let stopError: unknown;
+    try { await active.instance.stop?.(); } catch (error) { stopError = error; }
+    try { await this.services.searchDocumentProjection?.removeSearchNamespace(active.manifest.namespace); }
+    catch (error) { stopError ??= error; }
+    if (stopError) {
       active.state = "failed";
-      active.error = error instanceof Error ? error.message : String(error);
-      throw error;
+      active.error = stopError instanceof Error ? stopError.message : String(stopError);
+      throw stopError;
     }
+    active.state = "disabled";
+  }
+
+  async remove(pluginId: string): Promise<void> {
+    const active = this.plugins.get(pluginId);
+    if (!active) throw new Error(`plugin is not loaded: ${pluginId}`);
+    if (active.state === "enabled") await this.disable(pluginId);
+    else if (active.state === "starting" || active.state === "stopping") throw new Error(`plugin ${pluginId} is ${active.state}`);
+    else if (active.state === "failed") await this.services.searchDocumentProjection?.removeSearchNamespace(active.manifest.namespace);
+    this.plugins.delete(pluginId);
   }
 
   get(pluginId: string): LoadedPlugin | undefined {

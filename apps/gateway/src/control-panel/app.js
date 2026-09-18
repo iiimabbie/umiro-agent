@@ -758,7 +758,7 @@ function renderPluginRow(x) {
 function renderPluginGroup(container, items) {
   if (items.length === 0) {
     const empty = document.createElement('small');
-    container.replaceChildren(emptyState(container.id === 'pluginsExternal' ? '尚無外部外掛' : '尚無內掛', container.id === 'pluginsExternal' ? '貼上 GitHub HTTPS URL 或本機路徑即可安裝。' : '目前安裝沒有提供內掛。', container.id === 'pluginsExternal' ? '安裝第一個外掛' : undefined, container.id === 'pluginsExternal' ? () => $('pluginSource').focus() : undefined));
+    container.replaceChildren(emptyState(container.id === 'pluginsExternal' ? '尚無外掛' : '尚無內掛', container.id === 'pluginsExternal' ? '貼上 GitHub HTTPS URL 或本機路徑即可安裝。' : '目前安裝沒有提供內掛。', container.id === 'pluginsExternal' ? '安裝第一個外掛' : undefined, container.id === 'pluginsExternal' ? () => $('pluginSource').focus() : undefined));
     return;
   }
   container.replaceChildren(...items.map(renderPluginRow));

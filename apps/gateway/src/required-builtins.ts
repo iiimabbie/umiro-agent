@@ -5,6 +5,7 @@ export const REQUIRED_BUILTIN_PLUGIN_IDS = ["context-files", "memory", "host-too
 export interface ManagedPluginEntry {
   readonly source: string;
   readonly path: string;
+  readonly workspace?: string;
   readonly enabled: boolean;
   readonly config?: JsonObject;
 }

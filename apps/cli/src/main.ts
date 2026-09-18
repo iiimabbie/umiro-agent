@@ -404,6 +404,7 @@ async function backupFiles(root: string, directory = root): Promise<Array<{ path
 
 async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string): Promise<void> {
   const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.source.startsWith("builtin:") ? "built-in" : "external"}\t${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
+  const restartRuntime = process.env.UMIRO_PLUGIN_ACTION_FROM_GATEWAY !== "1" && (await systemdActive() || Boolean(await fallbackProcess()));
   if (action === "remove" && source.startsWith("builtin:")) throw new Error("built-in capabilities cannot be removed; disable them instead");
   let path = resolve(source); const installing = action === "install" || action === "update";
   const github = parseGitHubPluginSource(source); const githubSource = github !== undefined;
@@ -451,6 +452,7 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   else if (action === "configure") next = entries.map(item => matches(item) ? { ...item, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
   else throw new Error(`unsupported plugin action: ${action}`);
   await savePlugins(next); if (action === "remove" && path.startsWith(`${join(app, "plugins")}/`) && !source.startsWith("builtin:")) await rm(path, { recursive: true, force: true }); console.log(`${action}: ${path}`);
+  if (restartRuntime) await restart();
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };

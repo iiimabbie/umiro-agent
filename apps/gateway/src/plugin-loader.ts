@@ -12,14 +12,20 @@ function assertInside(root: string, candidate: string): void {
 
 export async function loadPluginModule(pluginDirectory: string): Promise<PluginModule> {
   const root = await realpath(pluginDirectory);
-  const manifestPath = join(root, "umiro.plugin.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as PluginManifestV0;
-  validatePluginManifest(manifest);
+  const manifest = await loadPluginManifest(root);
   const entry = await realpath(join(root, manifest.entry));
   assertInside(root, entry);
   const imported = await import(pathToFileURL(entry).href) as PluginEntry;
   if (typeof imported.createPlugin !== "function") throw new TypeError(`plugin entry ${entry} must export createPlugin()`);
   return { manifest, create: imported.createPlugin };
+}
+
+/** Read and validate identity/contributions without importing Plugin code. */
+export async function loadPluginManifest(pluginDirectory: string): Promise<PluginManifestV0> {
+  const root = await realpath(pluginDirectory);
+  const manifest = JSON.parse(await readFile(join(root, "umiro.plugin.json"), "utf8")) as PluginManifestV0;
+  validatePluginManifest(manifest);
+  return manifest;
 }
 
 export function pluginDirectoryFromManifestPath(manifestPath: string): string { return dirname(resolve(manifestPath)); }

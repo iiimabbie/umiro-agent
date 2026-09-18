@@ -47,8 +47,13 @@ test("namespace-scoped Plugin documents are searchable, replaceable, removable, 
   await store.replaceSearchSource("memory", "memory/FACTS.md", [{ id: "fact-one", sourceType: "workspace_file", sourceId: "memory/FACTS.md#Home city", text: "Home city\nKobe port fact", visibility: { kind: "all" } }]);
   assert.equal((await store.search("concise", 10, { kind: "all" })).length, 0);
   assert.equal((await store.search("Akashiyaki", 10, { kind: "all" })).length, 0);
+  assert.deepEqual(await store.listSearchNamespaces(), ["context-files", "memory", "people"]);
   await store.removeSearchSource("people", "PEOPLE.md");
   assert.equal((await store.search("tea", 10, { kind: "all" })).length, 0);
+  await store.replaceSearchSource("people", "PEOPLE.md", [{ id: "PEOPLE.md", sourceType: "workspace_file", sourceId: "PEOPLE.md", text: "Alice prefers coffee", visibility: { kind: "all" } }]);
+  await store.removeSearchNamespace("people");
+  assert.deepEqual(await store.listSearchNamespaces(), ["context-files", "memory"]);
+  assert.equal((await store.search("coffee", 10, { kind: "all" })).length, 0);
   store.close();
 });
 

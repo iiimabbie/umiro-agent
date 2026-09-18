@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
-import { DurableScheduler } from "../src/durable-scheduler.js";
+import { reconcilePluginSchedules, DurableScheduler } from "../src/durable-scheduler.js";
 
 test("durable one-shot scheduling deduplicates occurrence and records a new Run per retry", async () => {
   let now = new Date("2026-01-01T00:00:00.000Z");
@@ -75,5 +75,40 @@ test("plugin job sync reconciles changed declarations without re-enabling a disa
 
   await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "* * * * *", timezone: "UTC", misfirePolicy: "skip", maxAttempts: 5, retryBackoffMs: 2500, run }]);
   assert.equal((await store.getScheduledTrigger("plugin-job:guardian.check"))?.revision, 2);
+  store.close();
+});
+
+test("Plugin-owned schedules are preserved, lifecycle-disabled, restored, or removed by owner state", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  const authority = { capabilities: [], visibility: { kind: "all" as const }, instructionAuthority: "full" as const };
+  const create = (pluginId: string) => scheduler.create({ name: pluginId, enabled: true, schedule: { kind: "cron" as const, expression: "0 1 * * *" }, timezone: "UTC", jobRef: "agent.prompt", input: { pluginId, prompt: "work" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
+  const kept = await create("diary"); const disabled = await create("weather"); const orphan = await create("removed-plugin");
+  const result = await reconcilePluginSchedules(scheduler, new Map([["diary", "enabled"], ["weather", "disabled"]]), new Map());
+  assert.deepEqual(result, { disabled: 1, enabled: 0, removed: 1 });
+  let current = new Map((await scheduler.list()).map(trigger => [trigger.id, trigger]));
+  assert.equal(current.get(kept.id)?.enabled, true);
+  assert.equal(current.get(disabled.id)?.enabled, false);
+  assert.equal(current.get(disabled.id)?.input._umiroPluginLifecycleDisabled, true);
+  assert.equal(current.has(orphan.id), false);
+  assert.deepEqual(await reconcilePluginSchedules(scheduler, new Map([["diary", "enabled"], ["weather", "enabled"]]), new Map()), { disabled: 0, enabled: 1, removed: 0 });
+  current = new Map((await scheduler.list()).map(trigger => [trigger.id, trigger]));
+  assert.equal(current.get(disabled.id)?.enabled, true);
+  assert.equal(current.get(disabled.id)?.input._umiroPluginLifecycleDisabled, undefined);
+  store.close();
+});
+
+test("Plugin job schedules use the same three-state lifecycle without re-enabling manual disables", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "0 1 * * *", async run() {} }], new Map([["guardian.check", "guardian"]]));
+  const trigger = (await scheduler.list())[0]!;
+  assert.equal(trigger.input.pluginId, "guardian");
+  await scheduler.setEnabled(trigger.id, false);
+  await reconcilePluginSchedules(scheduler, new Map([["guardian", "enabled"]]), new Map([["guardian.check", "enabled"]]));
+  assert.equal((await scheduler.list())[0]?.enabled, false);
+  await reconcilePluginSchedules(scheduler, new Map([["guardian", "disabled"]]), new Map([["guardian.check", "disabled"]]));
+  await reconcilePluginSchedules(scheduler, new Map([["guardian", "enabled"]]), new Map([["guardian.check", "enabled"]]));
+  assert.equal((await scheduler.list())[0]?.enabled, true);
   store.close();
 });

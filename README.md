@@ -27,7 +27,7 @@
 | **Permissions** | Owner and member authority levels; every tool declares a capability and a tier; permissions only ever shrink when delegated |
 | **Subagents** | Up to two parallel child runs per supervisor, one level deep, with cancel and reply-now; profiles supplied by plugins |
 | **Scheduling** | Durable cron jobs and one-shot reminders that execute as ordinary agent Runs |
-| **Plugins** | One manifest and runtime for built-in and external plugins; install from GitHub, enable, configure, update, remove |
+| **Plugins** | One manifest and runtime for internal plugins and external plugins; install external plugins from GitHub, enable, configure, update, remove |
 | **Control panel** | Local web UI: read conversations as chat, manage plugins, schedules, workspace files and configuration |
 
 ## Requirements
@@ -137,9 +137,9 @@ umo web status
 
 The panel binds to loopback only (`http://127.0.0.1:3210` by default). It shows each channel's current conversation and archived ones as a chat log, plus plugins, schedules, workspace files, configuration, usage and logs.
 
-## Plugins
+## Internal / External Plugins
 
-Built-in plugins ship with each release and can be disabled but not removed: `context-files`, `memory`, `scheduler`, `subagent`, `host-tools`, `discord-tools`. Without any external plugin, ümiro is a complete agent.
+Internal plugins ship with each release and can be disabled but not removed: `context-files`, `memory`, `scheduler`, `subagent`, `host-tools`, `discord-tools`. Without any external plugin, ümiro is a complete agent.
 
 External plugins add capabilities and are installed separately. The official collection lives at [umiro-plugins](https://github.com/iiimabbie/umiro-plugins):
 
@@ -151,6 +151,7 @@ External plugins add capabilities and are installed separately. The official col
 | `google` | Gmail, Calendar, Tasks and Drive tools with OAuth |
 | `tool-activity` | A live "what the agent is doing" message in Discord while a run uses tools |
 | `daily-report` | Scheduled daily summary |
+| `diary` | Reconstructs the agent's first-person daily journal from canonical conversation history |
 
 ```bash
 umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
@@ -160,6 +161,8 @@ umo plugin configure <source> --config '{"key":"value"}'
 ```
 
 Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin declares the capabilities it needs; the host caps them at what the calling principal is allowed to do.
+
+Disabling a plugin unregisters its tools, policies, hooks, jobs, commands, skills, and search projections, and lifecycle-disables its schedules until the plugin is enabled again. Removing a plugin also deletes its owned schedules and search projections. User data produced by the plugin, such as journals and reports, is preserved.
 
 ## CLI
 
@@ -183,7 +186,7 @@ packages/core             domain contracts and the execution runtime (no I/O)
 packages/adapter-discord  Discord transport
 packages/model-openai     OpenAI-compatible model adapter
 packages/storage-sqlite   durable state, search and embedding projections
-plugins/*                 built-in plugins
+plugins/*                 internal plugins
 templates/workspace       first-run workspace files
 ```
 

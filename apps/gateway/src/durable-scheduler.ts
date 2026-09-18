@@ -13,6 +13,36 @@ function nextFire(schedule: TriggerSchedule, timezone: string, after: Date): str
 
 export function previewNextFire(schedule: TriggerSchedule, timezone: string, after = new Date()): string | null { return nextFire(schedule, timezone, after); }
 
+export type PluginRuntimeState = "enabled" | "disabled";
+export interface PluginScheduleReconciliation { readonly disabled: number; readonly enabled: number; readonly removed: number }
+const LIFECYCLE_DISABLED = "_umiroPluginLifecycleDisabled";
+
+function schedulePatch(trigger: ScheduledTrigger, input: JsonObject) {
+  return { name: trigger.name, schedule: trigger.schedule, timezone: trigger.timezone, input, ...(trigger.destination ? { destination: trigger.destination } : {}), misfirePolicy: trigger.misfirePolicy, maxAttempts: trigger.maxAttempts, retryBackoffMs: trigger.retryBackoffMs };
+}
+
+/** Reconcile all durable schedules owned by Plugins without touching user-owned schedules. */
+export async function reconcilePluginSchedules(scheduler: SchedulerControl, pluginStates: ReadonlyMap<string, PluginRuntimeState>, pluginJobStates: ReadonlyMap<string, PluginRuntimeState>): Promise<PluginScheduleReconciliation> {
+  let disabled = 0; let enabled = 0; let removed = 0;
+  for (const trigger of await scheduler.list()) {
+    const promptPluginId = trigger.jobRef === "agent.prompt" && typeof trigger.input.pluginId === "string" ? trigger.input.pluginId : undefined;
+    const jobId = trigger.jobRef.startsWith("plugin:") ? trigger.jobRef.slice("plugin:".length) : undefined;
+    const state = promptPluginId ? pluginStates.get(promptPluginId) : jobId ? pluginJobStates.get(jobId) : undefined;
+    if (!promptPluginId && !jobId) continue;
+    if (!state) { if (await scheduler.remove(trigger.id)) removed += 1; continue; }
+    if (state === "disabled") {
+      if (scheduler.update && trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
+      if (trigger.enabled) { await scheduler.setEnabled(trigger.id, false); disabled += 1; }
+      continue;
+    }
+    if (trigger.input[LIFECYCLE_DISABLED] === true) {
+      if (scheduler.update) { const input = { ...trigger.input }; delete input[LIFECYCLE_DISABLED]; await scheduler.update(trigger.id, schedulePatch(trigger, input)); }
+      if (!trigger.enabled) { await scheduler.setEnabled(trigger.id, true); enabled += 1; }
+    }
+  }
+  return { disabled, enabled, removed };
+}
+
 export class DurableScheduler implements SchedulerControl {
   private timer: NodeJS.Timeout | undefined; private running = false; private dispatcher: Dispatcher | undefined;
   constructor(private readonly store: SchedulerStore, private readonly intervalMs = 1000, private readonly now: () => Date = () => new Date(), private readonly onBackgroundError: (error: unknown) => void = () => undefined) {}
@@ -26,11 +56,11 @@ export class DurableScheduler implements SchedulerControl {
   async setEnabled(id: string, enabled: boolean): Promise<ScheduledTrigger> { const trigger = await this.store.getScheduledTrigger(id); if (!trigger) throw new Error(`scheduled trigger not found: ${id}`); return this.store.setScheduledTriggerEnabled(id, enabled, enabled ? nextFire(trigger.schedule, trigger.timezone, this.now()) : null, trigger.revision, this.now().toISOString()); }
   async update(id: string, patch: Parameters<NonNullable<SchedulerControl["update"]>>[1]): Promise<ScheduledTrigger> { const trigger = await this.store.getScheduledTrigger(id); if (!trigger) throw new Error(`scheduled trigger not found: ${id}`); return this.store.updateScheduledTrigger(id, patch, trigger.revision, trigger.enabled ? nextFire(patch.schedule, patch.timezone, this.now()) : null, this.now().toISOString()); }
   remove(id: string): Promise<boolean> { return this.store.deleteScheduledTrigger(id); }
-  async syncPluginJobs(jobs: readonly PluginJobDefinition[]): Promise<void> {
+  async syncPluginJobs(jobs: readonly PluginJobDefinition[], pluginIds: ReadonlyMap<string, string> = new Map()): Promise<void> {
     const current = new Map((await this.store.listScheduledTriggers()).map(trigger => [trigger.id, trigger]));
     for (const job of jobs) {
       const id = `plugin-job:${job.id}`; const now = this.now(); const schedule = { kind: "cron" as const, expression: job.schedule };
-      const patch = { name: job.id, schedule, timezone: job.timezone ?? "UTC", input: {}, misfirePolicy: job.misfirePolicy ?? "coalesce", maxAttempts: job.maxAttempts ?? 3, retryBackoffMs: job.retryBackoffMs ?? 15_000 };
+      const patch = { name: job.id, schedule, timezone: job.timezone ?? "UTC", input: pluginIds.has(job.id) ? { pluginId: pluginIds.get(job.id)! } : {}, misfirePolicy: job.misfirePolicy ?? "coalesce", maxAttempts: job.maxAttempts ?? 3, retryBackoffMs: job.retryBackoffMs ?? 15_000 };
       const existing = current.get(id);
       if (!existing) {
         await this.store.createScheduledTrigger({ id, ...patch, enabled: true, jobRef: `plugin:${job.id}`, creatorPrincipalId: "system", creatorRoles: ["system"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, nextFireAt: nextFire(schedule, patch.timezone, now), createdAt: now.toISOString() });
@@ -40,7 +70,7 @@ export class DurableScheduler implements SchedulerControl {
         || existing.schedule.kind !== "cron"
         || existing.schedule.expression !== patch.schedule.expression
         || existing.timezone !== patch.timezone
-        || Object.keys(existing.input).length !== 0
+        || JSON.stringify(existing.input) !== JSON.stringify(patch.input)
         || existing.destination !== undefined
         || existing.misfirePolicy !== patch.misfirePolicy
         || existing.maxAttempts !== patch.maxAttempts

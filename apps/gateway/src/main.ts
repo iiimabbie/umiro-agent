@@ -2,16 +2,16 @@ import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
+import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type PluginManifestV0, type ReasoningEffort } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
-import { loadPluginModule } from "./plugin-loader.js";
+import { loadPluginManifest, loadPluginModule } from "./plugin-loader.js";
 import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedder, EMBEDDING_API_KEY_SECRET, type EmbeddingConfig } from "./embedding-config.js";
-import { DurableScheduler, previewNextFire } from "./durable-scheduler.js";
+import { reconcilePluginSchedules, DurableScheduler, previewNextFire, type PluginRuntimeState } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
@@ -24,6 +24,7 @@ import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
 import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
+import { PluginConversationHistory } from "./plugin-conversation-history.js";
 import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 import { importDiscordAttachments } from "./discord-attachments.js";
@@ -78,6 +79,18 @@ const pluginEntries = orderPluginEnableEntries(await Promise.all([...byPath.valu
 })));
 const configured = pluginEntries.map(entry => entry.configured);
 const modules = pluginEntries.map(entry => entry.module);
+const disabledManifests: PluginManifestV0[] = [];
+for (const entry of managedRaw.filter(item => !item.enabled)) {
+  try { disabledManifests.push(await loadPluginManifest(entry.path)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+const pluginStates = new Map<string, PluginRuntimeState>();
+for (const manifest of disabledManifests) pluginStates.set(manifest.id, "disabled");
+for (const module of modules) pluginStates.set(module.manifest.id, "enabled");
+const pluginJobStates = new Map<string, PluginRuntimeState>();
+const pluginJobOwners = new Map<string, string>();
+for (const manifest of disabledManifests) for (const jobId of manifest.contributes.jobs ?? []) pluginJobStates.set(jobId, "disabled");
+for (const module of modules) for (const jobId of module.manifest.contributes.jobs ?? []) { pluginJobStates.set(jobId, "enabled"); pluginJobOwners.set(jobId, module.manifest.id); }
 const hostedWebSearch = allModelCapabilities.includes("hosted_web_search");
 const hostedImageGeneration = allModelCapabilities.includes("hosted_image_generation");
 const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
@@ -106,6 +119,7 @@ pluginStateCleanupTimer.unref?.();
 const embedder = createConfiguredEmbedder(config.embedding);
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder.forBackground?.() ?? embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);
+const conversationHistory = new PluginConversationHistory(store);
 const semanticRecall = embedder ? new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }) : undefined;
 let runtimeRecall = { limit: config.embedding?.provider === "disabled" ? undefined : config.embedding?.recallLimit, minSimilarity: config.embedding?.provider === "disabled" ? undefined : config.embedding?.minSimilarity };
 if (semanticRecall) providers.register(semanticRecall);
@@ -337,15 +351,31 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     return Promise.all(entries.map(async entry => {
       if (typeof entry.path !== "string") return entry;
       try {
-        const plugin = await loadPluginModule(entry.path);
-        return { ...entry, manifest: plugin.manifest };
+        const manifest = await loadPluginManifest(entry.path);
+        return { ...entry, manifest };
       } catch { return entry; }
     }));
   },
   run: async (action, source, workspace, pluginConfig) => {
+    const before = validateManagedPluginEntries(JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")));
+    const target = before.find(entry => entry.source === source && entry.workspace === workspace);
+    const targetManifest = target && (action === "disable" || action === "remove") ? await loadPluginManifest(target.path).catch(() => undefined) : undefined;
     const args = ["plugin", action, source, ...(workspace ? ["--workspace", workspace] : []), ...(pluginConfig ? ["--config", JSON.stringify(pluginConfig)] : [])];
-    const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
-    return { ok: true, output: result.stdout.trim(), restartRequired: true };
+    const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024, env: { ...process.env, UMIRO_PLUGIN_ACTION_FROM_GATEWAY: "1" } });
+    if (targetManifest && (action === "disable" || action === "remove")) {
+      const loaded = host.get(targetManifest.id);
+      if (loaded && action === "remove") await host.remove(targetManifest.id);
+      else if (loaded?.state === "enabled") await host.disable(targetManifest.id);
+      if (action === "disable") {
+        pluginStates.set(targetManifest.id, "disabled");
+        for (const jobId of targetManifest.contributes.jobs ?? []) pluginJobStates.set(jobId, "disabled");
+      } else {
+        pluginStates.delete(targetManifest.id);
+        for (const jobId of targetManifest.contributes.jobs ?? []) { pluginJobStates.delete(jobId); pluginJobOwners.delete(jobId); }
+      }
+      await reconcilePluginSchedules(scheduler, pluginStates, pluginJobStates);
+    }
+    return { ok: true, output: result.stdout.trim(), restartRequired: action !== "disable" && action !== "remove" };
   },
 }, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), updateSecrets: async values => {
   const unexpected = Object.keys(values).find(name => !editableSecretNames.has(name));
@@ -458,14 +488,17 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     };
   },
 }, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; return { ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
-host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
+host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, conversationHistory, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
   const module = modules[index]!;
   const secrets = pluginSecretsFromEnvironment(module.manifest, process.env);
   await host.enable(module, { config: configured[index]!.config ?? {}, secrets });
 }
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
-await scheduler.syncPluginJobs(host.listJobs());
+await reconcilePluginSchedules(scheduler, pluginStates, pluginJobStates);
+await scheduler.syncPluginJobs(host.listJobs(), pluginJobOwners);
+const enabledSearchNamespaces = new Set(host.list().filter(plugin => plugin.state === "enabled").map(plugin => plugin.manifest.namespace));
+for (const namespace of await store.listSearchNamespaces()) if (!enabledSearchNamespaces.has(namespace)) await store.removeSearchNamespace(namespace);
 readiness.plugins = true;
 embeddingWorker?.start();
 scheduler.setDispatcher(async (trigger, occurrence, signal) => {

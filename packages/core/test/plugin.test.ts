@@ -123,6 +123,8 @@ test("Plugin search documents are scoped to the manifest namespace", async () =>
     searchDocumentProjection: {
       async replaceSearchSource(namespace, sourceId) { calls.push(`${namespace}:replace:${sourceId}`); },
       async removeSearchSource(namespace, sourceId) { calls.push(`${namespace}:remove:${sourceId}`); },
+      async listSearchNamespaces() { return ["owned"]; },
+      async removeSearchNamespace(namespace) { calls.push(`${namespace}:remove-namespace`); },
     },
   });
   const module: PluginModule = {
@@ -131,7 +133,10 @@ test("Plugin search documents are scoped to the manifest namespace", async () =>
   };
   await host.enable(module);
   await host.disable("owned");
-  assert.deepEqual(calls, ["owned:replace:DOC.md", "owned:remove:DOC.md"]);
+  assert.deepEqual(calls, ["owned:replace:DOC.md", "owned:remove:DOC.md", "owned:remove-namespace"]);
+  await host.remove("owned");
+  assert.equal(host.get("owned"), undefined);
+  assert.deepEqual(calls, ["owned:replace:DOC.md", "owned:remove:DOC.md", "owned:remove-namespace"]);
 });
 
 test("Discord Plugin services fail closed outside the manifest capability ceiling", async () => {

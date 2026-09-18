@@ -135,7 +135,18 @@ export interface DiscordPluginService {
   setRespondToBots(enabled: boolean): Promise<void>;
 }
 export interface IntermediateReplyService { send(runId: string, text: string, signal?: AbortSignal): Promise<{ readonly deliveryId: string }> }
-export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly subagentProfiles?: SubagentProfileCatalog; readonly replies?: IntermediateReplyService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService }
+/** Read-only, dialogue-only projection of canonical conversation history for workflows such as journals. */
+export interface PluginConversationHistoryService {
+  transcriptByDate(input: { readonly date: string; readonly timezone: string; readonly maxCharacters?: number }): Promise<{
+    readonly date: string;
+    readonly timezone: string;
+    readonly conversations: number;
+    readonly messages: number;
+    readonly text: string;
+    readonly truncated: boolean;
+  }>;
+}
+export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly conversationHistory?: PluginConversationHistoryService; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly subagentProfiles?: SubagentProfileCatalog; readonly replies?: IntermediateReplyService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService }
 export interface PluginHostServices extends Omit<PluginRuntimeServices, "searchDocuments"> { readonly searchDocumentProjection?: SearchDocumentProjection }
 
 export interface PluginEnableOptions {

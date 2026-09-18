@@ -27,7 +27,7 @@
 | **權限** | Owner 與一般成員兩級；每個工具宣告 capability 與 tier；委派時權限只會縮小 |
 | **子代理** | 每個主管最多兩個並行子 Run、只有一層，可取消、可先回覆；profile 由外掛提供 |
 | **排程** | 可持久化的 cron 與一次性提醒，以一般 agent Run 的方式執行 |
-| **外掛** | 內建與外部外掛共用同一套 manifest 與 runtime；從 GitHub 安裝、啟用、設定、更新、移除 |
+| **外掛系統** | 內掛與外掛共用同一套 manifest 與 runtime；外掛可從 GitHub 安裝、啟用、設定、更新、移除 |
 | **控制台** | 本機網頁介面：像聊天紀錄一樣讀對話、管理外掛、排程、workspace 檔案與設定 |
 
 ## 需求
@@ -137,11 +137,11 @@ umo web status
 
 控制台只綁 loopback（預設 `http://127.0.0.1:3210`）。可以看每個頻道目前的對話與封存的對話（聊天紀錄形式），以及外掛、排程、workspace 檔案、設定、用量與 log。
 
-## 外掛
+## 內掛 / 外掛
 
-內建外掛隨 release 出貨，可停用但不可移除：`context-files`、`memory`、`scheduler`、`subagent`、`host-tools`、`discord-tools`。不裝任何外部外掛，ümiro 已是完整的 agent。
+內掛隨 release 出貨，可停用但不可移除：`context-files`、`memory`、`scheduler`、`subagent`、`host-tools`、`discord-tools`。不裝任何外掛，ümiro 已是完整的 agent。
 
-外部外掛另行安裝，官方集合在 [umiro-plugins](https://github.com/iiimabbie/umiro-plugins)：
+外掛另行安裝，官方集合在 [umiro-plugins](https://github.com/iiimabbie/umiro-plugins)：
 
 | 外掛 | 功能 |
 |---|---|
@@ -151,6 +151,7 @@ umo web status
 | `google` | Gmail、Calendar、Tasks、Drive 工具，OAuth 授權 |
 | `tool-activity` | Run 使用工具時，在 Discord 即時顯示她正在做什麼 |
 | `daily-report` | 排程的每日摘要 |
+| `diary` | 從 canonical conversation history 重建 agent 自己第一人稱的每日日記 |
 
 ```bash
 umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
@@ -159,7 +160,9 @@ umo plugin enable | disable | update | remove <source>
 umo plugin configure <source> --config '{"key":"value"}'
 ```
 
-兩種外掛共用同一套 manifest、權限、生命週期與 runtime。外掛宣告需要的 capability，host 會把它限制在呼叫者本身被允許的範圍內。
+內掛與外掛共用同一套 manifest、權限、生命週期與 runtime。外掛宣告需要的 capability，host 會把它限制在呼叫者本身被允許的範圍內。
+
+停用外掛時，它註冊的工具、policy、hook、job、command、skill 與搜尋 projection 會從 runtime 撤下，所屬排程會標記為生命週期停用；再次啟用時才恢復。移除外掛時，所屬排程與搜尋 projection 會一併刪除。外掛執行後產生的日記、報告等使用者資料會保留。
 
 ## CLI
 
@@ -183,7 +186,7 @@ packages/core             領域契約與執行 runtime（無 I/O）
 packages/adapter-discord  Discord 傳輸層
 packages/model-openai     OpenAI 相容模型 adapter
 packages/storage-sqlite   持久化狀態、搜尋與向量 projection
-plugins/*                 內建外掛
+plugins/*                 內掛
 templates/workspace       首次執行的 workspace 檔案
 ```
 

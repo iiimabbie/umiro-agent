@@ -1235,6 +1235,20 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     })();
   }
 
+  async listSearchNamespaces(): Promise<readonly string[]> {
+    return (this.database.prepare("SELECT DISTINCT namespace FROM search_documents ORDER BY namespace").all() as Array<{ namespace: string }>).map(row => row.namespace);
+  }
+
+  async removeSearchNamespace(namespace: string): Promise<void> {
+    if (!/^[a-z0-9._-]{1,100}$/i.test(namespace)) throw new TypeError("invalid search namespace");
+    this.database.transaction(() => {
+      const keys = this.database.prepare("SELECT 'document:' || namespace || ':' || document_id AS document_key FROM search_documents WHERE namespace=?").all(namespace) as Array<{ document_key: string }>;
+      for (const { document_key } of keys) this.removeEmbedding(document_key);
+      this.database.prepare("DELETE FROM search_documents_fts WHERE namespace=?").run(namespace);
+      this.database.prepare("DELETE FROM search_documents WHERE namespace=?").run(namespace);
+    })();
+  }
+
   async rebuildSearchProjection(): Promise<void> {
     this.database.transaction(() => {
       this.database.prepare("DELETE FROM conversation_fts").run();
