@@ -15,7 +15,7 @@ export function previewNextFire(schedule: TriggerSchedule, timezone: string, aft
 
 export class DurableScheduler implements SchedulerControl {
   private timer: NodeJS.Timeout | undefined; private running = false; private dispatcher: Dispatcher | undefined;
-  constructor(private readonly store: SchedulerStore, private readonly intervalMs = 1000, private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly store: SchedulerStore, private readonly intervalMs = 1000, private readonly now: () => Date = () => new Date(), private readonly onBackgroundError: (error: unknown) => void = () => undefined) {}
   setDispatcher(dispatcher: Dispatcher): void { this.dispatcher = dispatcher; }
   async create(input: Omit<CreateScheduledTrigger, "id" | "nextFireAt" | "createdAt">, idempotencyKey?: string): Promise<ScheduledTrigger> {
     const now = this.now();
@@ -49,7 +49,13 @@ export class DurableScheduler implements SchedulerControl {
     }
   }
   recover(): Promise<number> { return this.store.recoverScheduledOccurrences(this.now().toISOString()); }
-  start(): void { if (this.timer) return; void this.tick(); this.timer = setInterval(() => void this.tick(), this.intervalMs); this.timer.unref(); }
+  start(): void {
+    if (this.timer) return;
+    const run = () => { void this.tick().catch(error => this.onBackgroundError(error)); };
+    run();
+    this.timer = setInterval(run, this.intervalMs);
+    this.timer.unref();
+  }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
   async tick(signal?: AbortSignal): Promise<void> {
     if (this.running || !this.dispatcher) return; this.running = true;

@@ -109,7 +109,7 @@ const search = new HybridConversationSearch(store, embedder, logger);
 const semanticRecall = embedder ? new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }) : undefined;
 let runtimeRecall = { limit: config.embedding?.provider === "disabled" ? undefined : config.embedding?.recallLimit, minSimilarity: config.embedding?.provider === "disabled" ? undefined : config.embedding?.minSimilarity };
 if (semanticRecall) providers.register(semanticRecall);
-const scheduler = new DurableScheduler(store);
+const scheduler = new DurableScheduler(store, 1000, () => new Date(), error => logger.write({ level: "error", event: "scheduler.tick.failed", message: "Scheduler cycle failed; the next cycle will continue", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
 let host: PluginHost;
 const activeRuns = new Map<string, { readonly controller: AbortController; readonly userId: string }>();
 const activeSessions = new Map<string, { readonly runId: string; readonly gate: SteerGate }>();

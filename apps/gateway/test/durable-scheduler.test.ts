@@ -28,6 +28,20 @@ test("cron schedules validate timezone and calculate the next durable fire", asy
   store.close();
 });
 
+test("background scheduler failures are contained and later ticks continue", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const errors: unknown[] = [];
+  const scheduler = new DurableScheduler(store, 5, () => new Date(), error => errors.push(error));
+  let ticks = 0;
+  scheduler.tick = async () => { ticks++; throw new Error("race"); };
+  scheduler.start();
+  await new Promise(resolve => setTimeout(resolve, 16));
+  scheduler.stop();
+  assert.ok(ticks >= 2);
+  assert.equal(errors.length, ticks);
+  store.close();
+});
+
 test("schedule update uses the same trigger identity and increments revision", async () => {
   const store = new SQLiteExecutionStore(":memory:"); const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-01-01T00:00:00.000Z"));
   const trigger = await scheduler.create({ name: "daily", enabled: true, schedule: { kind: "cron", expression: "0 9 * * *" }, timezone: "Europe/London", jobRef: "agent.prompt", input: { prompt: "old" }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 1000 });
