@@ -19,7 +19,9 @@ test("CLI keeps embedding disabled by default and configures a user provider", a
 
     await exec(process.execPath, [cli, "embedding", "configure", "--provider", "openai-compatible", "--model", "nomic-embed-text", "--base-url", "http://localhost:11434/v1", "--requests-per-minute", "3", "--recall-limit", "4", "--min-similarity", "0.5"], { env });
     config = JSON.parse(await readFile(join(home, "config", "umiro.json"), "utf8")) as { embedding: Record<string, unknown> };
-    assert.deepEqual(config.embedding, { provider: "openai-compatible", model: "nomic-embed-text", baseUrl: "http://localhost:11434/v1", requestsPerMinute: 3, recallLimit: 4, minSimilarity: 0.5 });
+    assert.deepEqual(config.embedding, { provider: "openai-compatible", model: "nomic-embed-text", requestsPerMinute: 3, recallLimit: 4, minSimilarity: 0.5 });
+    const secrets = await readFile(join(home, "config", "secrets.env"), "utf8");
+    assert.match(secrets, /^UMIRO_EMBEDDING_BASE_URL="http:\/\/localhost:11434\/v1"$/m);
 
     await exec(process.execPath, [cli, "embedding", "disable"], { env });
     config = JSON.parse(await readFile(join(home, "config", "umiro.json"), "utf8")) as { embedding: Record<string, unknown> };
