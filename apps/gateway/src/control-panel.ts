@@ -10,6 +10,7 @@ import { assertConfigContainsNoSecrets } from "@umiro/core/config";
 const HTML = readFileSync(new URL("./control-panel/index.html", import.meta.url), "utf8");
 const JS = readFileSync(new URL("./control-panel/app.js", import.meta.url), "utf8");
 const CSS = readFileSync(new URL("./control-panel/app.css", import.meta.url), "utf8");
+const FAVICON = readFileSync(new URL("./control-panel/favicon.png", import.meta.url));
 
 const BASE_EDITABLE_FILES = ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"] as const;
 const KNOWN_EDITABLE_FILES = new Set([...BASE_EDITABLE_FILES, "PEOPLE.md"]);
@@ -163,6 +164,7 @@ export class ControlPanelServer {
       if (request.method === "GET" && url.pathname === "/") return text(response, 200, HTML, "text/html; charset=utf-8");
       if (request.method === "GET" && url.pathname === "/app.js") return text(response, 200, JS, "text/javascript; charset=utf-8");
       if (request.method === "GET" && url.pathname === "/app.css") return text(response, 200, CSS, "text/css; charset=utf-8");
+      if (request.method === "GET" && url.pathname === "/favicon.png") { response.writeHead(200, { ...SECURITY_HEADERS, "cache-control": "public, max-age=86400", "content-type": "image/png", "content-length": FAVICON.byteLength }); response.end(FAVICON); return; }
       if (request.method === "GET" && url.pathname === "/healthz") return json(response, 200, { status: "alive" });
       if (request.method === "GET" && url.pathname === "/readyz") {
         const checks = this.options.readiness ? await this.options.readiness() : { storage: true, plugins: true, discord: true, scheduler: true };
