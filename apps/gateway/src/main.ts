@@ -523,7 +523,28 @@ const handleCommand = async (name: string, input: Record<string, string | number
     const active = activeSessions.get(commandContext.channelId);
     const schedules = await scheduler.list();
     const plugins = host.list();
-    return { content: [`ümiro ${releaseIdentity}`, `Discord: ${discord.identity()?.tag ?? "未連線"}`, `模型: ${profile.model}（${profile.reasoningEffort}）`, `訊息模式: ${profile.queueMode}`, `目前 Run: ${active?.runId ?? "無"}`, `排程: ${schedules.filter(item => item.enabled).length} 個啟用`, `外掛: ${plugins.filter(item => item.state === "enabled").length}/${plugins.length} 個啟用`].join("\\n") };
+    const runs = await store.listRuns(200);
+    const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat();
+    const usage = summarizeModelUsage(calls, runtimePricing);
+    const release = typeof releaseIdentity === "object" && releaseIdentity !== null && "revision" in releaseIdentity && typeof releaseIdentity.revision === "string" ? releaseIdentity.revision : "source";
+    const activeSchedules = schedules.filter(item => item.enabled && item.jobRef === "agent.prompt").length;
+    const reminders = schedules.filter(item => item.enabled && item.jobRef === "agent.prompt" && item.schedule.kind === "once").length;
+    const pluginJobs = schedules.filter(item => item.enabled && item.jobRef.startsWith("plugin:")).length;
+    const runState = active ? `執行中（${active.runId}）` : "閒置";
+    return { content: [
+      `ümiro ${release}`,
+      `Discord: ${discord.identity()?.tag ?? "未連線"}`,
+      `模型: ${profile.model}（reasoning: ${profile.reasoningEffort}）`,
+      `訊息模式: ${profile.queueMode}`,
+      `目前 Run: ${runState}`,
+      `Tokens: ${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out（${usage.calls} calls）`,
+      `Active Sessions: ${activeSessions.size}`,
+      `Cron: ${activeSchedules} active / ${schedules.filter(item => item.jobRef === "agent.prompt" && item.schedule.kind === "cron").length} total`,
+      `Reminders: ${reminders} pending`,
+      `Plugin Jobs: ${pluginJobs} scheduled`,
+      `Plugins: ${plugins.length ? plugins.map(item => `${item.id} (${item.state})`).join(", ") : "none"}`,
+      `Skills: ${config.skills?.length ? config.skills.join(", ") : "none"}`,
+    ].join("\\n") };
   }
   if (name === "restart") {
     if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
