@@ -37,6 +37,9 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(html, /id="configSearch"/);
   assert.match(html, /id="runtimeCards"/);
   assert.match(html, /id="documentPreview"/);
+  assert.match(html, /id="scheduleTime" type="time"/);
+  assert.doesNotMatch(html, /id="scheduleHour"|id="scheduleMinute"/);
+  assert.match(script, /Number\(minute\) \+ ' ' \+ Number\(hour\)/);
   assert.match(script, /configSchema/);
   assert.match(script, /\/api\/schedules\/preview/);
   assert.match(script, /\/api\/runtime\/restart/);
