@@ -7,6 +7,7 @@
 <body>
 <aside class="sidebar">
   <h1>ümiro V2 控制台</h1>
+  <button id="mobileMenu" class="mobile-menu" aria-expanded="false">選單</button>
 
   <label>Web UI Token<input id="token" type="password" autocomplete="off"></label>
   <button id="connect">連線</button>
@@ -25,8 +26,9 @@
 
 <main class="content">
   <section id="page-status" class="page">
-    <h2>狀態</h2>
-    <pre id="runtime"></pre>
+    <div class="page-heading"><h2>狀態</h2><span id="connectionBadge" class="badge badge-off">未連線</span></div>
+    <div id="runtimeCards" class="stat-grid"></div>
+    <details class="details-panel"><summary>查看詳細 runtime</summary><pre id="runtime"></pre></details>
     <h3>Secrets</h3>
     <small>已設定的值不會回傳到瀏覽器。只填入要新增或更換的欄位。</small>
     <div id="secretForm" class="secret-form"></div>
@@ -42,14 +44,14 @@
     <h2>Discord 頻道</h2>
     <button id="refreshChannels">重新取得名稱</button>
     <small>名稱直接向 Discord 取得；頻道更名後會自動更新。ID 僅作為穩定識別。</small>
-    <div id="channels"></div>
+    <div id="channels" class="list-panel"></div>
     <div id="channelConversation"></div>
   </section>
 
   <section id="page-archived" class="page">
     <h2>封存</h2>
     <button id="refreshArchived">重新整理</button>
-    <div id="archivedList"></div>
+    <div id="archivedList" class="list-panel"></div>
     <div id="archivedConversation"></div>
   </section>
 
@@ -61,16 +63,26 @@
         <option value="cron">Cron</option>
         <option value="once">一次性 Reminder</option>
       </select>
+      <select id="scheduleFrequency" aria-label="排程頻率">
+        <option value="daily">每天</option>
+        <option value="weekly">每週</option>
+        <option value="custom">自訂 Cron</option>
+      </select>
+      <input id="scheduleTime" type="time" value="09:00" aria-label="執行時間">
+      <select id="scheduleWeekday" aria-label="執行星期">
+        <option value="1">星期一</option><option value="2">星期二</option><option value="3">星期三</option><option value="4">星期四</option><option value="5">星期五</option><option value="6">星期六</option><option value="0">星期日</option>
+      </select>
       <input id="scheduleWhen" placeholder="cron expression 或 ISO 時間">
       <input id="scheduleTimezone" placeholder="Timezone">
       <select id="scheduleChannel">
         <option value="">不指定 Discord 頻道</option>
       </select>
     </div>
+    <small id="scheduleAdvancedHint">每天 09:00 執行</small>
     <textarea id="schedulePrompt" placeholder="Agent prompt"></textarea>
     <button id="createSchedule">建立</button>
     <button id="refreshSchedules">重新整理</button>
-    <div id="schedules"></div>
+    <div id="schedules" class="list-panel"></div>
   </section>
 
   <section id="page-plugins" class="page">
@@ -84,7 +96,7 @@
     <input id="pluginSource" placeholder="外掛 GitHub HTTPS URL 或本機路徑">
     <input id="pluginWorkspace" placeholder="monorepo workspace（可留空）">
     <button id="installPlugin">安裝外掛</button>
-    <div id="pluginsExternal"></div>
+    <div id="pluginsExternal" class="list-panel"></div>
 
     <button id="refreshPlugins">重新整理</button>
   </section>
@@ -92,8 +104,9 @@
   <section id="page-workspace" class="page">
     <h2>Agent Workspace</h2>
     <div class="files" id="files"></div>
-    <h3 id="filename">尚未選擇檔案</h3>
+    <div class="workspace-toolbar"><h3 id="filename">尚未選擇檔案</h3><span id="workspaceSaveState" class="save-state"></span><button id="togglePreview" type="button">預覽 Markdown</button></div>
     <textarea id="document"></textarea>
+    <div id="documentPreview" class="markdown-preview" hidden></div>
     <button id="saveDocument">儲存文件</button>
   </section>
 
@@ -103,10 +116,14 @@
       <small class="config-restart-legend">此顏色的欄位名稱需重啟</small>
     </div>
     <p>修改後按下儲存。滑鼠停在欄位名稱上可查看用途、預設值與風險。</p>
+    <div class="config-toolbar"><input id="configSearch" type="search" placeholder="搜尋設定欄位…"><nav id="configNav" aria-label="設定分類"></nav></div>
     <div id="configForm"></div>
-    <button id="saveConfig">儲存設定</button>
+    <div class="sticky-actions"><span id="configSaveState" class="save-state"></span><button id="saveConfig">儲存設定</button><button id="restartGateway" type="button" hidden>立即重啟</button></div>
   </section>
 </main>
+
+<div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+<div id="modalBackdrop" class="modal-backdrop" hidden><div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><h2 id="modalTitle"></h2><div id="modalBody"></div><div class="modal-actions"><button id="modalCancel" type="button">取消</button><button id="modalConfirm" type="button">確認</button></div></div></div>
 
 <script src="app.js"></script>
 </body>

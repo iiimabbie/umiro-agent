@@ -1,5 +1,6 @@
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { openSync } from "node:fs";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type ReasoningEffort } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
@@ -11,7 +12,7 @@ import { orderPluginEnableEntries, pluginSecretsFromEnvironment, pluginStateDire
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedder, type EmbeddingConfig } from "./embedding-config.js";
-import { DurableScheduler } from "./durable-scheduler.js";
+import { DurableScheduler, previewNextFire } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
@@ -353,14 +354,26 @@ const persistSecrets = async (values: Readonly<Record<string, string>>): Promise
 };
 let connectDiscordFromSecrets: () => Promise<boolean> = async () => false;
 let discordStartAttempted = false;
+let shutdown: ((exitCode?: number, restart?: boolean) => Promise<void>) | undefined;
+let restartRequested = false;
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
   list: () => scheduler.list(),
   create: input => scheduler.create({ name: input.name, enabled: true, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, jobRef: "agent.prompt", input: { prompt: input.prompt }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: ownerAuthority, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
   setEnabled: (id, enabled) => scheduler.setEnabled(id, enabled),
   update: (id, input) => scheduler.update(id, { name: input.name, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, input: { prompt: input.prompt }, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
   remove: id => scheduler.remove(id),
+  preview: input => previewNextFire(input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, input.timezone),
 }, plugins: {
-  list: async () => JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")),
+  list: async () => {
+    const entries = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<Record<string, unknown>>;
+    return Promise.all(entries.map(async entry => {
+      if (typeof entry.path !== "string") return entry;
+      try {
+        const plugin = await loadPluginModule(entry.path);
+        return { ...entry, manifest: plugin.manifest };
+      } catch { return entry; }
+    }));
+  },
   run: async (action, source, workspace, pluginConfig) => {
     const args = ["plugin", action, source, ...(workspace ? ["--workspace", workspace] : []), ...(pluginConfig ? ["--config", JSON.stringify(pluginConfig)] : [])];
     const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
@@ -476,7 +489,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
       hasMore: page.hasMore,
     };
   },
-}, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => ({ ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }), processId: process.pid });
+}, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; return { ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
   const module = modules[index]!;
@@ -706,7 +719,7 @@ const discordConnected = await connectDiscordFromSecrets();
 if (!discordConnected && !controlPanel) throw new Error(`Discord configuration is required: ${readiness.configurationRequired.join(", ")}`);
 await writeReadinessEvidence();
 let shuttingDown = false;
-const shutdown = async (exitCode = 0) => {
+shutdown = async (exitCode = 0, restart = false) => {
   if (shuttingDown) return;
   shuttingDown = true;
   readiness.shuttingDown = true;
@@ -731,8 +744,18 @@ const shutdown = async (exitCode = 0) => {
   if (drain.drained) store.close();
   await rm(`${paths.state}/gateway.ready`, { force: true });
   await releaseSingletonLock();
-  process.exit(exitCode);
+  if (restart && !process.env.INVOCATION_ID) {
+    const entry = process.argv[1];
+    if (!entry) throw new Error("gateway entry is unavailable for restart");
+    const log = openSync(`${paths.state}/gateway.log`, "a", 0o600);
+    const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], { detached: true, stdio: ["ignore", log, log], env: process.env });
+    child.unref();
+    if (!child.pid) throw new Error("gateway restart failed to spawn");
+    await writeFile(`${paths.state}/gateway.pid.json`, `${JSON.stringify({ pid: child.pid, entry, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+  }
+  process.exit(restart && process.env.INVOCATION_ID ? 1 : exitCode);
 };
+if (restartRequested) void shutdown(0, true);
 const fatal = (event: "unhandledRejection" | "uncaughtException", error: unknown) => {
   try { logger.write({ level: "error", event: `process.${event}`, message: "Fatal process error; shutting down cleanly", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }); } catch { /* Last-resort handler must continue shutdown. */ }
   void shutdown(1);

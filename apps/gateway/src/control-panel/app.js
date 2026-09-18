@@ -6,6 +6,61 @@ let channelRefreshTimer;
 let selectedChannelId;
 let loadedConfig;
 let secretNames = [];
+let configSchema;
+let configDirty = false;
+let workspaceDirty = false;
+let workspaceSavedAt;
+let modalResolve;
+
+function showToast(message, type = 'info') {
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  toast.textContent = message;
+  $('toastRegion').append(toast);
+  window.setTimeout(() => toast.remove(), type === 'error' ? 7000 : 4000);
+}
+
+function errorMessage(error) { return error instanceof Error ? error.message : String(error); }
+function reportError(error) { showToast(errorMessage(error), 'error'); }
+async function withBusy(button, work, busyText = '處理中…') {
+  if (!button || button.disabled) return;
+  const original = button.textContent;
+  button.disabled = true; button.textContent = busyText;
+  try { return await work(); } finally { button.disabled = false; button.textContent = original; }
+}
+
+function confirmAction(title, message, confirmText = '確認') {
+  $('modalTitle').textContent = title;
+  const body = $('modalBody'); body.replaceChildren();
+  const text = document.createElement('p'); text.textContent = message; body.append(text);
+  $('modalConfirm').textContent = confirmText;
+  $('modalBackdrop').hidden = false;
+  return new Promise(resolve => { modalResolve = resolve; });
+}
+
+function closeModal(value) {
+  $('modalBackdrop').hidden = true;
+  const resolve = modalResolve; modalResolve = undefined;
+  resolve?.(value);
+}
+
+function markConfigDirty() {
+  configDirty = true;
+  $('configSaveState').textContent = '有未儲存變更';
+  $('configSaveState').className = 'save-state dirty';
+}
+
+function markConfigSaved(message = '設定已儲存') {
+  configDirty = false;
+  $('configSaveState').textContent = message;
+  $('configSaveState').className = 'save-state saved';
+}
+
+function markWorkspaceDirty() {
+  workspaceDirty = true;
+  $('workspaceSaveState').textContent = '有未儲存變更';
+  $('workspaceSaveState').className = 'save-state dirty';
+}
 
 const CONFIG_GROUPS = [
   { title: '模型與 Context', fields: [
@@ -152,9 +207,16 @@ function configControl(field, value, models) {
 
 function renderConfigForm(schema, config, models) {
   loadedConfig = structuredClone(config);
-  const groups = CONFIG_GROUPS.map(group => {
+  configSchema = schema;
+  const nav = $('configNav');
+  nav.replaceChildren(...CONFIG_GROUPS.map((group, index) => {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = group.title;
+    button.onclick = () => document.getElementById('config-group-' + index)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return button;
+  }));
+  const groups = CONFIG_GROUPS.map((group, groupIndex) => {
     const section = document.createElement('section');
-    section.className = 'config-group';
+    section.className = 'config-group'; section.id = 'config-group-' + groupIndex; section.dataset.configGroup = group.title;
     const title = document.createElement('h3');
     title.textContent = group.title;
     const grid = document.createElement('div');
@@ -164,6 +226,7 @@ function renderConfigForm(schema, config, models) {
       if (!explanation) continue;
       const wrapper = document.createElement('div');
       wrapper.className = 'config-field' + (field.wide ? ' config-wide' : '');
+      wrapper.dataset.configPath = field.path; wrapper.dataset.configLabel = explanation.label;
       const label = document.createElement('label');
       label.className = 'config-label' + (explanation.restartRequired ? ' config-restart-required' : '');
       label.tabIndex = 0;
@@ -186,6 +249,17 @@ function renderConfigForm(schema, config, models) {
     return section;
   });
   $('configForm').replaceChildren(...groups);
+  markConfigSaved('設定已載入');
+  $('configForm').oninput = markConfigDirty;
+  $('configForm').onchange = markConfigDirty;
+}
+
+function filterConfigFields() {
+  const query = $('configSearch').value.trim().toLocaleLowerCase();
+  for (const field of document.querySelectorAll('.config-field')) {
+    const haystack = (field.dataset.configPath + ' ' + field.dataset.configLabel).toLocaleLowerCase();
+    field.classList.toggle('config-hidden', Boolean(query) && !haystack.includes(query));
+  }
 }
 
 function readConfigForm() {
@@ -256,6 +330,36 @@ async function logs() {
   $('logs').textContent = JSON.stringify(await api('/api/logs?limit=100'), null, 2);
 }
 
+function renderRuntime(runtime) {
+  $('runtime').textContent = JSON.stringify(runtime, null, 2);
+  const checks = runtime.readiness || {};
+  const cards = [
+    ['Gateway', runtime.ready ? '正常' : '需要處理', 'PID ' + (runtime.pid ?? '—')],
+    ['Discord', checks.discord ? '已連線' : '未連線', runtime.bot?.tag || '尚無 Bot'],
+    ['Storage', checks.storage ? '正常' : '異常', '資料持久層'],
+    ['Scheduler', checks.scheduler ? '正常' : '異常', '排程服務'],
+    ['版本', runtime.release?.revision || runtime.release?.releaseId || 'source', runtime.release?.mode || 'source'],
+    ['啟動時間', runtime.startedAt ? new Date(runtime.startedAt).toLocaleString() : '—', runtime.plugins?.length + ' 個外掛'],
+  ];
+  $('runtimeCards').replaceChildren(...cards.map(([label, value, detail]) => {
+    const card = document.createElement('div'); card.className = 'stat-card';
+    const title = document.createElement('small'); title.textContent = label;
+    const strong = document.createElement('strong'); strong.textContent = value;
+    const meta = document.createElement('small'); meta.textContent = detail;
+    card.append(title, strong, meta); return card;
+  }));
+  $('connectionBadge').className = 'badge' + (runtime.ready ? '' : ' badge-warning');
+  $('connectionBadge').textContent = runtime.ready ? '運作中' : '需要處理';
+}
+
+function emptyState(title, detail, actionLabel, action) {
+  const box = document.createElement('div'); box.className = 'empty-state';
+  const strong = document.createElement('strong'); strong.textContent = title; box.append(strong);
+  const text = document.createElement('small'); text.textContent = detail; box.append(text);
+  if (actionLabel && action) { const button = document.createElement('button'); button.textContent = actionLabel; button.onclick = action; box.append(button); }
+  return box;
+}
+
 const channelName = id => {
   const x = channelCatalog.get(id);
   return x ? x.guildName + ' · ' + (x.kind === 'thread' && x.parentName ? x.parentName + ' / ' : '') + '#' + x.name : id || '未指定頻道';
@@ -273,9 +377,10 @@ async function channels() {
     const id = document.createElement('small');
     id.textContent = ' — ' + x.id;
     d.append(name, id);
-    d.onclick = () => selectChannel(x.id, d).catch(e => alert(e.message));
+    d.onclick = () => selectChannel(x.id, d).catch(reportError);
     return d;
   }));
+  if (items.length === 0) $('channels').append(emptyState('尚無 Discord 頻道紀錄', '請先在 Discord 頻道觸發一次對話，該頻道才會出現在這裡。', '重新取得', () => withBusy($('refreshChannels'), channels)));
   const selected = $('scheduleChannel').value;
   $('scheduleChannel').replaceChildren(
     new Option('不指定 Discord 頻道', ''),
@@ -439,7 +544,7 @@ async function renderConversation(container, summary) {
     }
     loadMoreBtn.hidden = !data.hasMore;
   }
-  loadMoreBtn.onclick = () => loadPage().catch(e => alert(e.message));
+  loadMoreBtn.onclick = () => withBusy(loadMoreBtn, loadPage, '載入中…').catch(reportError);
   await loadPage();
 }
 
@@ -448,8 +553,7 @@ async function archived() {
   $('archivedConversation').replaceChildren();
   if (items.length === 0) {
     const empty = document.createElement('small');
-    empty.textContent = '（無）';
-    $('archivedList').replaceChildren(empty);
+    $('archivedList').replaceChildren(emptyState('尚無封存對話', '使用 Discord 的 /new 開始新對話後，舊對話會出現在這裡。'));
     return;
   }
   $('archivedList').replaceChildren(...items.map(x => {
@@ -466,10 +570,43 @@ async function archived() {
     d.onclick = () => {
       for (const el of document.querySelectorAll('#archivedList .archived-item.active')) el.classList.remove('active');
       d.classList.add('active');
-      renderConversation($('archivedConversation'), x).catch(e => alert(e.message));
+      renderConversation($('archivedConversation'), x).catch(reportError);
     };
     return d;
   }));
+}
+
+function scheduleExpression() {
+  if ($('scheduleKind').value === 'once') return undefined;
+  if ($('scheduleFrequency').value === 'custom') return $('scheduleWhen').value.trim();
+  const [hour = '9', minute = '0'] = $('scheduleTime').value.split(':');
+  return Number(minute) + ' ' + Number(hour) + ' * * ' + ($('scheduleFrequency').value === 'weekly' ? $('scheduleWeekday').value : '*');
+}
+
+function scheduleInput() {
+  const kind = $('scheduleKind').value;
+  return { kind, ...(kind === 'cron' ? { expression: scheduleExpression() } : { at: new Date($('scheduleWhen').value).toISOString() }), timezone: $('scheduleTimezone').value };
+}
+
+let previewTimer;
+function updateScheduleControls() {
+  const once = $('scheduleKind').value === 'once';
+  const custom = $('scheduleFrequency').value === 'custom';
+  $('scheduleFrequency').hidden = once;
+  $('scheduleTime').hidden = once || custom;
+  $('scheduleWeekday').hidden = once || custom || $('scheduleFrequency').value !== 'weekly';
+  $('scheduleWhen').hidden = !once && !custom;
+  $('scheduleWhen').type = once ? 'datetime-local' : 'text';
+  $('scheduleWhen').placeholder = once ? '提醒時間' : 'Cron expression';
+  if ($('state').textContent !== '已連線') { $('scheduleAdvancedHint').textContent = once ? '填入時間後可預覽下次執行' : '連線後會顯示下次執行時間'; return; }
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    try {
+      const input = scheduleInput();
+      const result = await api('/api/schedules/preview', { method: 'POST', body: JSON.stringify(input) });
+      $('scheduleAdvancedHint').textContent = result.nextFireAt ? '下次執行：' + new Date(result.nextFireAt).toLocaleString() + '（' + input.timezone + '）' : '不會再次執行';
+    } catch (error) { $('scheduleAdvancedHint').textContent = '排程尚未完整：' + errorMessage(error); }
+  }, 250);
 }
 
 async function schedules() {
@@ -479,33 +616,81 @@ async function schedules() {
     d.className = 'schedule';
     const destination = x.destination?.channelId ? ' — ' + channelName(x.destination.channelId) : '';
     const label = document.createElement('span');
-    label.textContent = x.name + ' — ' + JSON.stringify(x.schedule) + destination + ' — ' + (x.enabled ? '啟用' : '停用');
+    const next = x.nextFireAt ? ' — 下次 ' + new Date(x.nextFireAt).toLocaleString() : '';
+    label.textContent = x.name + ' — ' + (x.schedule.kind === 'once' ? new Date(x.schedule.at).toLocaleString() : x.schedule.expression) + destination + next + ' — ' + (x.enabled ? '啟用' : '停用');
     const toggle = document.createElement('button');
     toggle.textContent = x.enabled ? '停用' : '啟用';
-    toggle.onclick = () => api('/api/schedules/' + encodeURIComponent(x.id), { method: 'PATCH', body: JSON.stringify({ enabled: !x.enabled }) }).then(schedules);
+    toggle.onclick = () => withBusy(toggle, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'PATCH', body: JSON.stringify({ enabled: !x.enabled }) }); await schedules(); showToast(x.enabled ? '排程已停用' : '排程已啟用', 'success'); }).catch(reportError);
     const edit = document.createElement('button');
     edit.textContent = '編輯';
     edit.onclick = () => {
       editingSchedule = x.id;
       $('scheduleName').value = x.name;
       $('scheduleKind').value = x.schedule.kind;
-      $('scheduleWhen').value = x.schedule.kind === 'cron' ? x.schedule.expression : x.schedule.at;
+      $('scheduleWhen').value = x.schedule.kind === 'cron' ? x.schedule.expression : new Date(x.schedule.at).toISOString().slice(0, 16);
+      $('scheduleFrequency').value = 'custom';
       $('scheduleTimezone').value = x.timezone;
       $('schedulePrompt').value = x.input?.prompt || '';
       $('scheduleChannel').value = x.destination?.channelId || '';
       $('createSchedule').textContent = '儲存修改';
+      updateScheduleControls();
     };
     const remove = document.createElement('button');
     remove.textContent = '刪除';
-    remove.onclick = () => api('/api/schedules/' + encodeURIComponent(x.id), { method: 'DELETE' }).then(schedules).catch(e => alert(e.message));
+    remove.onclick = async () => { if (!await confirmAction('刪除排程', '確定刪除「' + x.name + '」？這個操作無法復原。', '刪除')) return; await withBusy(remove, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'DELETE' }); await schedules(); showToast('排程已刪除', 'success'); }, '刪除中…').catch(reportError); };
     d.append(label, toggle, edit, remove);
     return d;
   }));
+  if (items.length === 0) $('schedules').append(emptyState('尚無排程', '使用上方表單建立第一個 Cron 或 Reminder。', '建立第一個排程', () => $('scheduleName').focus()));
 }
 
 async function pluginAction(action, source, workspace, config) {
   await api('/api/plugins/action', { method: 'POST', body: JSON.stringify({ action, source, workspace, config }) });
   await plugins();
+}
+
+function pluginConfigControl(name, property, value) {
+  const label = document.createElement('label'); label.className = 'modal-field'; label.textContent = property.title || name;
+  let control;
+  if (Array.isArray(property.enum)) {
+    control = document.createElement('select');
+    control.replaceChildren(...property.enum.map(item => option(String(item), String(item))));
+    control.value = value === undefined ? String(property.default ?? property.enum[0] ?? '') : String(value);
+  } else if (property.type === 'boolean') {
+    control = document.createElement('select'); control.replaceChildren(option('true', '是'), option('false', '否')); control.value = String(value ?? property.default ?? false);
+  } else if (property.type === 'number' || property.type === 'integer') {
+    control = document.createElement('input'); control.type = 'number'; if (property.minimum !== undefined) control.min = String(property.minimum); if (property.maximum !== undefined) control.max = String(property.maximum); if (property.type === 'integer') control.step = '1'; const initial = value ?? property.default; if (initial !== undefined) control.value = String(initial);
+  } else if (property.type === 'array' || property.type === 'object') {
+    control = document.createElement('textarea'); control.value = property.type === 'array' && property.items?.type === 'string' ? (Array.isArray(value) ? value.join('\n') : '') : JSON.stringify(value ?? property.default ?? (property.type === 'array' ? [] : {}), null, 2);
+  } else {
+    control = document.createElement('input'); control.type = property.format === 'uri' ? 'url' : 'text'; control.value = value ?? property.default ?? '';
+  }
+  control.dataset.pluginConfigKey = name; control.dataset.schemaType = property.type || 'string'; control.dataset.stringArray = String(property.type === 'array' && property.items?.type === 'string');
+  if (property.description) { const help = document.createElement('small'); help.textContent = property.description; label.append(control, help); } else label.append(control);
+  return label;
+}
+
+async function configurePlugin(x) {
+  const schema = x.manifest?.configSchema;
+  if (!schema || schema.type !== 'object' || !schema.properties) return showToast('此外掛沒有可顯示的設定欄位', 'error');
+  $('modalTitle').textContent = '設定 ' + (x.manifest?.id || sourceBaseName(x.source));
+  const body = $('modalBody'); body.replaceChildren(...Object.entries(schema.properties).map(([name, property]) => pluginConfigControl(name, property, x.config?.[name])));
+  $('modalConfirm').textContent = '儲存設定'; $('modalBackdrop').hidden = false;
+  const accepted = await new Promise(resolve => { modalResolve = resolve; });
+  if (!accepted) return;
+  try {
+    const config = {};
+    for (const control of body.querySelectorAll('[data-plugin-config-key]')) {
+      const key = control.dataset.pluginConfigKey; const type = control.dataset.schemaType; const raw = control.value.trim();
+      if (!raw) continue;
+      if (type === 'boolean') config[key] = raw === 'true';
+      else if (type === 'number' || type === 'integer') config[key] = Number(raw);
+      else if (type === 'array' && control.dataset.stringArray === 'true') config[key] = raw.split(/\n|,/).map(value => value.trim()).filter(Boolean);
+      else if (type === 'array' || type === 'object') config[key] = JSON.parse(raw);
+      else config[key] = raw;
+    }
+    await pluginAction('configure', x.source, x.workspace, config); showToast('外掛設定已儲存，重啟後完整生效', 'success');
+  } catch (error) { reportError(error); }
 }
 
 function sourceBaseName(source) {
@@ -539,23 +724,20 @@ function renderPluginRow(x) {
 
   const toggle = document.createElement('button');
   toggle.textContent = x.enabled ? '停用' : '啟用';
-  toggle.onclick = () => pluginAction(x.enabled ? 'disable' : 'enable', x.source, x.workspace);
+  toggle.onclick = () => withBusy(toggle, async () => { await pluginAction(x.enabled ? 'disable' : 'enable', x.source, x.workspace); showToast(x.enabled ? '外掛已停用' : '外掛已啟用', 'success'); }).catch(reportError);
 
   const configure = document.createElement('button');
   configure.textContent = '設定';
-  configure.onclick = () => {
-    const value = prompt('JSON config', JSON.stringify(x.config || {}, null, 2));
-    if (value !== null) pluginAction('configure', x.source, x.workspace, JSON.parse(value)).catch(e => alert(e.message));
-  };
+  configure.onclick = () => configurePlugin(x);
 
   d.append(kind, info, status, toggle, configure);
   if (!builtin) {
     const update = document.createElement('button');
     update.textContent = '更新';
-    update.onclick = () => pluginAction('update', x.source, x.workspace).catch(e => alert(e.message));
+    update.onclick = () => withBusy(update, async () => { await pluginAction('update', x.source, x.workspace); showToast('外掛已更新', 'success'); }, '更新中…').catch(reportError);
     const remove = document.createElement('button');
     remove.textContent = '移除';
-    remove.onclick = () => pluginAction('remove', x.source, x.workspace).catch(e => alert(e.message));
+    remove.onclick = async () => { if (!await confirmAction('移除外掛', '確定移除「' + name.textContent + '」？外掛程式會被移除，使用者資料仍依外掛契約保存。', '移除')) return; await withBusy(remove, async () => { await pluginAction('remove', x.source, x.workspace); showToast('外掛已移除', 'success'); }, '移除中…').catch(reportError); };
     d.append(update, remove);
   }
   return d;
@@ -564,8 +746,7 @@ function renderPluginRow(x) {
 function renderPluginGroup(container, items) {
   if (items.length === 0) {
     const empty = document.createElement('small');
-    empty.textContent = '（無）';
-    container.replaceChildren(empty);
+    container.replaceChildren(emptyState(container.id === 'pluginsExternal' ? '尚無外部外掛' : '尚無內掛', container.id === 'pluginsExternal' ? '貼上 GitHub HTTPS URL 或本機路徑即可安裝。' : '目前安裝沒有提供內掛。', container.id === 'pluginsExternal' ? '安裝第一個外掛' : undefined, container.id === 'pluginsExternal' ? () => $('pluginSource').focus() : undefined));
     return;
   }
   container.replaceChildren(...items.map(renderPluginRow));
@@ -587,9 +768,7 @@ async function runs() {
     const location = x.channelId ? ' — ' + channelName(x.channelId) : '';
     const label = document.createElement('span');
     label.textContent = x.state + ' — ' + x.origin + location + ' — ' + x.updatedAt + (x.usage ? ' — ' + x.usage.inputTokens + ' in / ' + x.usage.outputTokens + ' out' : '');
-    b.onclick = async () => {
-      $('runDetail').textContent = JSON.stringify(await api('/api/runs/' + encodeURIComponent(x.id)), null, 2);
-    };
+    b.onclick = () => withBusy(b, async () => { $('runDetail').textContent = JSON.stringify(await api('/api/runs/' + encodeURIComponent(x.id)), null, 2); }).catch(reportError);
     d.append(b, label);
     return d;
   }));
@@ -607,7 +786,7 @@ async function connect() {
   ]);
   const models = modelResult.filter(model => typeof model === 'string');
   renderConfigForm(schema, config, models);
-  $('runtime').textContent = JSON.stringify(runtime, null, 2);
+  renderRuntime(runtime);
   secretNames = Object.keys(secrets);
   $('secretForm').replaceChildren(...secretNames.map(name => {
     const label = document.createElement('label');
@@ -626,7 +805,7 @@ async function connect() {
   $('files').replaceChildren(...names.map(n => {
     const b = document.createElement('button');
     b.textContent = n;
-    b.onclick = () => load(n).catch(e => alert(e.message));
+    b.onclick = () => withBusy(b, () => load(n), '載入中…').catch(reportError);
     return b;
   }));
   await channels();
@@ -637,65 +816,100 @@ async function connect() {
 }
 
 async function load(name) {
+  if (workspaceDirty && !await confirmAction('捨棄文件變更', '目前文件有未儲存變更，確定切換檔案？', '捨棄變更')) return;
   const x = await api('/api/workspace/' + encodeURIComponent(name));
   file = name;
   $('filename').textContent = name;
   $('document').value = x.content;
+  workspaceDirty = false; workspaceSavedAt = undefined;
+  $('workspaceSaveState').textContent = '已載入'; $('workspaceSaveState').className = 'save-state';
+  renderMarkdownPreview();
 }
 
-$('connect').onclick = () => connect().catch(e => $('state').textContent = e.message);
-$('saveConfig').onclick = () => {
+function renderMarkdownPreview() {
+  const target = $('documentPreview'); target.replaceChildren();
+  for (const line of $('document').value.split('\n')) {
+    let element;
+    if (/^#{1,6}\s/.test(line)) { const level = Math.min(6, line.match(/^#+/)[0].length); element = document.createElement('h' + level); element.textContent = line.replace(/^#{1,6}\s+/, ''); }
+    else if (/^[-*]\s/.test(line)) { element = document.createElement('div'); element.textContent = '• ' + line.replace(/^[-*]\s+/, ''); }
+    else { element = document.createElement('div'); element.textContent = line || ' '; }
+    target.append(element);
+  }
+}
+
+$('connect').onclick = () => withBusy($('connect'), connect, '連線中…').catch(error => { $('state').textContent = errorMessage(error); reportError(error); });
+$('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
   try {
     const next = readConfigForm();
-    api('/api/config', { method: 'PUT', body: JSON.stringify(next) }).then(result => {
-      loadedConfig = next;
-      const applied = result.applied?.length ? '\n即時套用：' + result.applied.join('、') : '';
-      const restart = result.restartRequired?.length ? '\n需重啟：' + result.restartRequired.join('、') : '';
-      alert('已儲存' + applied + restart);
-    }).catch(e => alert(e.message));
-  } catch (error) { alert(error instanceof Error ? error.message : String(error)); }
-};
-$('saveSecrets').onclick = () => {
+    const result = await api('/api/config', { method: 'PUT', body: JSON.stringify(next) });
+    loadedConfig = next; markConfigSaved();
+    $('restartGateway').hidden = !(result.restartRequired?.length);
+    const messages = [...(result.applied?.length ? ['即時套用：' + result.applied.join('、')] : []), ...(result.restartRequired?.length ? ['需重啟：' + result.restartRequired.join('、')] : [])];
+    showToast('設定已儲存' + (messages.length ? '；' + messages.join('；') : ''), 'success');
+  } catch (error) { reportError(error); }
+}, '儲存中…');
+$('saveSecrets').onclick = () => withBusy($('saveSecrets'), async () => {
   const values = Object.fromEntries(secretNames.map(name => [name, $('secret-' + name).value]).filter(([, value]) => value.trim()));
-  if (!Object.keys(values).length) return alert('請填入至少一個要更新的欄位');
-  api('/api/secrets', { method: 'PUT', body: JSON.stringify(values) }).then(result => {
-    for (const name of Object.keys(values)) $('secret-' + name).value = '';
-    const applied = result.applied?.length ? '\n即時套用：' + result.applied.join('、') : '';
-    const restart = result.restartRequired?.length ? '\n需重啟：' + result.restartRequired.join('、') : '';
-    alert('Secrets 已儲存' + applied + restart);
-    return connect();
-  }).catch(e => alert(e.message));
-};
-$('saveDocument').onclick = () => file ? api('/api/workspace/' + encodeURIComponent(file), { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }).then(() => alert('已儲存')).catch(e => alert(e.message)) : alert('請先選檔案');
-$('refreshSchedules').onclick = () => schedules().catch(e => alert(e.message));
-$('createSchedule').onclick = () => {
+  if (!Object.keys(values).length) return showToast('請填入至少一個要更新的欄位', 'error');
+  try { const result = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(values) }); for (const name of Object.keys(values)) $('secret-' + name).value = ''; $('restartGateway').hidden = !(result.restartRequired?.length); showToast('Secrets 已儲存', 'success'); await connect(); } catch (error) { reportError(error); }
+}, '儲存中…');
+$('saveDocument').onclick = () => withBusy($('saveDocument'), async () => { if (!file) return showToast('請先選擇文件', 'error'); try { await api('/api/workspace/' + encodeURIComponent(file), { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }); workspaceDirty = false; workspaceSavedAt = new Date(); $('workspaceSaveState').textContent = '最後儲存：' + workspaceSavedAt.toLocaleTimeString(); $('workspaceSaveState').className = 'save-state saved'; showToast(file + ' 已儲存', 'success'); } catch (error) { reportError(error); } }, '儲存中…');
+$('refreshSchedules').onclick = () => withBusy($('refreshSchedules'), schedules).catch(reportError);
+$('createSchedule').onclick = () => withBusy($('createSchedule'), async () => {
   const kind = $('scheduleKind').value;
-  const when = $('scheduleWhen').value;
+  let schedule;
+  try { schedule = scheduleInput(); } catch { return showToast('請填入有效的提醒時間', 'error'); }
   const body = {
     name: $('scheduleName').value,
     kind,
-    expression: kind === 'cron' ? when : undefined,
-    at: kind === 'once' ? when : undefined,
+    expression: schedule.expression,
+    at: schedule.at,
     timezone: $('scheduleTimezone').value,
     prompt: $('schedulePrompt').value,
     channelId: $('scheduleChannel').value || undefined,
   };
   const path = editingSchedule ? '/api/schedules/' + encodeURIComponent(editingSchedule) : '/api/schedules';
-  api(path, { method: editingSchedule ? 'PATCH' : 'POST', body: JSON.stringify(body) }).then(() => {
+  try { await api(path, { method: editingSchedule ? 'PATCH' : 'POST', body: JSON.stringify(body) });
     editingSchedule = undefined;
     $('createSchedule').textContent = '建立';
-    return schedules();
-  }).catch(e => alert(e.message));
-};
-$('refreshPlugins').onclick = () => plugins().catch(e => alert(e.message));
-$('installPlugin').onclick = () => pluginAction('install', $('pluginSource').value, $('pluginWorkspace').value || undefined).catch(e => alert(e.message));
-$('refreshRuns').onclick = () => runs().catch(e => alert(e.message));
-$('refreshUsage').onclick = () => usage().catch(e => alert(e.message));
-$('refreshLogs').onclick = () => logs().catch(e => alert(e.message));
-$('refreshChannels').onclick = () => channels().catch(e => alert(e.message));
-$('refreshArchived').onclick = () => archived().catch(e => alert(e.message));
+    await schedules(); showToast('排程已儲存', 'success');
+  } catch (error) { reportError(error); }
+}, '儲存中…');
+$('refreshPlugins').onclick = () => withBusy($('refreshPlugins'), plugins).catch(reportError);
+$('installPlugin').onclick = () => withBusy($('installPlugin'), async () => { try { await pluginAction('install', $('pluginSource').value, $('pluginWorkspace').value || undefined); showToast('外掛已安裝，重啟後完整生效', 'success'); } catch (error) { reportError(error); } }, '安裝中…');
+$('refreshRuns').onclick = () => withBusy($('refreshRuns'), runs).catch(reportError);
+$('refreshUsage').onclick = () => withBusy($('refreshUsage'), usage).catch(reportError);
+$('refreshLogs').onclick = () => withBusy($('refreshLogs'), logs).catch(reportError);
+$('refreshChannels').onclick = () => withBusy($('refreshChannels'), channels).catch(reportError);
+$('refreshArchived').onclick = () => withBusy($('refreshArchived'), archived).catch(reportError);
+$('restartGateway').onclick = async () => { if (!await confirmAction('重新啟動 Gateway', '目前進行中的工作會先嘗試安全結束，確定立即重啟？', '立即重啟')) return; try { await api('/api/runtime/restart', { method: 'POST', body: '{}' }); showToast('Gateway 正在重新啟動', 'success'); $('restartGateway').hidden = true; } catch (error) { reportError(error); } };
 $('token').value = localStorage.umiroToken || '';
 $('scheduleTimezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+$('modalCancel').onclick = () => closeModal(false);
+$('modalConfirm').onclick = () => closeModal(true);
+$('modalBackdrop').onclick = event => { if (event.target === $('modalBackdrop')) closeModal(false); };
+$('mobileMenu').onclick = () => {
+  const open = document.querySelector('.sidebar nav').classList.toggle('mobile-open');
+  $('mobileMenu').setAttribute('aria-expanded', String(open));
+};
+$('configSearch').oninput = filterConfigFields;
+$('scheduleKind').onchange = updateScheduleControls;
+$('scheduleFrequency').onchange = updateScheduleControls;
+$('scheduleTime').oninput = updateScheduleControls;
+$('scheduleWeekday').onchange = updateScheduleControls;
+$('scheduleWhen').oninput = updateScheduleControls;
+$('scheduleTimezone').oninput = updateScheduleControls;
+$('document').oninput = () => { workspaceDirty = true; markWorkspaceDirty(); if (!$('documentPreview').hidden) renderMarkdownPreview(); };
+$('togglePreview').onclick = () => {
+  const preview = $('documentPreview').hidden;
+  if (preview) renderMarkdownPreview();
+  $('documentPreview').hidden = !preview; $('document').hidden = preview;
+  $('togglePreview').textContent = preview ? '編輯 Markdown' : '預覽 Markdown';
+};
+window.addEventListener('beforeunload', event => {
+  if (configDirty || workspaceDirty) { event.preventDefault(); event.returnValue = ''; }
+});
+updateScheduleControls();
 
 const pages = [...document.querySelectorAll('.page')];
 const navLinks = [...document.querySelectorAll('nav a')];
@@ -717,4 +931,12 @@ function showPage() {
 }
 
 window.addEventListener('hashchange', showPage);
+for (const link of navLinks) link.addEventListener('click', async event => {
+  const leavingConfig = currentPageName() === 'config' && configDirty;
+  const leavingWorkspace = currentPageName() === 'workspace' && workspaceDirty;
+  if (!leavingConfig && !leavingWorkspace) return;
+  event.preventDefault();
+  const accepted = await confirmAction('尚有未儲存變更', '變更會保留在本頁，但關閉或重新載入瀏覽器會遺失。仍要切換頁面？', '仍要離開');
+  if (accepted) location.hash = link.hash;
+});
 showPage();

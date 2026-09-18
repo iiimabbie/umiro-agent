@@ -24,6 +24,15 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.doesNotMatch(script, /儲存後需重啟|儲存後即時生效/);
   assert.match(html, /class="config-restart-legend">此顏色的欄位名稱需重啟/);
   assert.match(css, /--restart-required: #5d3e3f/);
+  assert.match(html, /id="toastRegion"/);
+  assert.match(html, /id="modalBackdrop"/);
+  assert.match(html, /id="configSearch"/);
+  assert.match(html, /id="runtimeCards"/);
+  assert.match(html, /id="documentPreview"/);
+  assert.match(script, /configSchema/);
+  assert.match(script, /\/api\/schedules\/preview/);
+  assert.match(script, /\/api\/runtime\/restart/);
+  assert.doesNotMatch(script, /\balert\(|\bprompt\(/);
   assert.match(script, /api\('\/api\/secrets', \{ method: 'PUT'/);
   assert.match(script, /await r\.text\(\)/);
   assert.match(script, /無法連線到 ümiro Gateway/);

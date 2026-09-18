@@ -11,6 +11,8 @@ function nextFire(schedule: TriggerSchedule, timezone: string, after: Date): str
   try { return cron.nextRun(after)?.toISOString() ?? null; } finally { cron.stop(); }
 }
 
+export function previewNextFire(schedule: TriggerSchedule, timezone: string, after = new Date()): string | null { return nextFire(schedule, timezone, after); }
+
 export class DurableScheduler implements SchedulerControl {
   private timer: NodeJS.Timeout | undefined; private running = false; private dispatcher: Dispatcher | undefined;
   constructor(private readonly store: SchedulerStore, private readonly intervalMs = 1000, private readonly now: () => Date = () => new Date()) {}
