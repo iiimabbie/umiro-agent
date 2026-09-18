@@ -29,8 +29,10 @@ export const discordRuntimeContextProvider: ContextProvider = {
     const threadId = string(metadata?.threadId);
     const parentId = string(metadata?.threadParentId);
     const parentKind = string(metadata?.threadParentKind);
+    const authorBot = typeof metadata?.authorBot === "boolean" ? metadata.authorBot : undefined;
     const content = {
       transport: "discord",
+      ...(authorBot !== undefined ? { authorBot } : {}),
       currentChannel: { id: channelId, kind: threadId ? "thread" : request.inputEvent.conversation.kind },
       ...(string(metadata?.guildId) ? { guild: { id: string(metadata?.guildId)! } } : {}),
       ...(threadId ? { currentPost: { id: threadId } } : {}),

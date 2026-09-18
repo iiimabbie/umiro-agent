@@ -625,7 +625,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const controller = new AbortController();
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
-  const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${imported.promptSuffix}`;
+  const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}${message.authorBot ? "; bot" : ""}): ${message.content}${imported.promptSuffix}`;
   const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol);
   const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
     ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol)
