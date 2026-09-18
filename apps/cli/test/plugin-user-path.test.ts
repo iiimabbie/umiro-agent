@@ -73,3 +73,17 @@ test("GitHub Plugin update builds a candidate before replacing the installed ver
     assert.equal(await readFile(join(installed, "version.txt"), "utf8"), "v2\n");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("GitHub Plugin install accepts a repository tree subdirectory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-plugin-github-tree-"));
+  const home = join(root, "home"); const source = join(root, "source"); const bin = join(root, "bin");
+  const url = "https://github.com/example/monorepo/tree/main/packages/sample"; const installed = join(home, "app", "plugins", "monorepo-sample");
+  await mkdir(join(source, "packages", "sample"), { recursive: true }); await mkdir(bin);
+  await writeFile(join(source, "packages", "sample", "umiro.plugin.json"), JSON.stringify({ schemaVersion: 0, id: "sample", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "sample", permissions: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, contributes: {} }));
+  await writeFile(join(source, "packages", "sample", "index.js"), "export function createPlugin() { return { contributions: {} }; }\n");
+  await writeFile(join(source, "packages", "sample", "package.json"), JSON.stringify({ name: "sample", scripts: { build: "ignored" } }));
+  await writeFile(join(bin, "git"), "#!/bin/sh\nfor arg do destination=\"$arg\"; done\ncp -R \"$FAKE_PLUGIN_SOURCE\" \"$destination\"\n"); await writeFile(join(bin, "npm"), "#!/bin/sh\nexit 0\n"); await chmod(join(bin, "git"), 0o700); await chmod(join(bin, "npm"), 0o700);
+  const env = { ...process.env, UMIRO_HOME: home, FAKE_PLUGIN_SOURCE: source, PATH: `${bin}:${process.env.PATH ?? ""}` };
+  try { await exec(process.execPath, [cli, "init"], { env }); await exec(process.execPath, [cli, "plugin", "install", url], { env }); assert.equal(await readFile(join(installed, "index.js"), "utf8"), "export function createPlugin() { return { contributions: {} }; }\n"); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});

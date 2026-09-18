@@ -483,6 +483,9 @@ const builtinCommands = [
   { name: "new", description: "Start a new conversation in this channel; the current one is archived.", ownerOnly: true, ephemeral: true },
   { name: "model", description: "Switch the model for this Discord session.", ownerOnly: true, ephemeral: true, options: [{ name: "name", description: "Model ID, or reset to use the global default.", type: "string" as const, required: true, autocomplete: true }, { name: "effort", description: "Reasoning effort.", type: "string" as const, required: false, choices: ["default", "low", "medium", "high", "xhigh"].map(value => ({ name: value, value })) }] },
   { name: "queue", description: "Set queue or steer mode for this Discord session.", ownerOnly: true, ephemeral: true, options: [{ name: "mode", description: "Message handling mode, or reset for the global default.", type: "string" as const, required: true, choices: ["queue", "steer", "reset"].map(value => ({ name: value, value })) }] },
+  { name: "status", description: "Show the current ümiro status.", ownerOnly: true, ephemeral: true },
+  { name: "restart", description: "Restart the ümiro Gateway.", ownerOnly: true, ephemeral: true },
+  { name: "plugin", description: "Install, update, remove, enable, disable, or list plugins.", ownerOnly: true, ephemeral: true, options: [{ name: "action", description: "Plugin action.", type: "string" as const, required: true, choices: ["list", "install", "update", "remove", "enable", "disable"].map(value => ({ name: value, value })) }, { name: "target", description: "GitHub URL or installed plugin source.", type: "string" as const, required: false }, { name: "workspace", description: "Plugin directory inside a repository.", type: "string" as const, required: false }] },
 ];
 const handleCommand = async (name: string, input: Record<string, string | number | boolean>, commandContext: { userId: string; channelId: string; guildId?: string }) => {
   if (name === "stop") {
@@ -513,6 +516,29 @@ const handleCommand = async (name: string, input: Record<string, string | number
     if (mode !== "queue" && mode !== "steer" && mode !== "reset") throw new TypeError("queue mode must be queue, steer, or reset");
     const updated = await updateSessionPreferences(commandContext.channelId, current => ({ ...(current?.model ? { model: current.model, reasoningEffort: current.reasoningEffort! } : {}), ...(mode === "reset" ? {} : { queueMode: mode }) }));
     return { queueMode: updated.queueMode ?? discordPolicy.queueMode ?? "queue", source: updated.queueMode ? "session" : "global" };
+  }
+  if (name === "status") {
+    if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
+    const profile = await sessionProfile(commandContext.channelId);
+    const active = activeSessions.get(commandContext.channelId);
+    const schedules = await scheduler.list();
+    const plugins = host.list();
+    return { content: [`ümiro ${releaseIdentity}`, `Discord: ${discord.identity()?.tag ?? "未連線"}`, `模型: ${profile.model}（${profile.reasoningEffort}）`, `訊息模式: ${profile.queueMode}`, `目前 Run: ${active?.runId ?? "無"}`, `排程: ${schedules.filter(item => item.enabled).length} 個啟用`, `外掛: ${plugins.filter(item => item.state === "enabled").length}/${plugins.length} 個啟用`].join("\\n") };
+  }
+  if (name === "restart") {
+    if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
+    setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 500);
+    return { content: "已排程重啟 Gateway。" };
+  }
+  if (name === "plugin") {
+    if (commandContext.userId !== ownerDiscordId) throw new Error("Owner only");
+    const action = String(input.action ?? "list") as "list" | "install" | "update" | "remove" | "enable" | "disable";
+    const target = input.target === undefined ? undefined : String(input.target).trim();
+    if (action !== "list" && !target) throw new TypeError("plugin target is required");
+    if (action === "list") return { content: host.list().map(item => `${item.id}: ${item.state}`).join("\\n") || "目前沒有外掛。" };
+    const args = ["plugin", action, target!, ...(input.workspace ? ["--workspace", String(input.workspace)] : [])];
+    const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
+    return { content: `${action} 完成。${result.stdout.trim()}${action === "install" || action === "update" ? "\\n重啟後完整啟用外掛。" : ""}` };
   }
   const command = host.listCommands().find(candidate => candidate.name === name);
   if (!command) throw new Error(`plugin command not found: ${name}`);

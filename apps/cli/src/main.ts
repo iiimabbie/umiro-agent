@@ -24,6 +24,12 @@ const VERSION = "0.1.0";
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
 interface UmiroConfig { model: string; protocol?: "openai_responses" | "openai_chat_completions"; modelCapabilities?: string[]; profiles?: Record<string, { model: string; protocol?: "openai_responses" | "openai_chat_completions"; capabilities?: string[]; reasoningEffort?: string }>; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; skills?: string[]; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
 const REQUIRED_BUILTIN_PLUGINS = new Set(["context-files", "memory", "host-tools", "discord-tools"]);
+type GitHubPluginSource = { repository: string; ref?: string; subdirectory?: string };
+function parseGitHubPluginSource(value: string): GitHubPluginSource | undefined {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/tree\/([^/]+)\/(.+?))?\/?$/.exec(value);
+  if (!match) return undefined;
+  return { repository: match[2]!, ...(match[3] ? { ref: decodeURIComponent(match[3]) } : {}), ...(match[4] ? { subdirectory: match[4].replace(/\/$/, "") } : {}) };
+}
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
 function systemTimezone(): string { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
@@ -400,13 +406,12 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.source.startsWith("builtin:") ? "built-in" : "external"}\t${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
   if (action === "remove" && source.startsWith("builtin:")) throw new Error("built-in capabilities cannot be removed; disable them instead");
   let path = resolve(source); const installing = action === "install" || action === "update";
-  const githubSource = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(source);
-  if (githubSource) {
-    const repo = source.replace(/\/$/, "").split("/").pop()!.replace(/\.git$/, ""); path = managedPluginPath(join(app, "plugins"), repo, workspaceName);
-  }
-  const matches = (item: ManagedPlugin) => item.path === path || (item.source === source && item.workspace === workspaceName);
+  const github = parseGitHubPluginSource(source); const githubSource = github !== undefined;
+  const selectedWorkspace = workspaceName ?? (github?.subdirectory?.split("/").filter(Boolean).pop());
+  if (github) path = managedPluginPath(join(app, "plugins"), github.repository, selectedWorkspace);
+  const matches = (item: ManagedPlugin) => item.path === path || (item.source === source && item.workspace === selectedWorkspace);
   const previousEntry = entries.find(matches);
-  if (!installing && !previousEntry) throw new Error(`plugin is not installed: ${source}${workspaceName ? `#${workspaceName}` : ""}`);
+  if (!installing && !previousEntry) throw new Error(`plugin is not installed: ${source}${selectedWorkspace ? `#${selectedWorkspace}` : ""}`);
   const installedBuiltinId = previousEntry?.source.startsWith("builtin:") ? previousEntry.source.slice("builtin:".length) : undefined;
   if (action === "remove" && installedBuiltinId) throw new Error("built-in capabilities cannot be removed");
   if (action === "disable" && installedBuiltinId && REQUIRED_BUILTIN_PLUGINS.has(installedBuiltinId)) throw new Error(`required built-in capability cannot be disabled: ${installedBuiltinId}`);
@@ -418,8 +423,9 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
       const pluginRoot = join(app, "plugins"); const nonce = crypto.randomUUID(); const checkout = join(pluginRoot, `.checkout-${nonce}`); const candidate = join(pluginRoot, `.candidate-${nonce}`); const previous = join(pluginRoot, `.previous-${nonce}`);
       await mkdir(pluginRoot, { recursive: true, mode: 0o700 });
       try {
-        await exec("git", ["clone", "--depth", "1", source, checkout]);
-        if (workspaceName) { const direct = join(checkout, workspaceName); const nested = join(checkout, "packages", workspaceName); const selected = await exists(join(direct, "package.json")) ? direct : nested; await access(join(selected, "package.json")); await cp(selected, candidate, { recursive: true }); }
+        const cloneArgs = ["clone", "--depth", "1", ...(github?.ref ? ["--branch", github.ref] : []), `https://github.com/${github!.repository}.git`, checkout];
+        await exec("git", cloneArgs);
+        if (github?.subdirectory || selectedWorkspace) { const selected = github?.subdirectory ? join(checkout, github.subdirectory) : (await exists(join(checkout, selectedWorkspace!)) ? join(checkout, selectedWorkspace!) : join(checkout, "packages", selectedWorkspace!)); await access(join(selected, "package.json")); await cp(selected, candidate, { recursive: true }); }
         else await rename(checkout, candidate);
         const manager = await exists(join(candidate, "pnpm-lock.yaml")) ? "pnpm" : "npm"; await exec(manager, manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], { cwd: candidate }); await exec(manager, ["run", "build"], { cwd: candidate });
         manifest = await validatePluginDirectory(candidate);
@@ -439,7 +445,7 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
     nextConfig = resolvedPluginConfig(manifest, previousEntry?.config, configJson);
   }
   let next = entries;
-  if (installing) { next = [...entries.filter(item => !matches(item)), { source, path, ...(workspaceName ? { workspace: workspaceName } : {}), enabled: previousEntry?.enabled ?? true, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) }]; }
+  if (installing) { next = [...entries.filter(item => !matches(item)), { source, path, ...(selectedWorkspace ? { workspace: selectedWorkspace } : {}), enabled: previousEntry?.enabled ?? true, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) }]; }
   else if (action === "remove") next = entries.filter(item => !matches(item));
   else if (action === "enable" || action === "disable") next = entries.map(item => matches(item) ? { ...item, enabled: action === "enable", ...(action === "enable" && nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
   else if (action === "configure") next = entries.map(item => matches(item) ? { ...item, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
