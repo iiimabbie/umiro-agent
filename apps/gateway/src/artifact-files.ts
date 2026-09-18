@@ -71,22 +71,4 @@ export class ArtifactFileService {
     await this.store.createArtifact({ artifact }); return artifact;
   }
 
-  /** Backfills artifacts created before extracted text became durable metadata. */
-  async backfillTextExtractions(): Promise<{ readonly updated: number; readonly failed: number }> {
-    const updateExtraction = this.store.updateArtifactExtractedText?.bind(this.store);
-    if (!updateExtraction) return { updated: 0, failed: 0 };
-    let updated = 0; let failed = 0;
-    for (const artifact of await this.store.listArtifacts()) {
-      if (artifact.extractedText !== undefined) continue;
-      const normalized = artifact.mediaType.toLowerCase().split(";", 1)[0]!.trim();
-      if (!normalized.startsWith("text/") && normalized !== "application/json") continue;
-      try {
-        const text = await extractArtifactTextAsync(artifact.mediaType, await readFile(artifact.location));
-        if (text === undefined) continue;
-        await updateExtraction(artifact.id, text, this.now());
-        updated += 1;
-      } catch { failed += 1; }
-    }
-    return { updated, failed };
-  }
 }

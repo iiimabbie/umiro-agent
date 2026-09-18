@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { CoreConfig, SecretSource } from "@umiro/core/config";
 import type { PluginHost, PluginManifestV0, PluginModule } from "@umiro/core/plugin";
 import { loadPluginModule } from "./plugin-loader.js";
@@ -56,8 +55,4 @@ export async function enableConfiguredPlugins(
       secrets: requiredSecrets,
     });
   }
-}
-
-export function pluginStateDirectory(dataDirectory: string, namespace: string): string {
-  return join(dataDirectory, "plugins", namespace);
 }

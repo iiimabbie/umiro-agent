@@ -49,11 +49,16 @@ test("localhost control panel authenticates config and fixed workspace file oper
   try {
     const html = await (await fetch(`${endpoint}/`)).text();
     assert.match(html, /<script src="app\.js"><\/script>/);
+    assert.match(html, /<script src="theme\.js"><\/script>/);
     assert.doesNotMatch(html, /src="\/app\.js"/);
     const script = await (await fetch(`${endpoint}/app.js`)).text();
     assert.doesNotThrow(() => new Script(script));
     assert.match(script, /new URL\('\.',location\.href\)/);
     assert.ok(script.includes("replace(/^\\/+/,''"));
+    const themeScriptResponse = await fetch(`${endpoint}/theme.js`);
+    assert.equal(themeScriptResponse.status, 200);
+    assert.match(themeScriptResponse.headers.get("content-type") ?? "", /text\/javascript/);
+    assert.match(await themeScriptResponse.text(), /applyUmiroTheme/);
     assert.equal((await fetch(`${endpoint}/api/config`)).status, 401);
     const schema = await (await fetch(`${endpoint}/api/schema`, { headers })).json(); assert.deepEqual(schema, CONFIG_EXPLANATIONS);
     assert.deepEqual(await (await fetch(`${endpoint}/api/secrets`, { headers })).json(), { DISCORD_TOKEN: true, LLM_API_KEY: false });

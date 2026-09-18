@@ -38,6 +38,19 @@ test("message handler failures are reported and do not poison the channel queue"
   assert.deepEqual(errors, [{ event: "message", channelId: "channel", messageId: "first" }]);
 });
 
+test("typing is refreshed until the active response finishes", async () => {
+  const adapter = new DiscordJsAdapter();
+  let refreshes = 0;
+  adapter.sendTyping = async () => { refreshes++; };
+  const stop = adapter.startTyping("channel", 5);
+  await new Promise(resolve => setTimeout(resolve, 13));
+  stop();
+  const stoppedAt = refreshes;
+  await new Promise(resolve => setTimeout(resolve, 8));
+  assert.ok(stoppedAt >= 2);
+  assert.equal(refreshes, stoppedAt);
+});
+
 test("steer is offered before the channel queue while an earlier message is running", async () => {
   const adapter = new DiscordJsAdapter();
   let release!: () => void;

@@ -94,12 +94,6 @@ export interface PluginLogger {
   readonly error: (event: string, message: string, data?: JsonObject) => void;
 }
 
-export interface LegacyPluginServices {
-  readonly configDirectory: string;
-  ask(prompt: string, options?: { readonly systemPrompt?: string; readonly maxTurns?: number; readonly model?: string }): Promise<{ readonly text: string }>;
-  sendText(input: { readonly channelId: string; readonly content: string }): Promise<{ readonly messageId: string }>;
-  editText(input: { readonly channelId: string; readonly messageId: string; readonly content: string }): Promise<{ readonly messageId: string; readonly migrated: boolean }>;
-}
 export interface PluginArtifactService {
   read(input: { readonly artifactId: string; readonly principalId: string }): Promise<{ readonly bytes: Uint8Array; readonly filename?: string; readonly mediaType: string } | undefined>;
   createFromBytes(input: { readonly bytes: Uint8Array; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
@@ -141,7 +135,7 @@ export interface DiscordPluginService {
   setRespondToBots(enabled: boolean): Promise<void>;
 }
 export interface IntermediateReplyService { send(runId: string, text: string, signal?: AbortSignal): Promise<{ readonly deliveryId: string }> }
-export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly subagentProfiles?: SubagentProfileCatalog; readonly replies?: IntermediateReplyService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService; readonly legacy?: LegacyPluginServices }
+export interface PluginRuntimeServices { readonly conversationSearch?: ConversationSearch; readonly searchDocuments?: PluginSearchDocuments; readonly scheduler?: SchedulerControl; readonly childRuns?: ChildRunService; readonly subagentProfiles?: SubagentProfileCatalog; readonly replies?: IntermediateReplyService; readonly artifacts?: PluginArtifactService; readonly discord?: DiscordPluginService }
 export interface PluginHostServices extends Omit<PluginRuntimeServices, "searchDocuments"> { readonly searchDocumentProjection?: SearchDocumentProjection }
 
 export interface PluginEnableOptions {

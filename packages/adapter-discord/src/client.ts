@@ -25,7 +25,7 @@ export async function syncApplicationCommands(guilds: readonly DiscordCommandMan
 
 export interface DiscordInteractionContext { readonly userId: string; readonly channelId: string; readonly guildId?: string }
 export interface DiscordButtonInteraction extends DiscordInteractionContext { readonly buttonSetId: string; readonly buttonId: string; readonly messageContent: string }
-export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "button" | "emoji"; readonly channelId?: string; readonly messageId?: string }
+export interface DiscordAdapterErrorContext { readonly event: "message" | "command" | "button" | "emoji" | "typing"; readonly channelId?: string; readonly messageId?: string }
 export type DiscordAdapterErrorHandler = (error: unknown, context: DiscordAdapterErrorContext) => void;
 
 export function parseButtonCustomId(value: string): { buttonSetId: string; buttonId: string } | undefined {
@@ -140,6 +140,14 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("sendTyping" in channel)) return;
     await channel.sendTyping();
+  }
+
+  startTyping(channelId: string, refreshMs = 8_000): () => void {
+    const refresh = () => { void this.sendTyping(channelId).catch(error => this.reportError(error, { event: "typing", channelId })); };
+    refresh();
+    const timer = setInterval(refresh, refreshMs);
+    timer.unref();
+    return () => clearInterval(timer);
   }
 
   async sendFiles(channelId: string, files: readonly { readonly path: string; readonly name?: string }[]): Promise<{ messageId: string }> {

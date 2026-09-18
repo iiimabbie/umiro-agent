@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width">
 <title>ümiro 控制台</title>
 <link rel="icon" type="image/png" href="favicon.png">
+<script src="theme.js"></script>
 <link rel="stylesheet" href="app.css">
 <body>
 <aside class="sidebar">
@@ -15,16 +16,32 @@
   <span id="state"></span>
 
   <nav>
-    <a href="#status" data-page="status">狀態</a>
-    <a href="#runs" data-page="runs">Runs</a>
-    <a href="#usage" data-page="usage">Usage／Logs</a>
-    <a href="#channels" data-page="channels">Discord 頻道</a>
-    <a href="#archived" data-page="archived">封存</a>
-    <a href="#schedules" data-page="schedules">排程</a>
-    <a href="#plugins" data-page="plugins">外掛</a>
+    <a href="#status" data-page="status">Status</a>
+    <a href="#channels" data-page="channels">Discord Channels</a>
     <a href="#workspace" data-page="workspace">Workspace</a>
-    <a href="#config" data-page="config">設定</a>
+    <a href="#schedules" data-page="schedules">Cron / Reminder</a>
+    <a href="#plugins" data-page="plugins">Plugins</a>
+    <a href="#config" data-page="config">Settings</a>
+    <div class="nav-section-label">Debug</div>
+    <a class="nav-subitem" href="#runs" data-page="runs">Runs</a>
+    <a class="nav-subitem" href="#usage" data-page="usage">Usage / Logs</a>
   </nav>
+
+  <fieldset id="themeMode" class="theme-control" aria-label="外觀主題">
+    <legend>外觀主題</legend>
+    <label class="theme-option" title="淺色">
+      <input type="radio" name="theme" value="light" aria-label="淺色">
+      <span class="theme-dot theme-dot-light"></span>
+    </label>
+    <label class="theme-option" title="跟隨系統">
+      <input type="radio" name="theme" value="system" aria-label="跟隨系統">
+      <span class="theme-dot theme-dot-system"></span>
+    </label>
+    <label class="theme-option" title="深色">
+      <input type="radio" name="theme" value="dark" aria-label="深色">
+      <span class="theme-dot theme-dot-dark"></span>
+    </label>
+  </fieldset>
 </aside>
 
 <main class="content">
@@ -32,11 +49,6 @@
     <div class="page-heading"><h2>狀態</h2><span id="connectionBadge" class="badge badge-off">未連線</span></div>
     <div id="runtimeCards" class="stat-grid"></div>
     <details class="details-panel"><summary>查看詳細 runtime</summary><pre id="runtime"></pre></details>
-    <h3>Secrets</h3>
-    <small>已設定的值不會回傳到瀏覽器。只填入要新增或更換的欄位。</small>
-    <div id="secretForm" class="secret-form"></div>
-    <button id="saveSecrets">儲存 Secrets</button>
-
   </section>
 
   <section id="page-runs" class="page">
@@ -60,13 +72,12 @@
     <small>名稱直接向 Discord 取得；頻道更名後會自動更新。ID 僅作為穩定識別。</small>
     <div id="channels" class="list-panel"></div>
     <div id="channelConversation"></div>
-  </section>
-
-  <section id="page-archived" class="page">
-    <h2>封存</h2>
-    <button id="refreshArchived">重新整理</button>
-    <div id="archivedList" class="list-panel"></div>
-    <div id="archivedConversation"></div>
+    <div class="page-subsection">
+      <h3>Archive</h3>
+      <button id="refreshArchived">重新整理</button>
+      <div id="archivedList" class="list-panel"></div>
+      <div id="archivedConversation"></div>
+    </div>
   </section>
 
   <section id="page-schedules" class="page">
@@ -91,6 +102,7 @@
       <select id="scheduleChannel">
         <option value="">不指定 Discord 頻道</option>
       </select>
+      <input id="scheduleChannelId" inputmode="numeric" pattern="[0-9]{2,32}" maxlength="32" placeholder="或手動輸入頻道 ID">
     </div>
     <small id="scheduleAdvancedHint">每天 09:00 執行</small>
     <textarea id="schedulePrompt" placeholder="Agent prompt"></textarea>
@@ -129,6 +141,12 @@
       <h2>設定</h2>
       <small class="config-restart-legend">此顏色的欄位名稱需重啟</small>
     </div>
+    <h3>Secrets</h3>
+    <small>已設定的值不會回傳到瀏覽器。只填入要新增或更換的欄位。</small>
+    <div id="secretForm" class="secret-form"></div>
+    <button id="saveSecrets">儲存 Secrets</button>
+
+    <h3>一般設定</h3>
     <p>修改後按下儲存。滑鼠停在欄位名稱上可查看用途、預設值與風險。</p>
     <div class="config-toolbar"><input id="configSearch" type="search" placeholder="搜尋設定欄位…"><nav id="configNav" aria-label="設定分類"></nav></div>
     <div id="configForm"></div>

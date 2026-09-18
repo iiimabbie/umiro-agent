@@ -23,6 +23,7 @@ const sourceTemplates = resolve(new URL("../../../../templates/workspace", impor
 const VERSION = "0.1.0";
 interface ManagedPlugin { source: string; path: string; workspace?: string; enabled: boolean; config?: Record<string, unknown> }
 interface UmiroConfig { model: string; protocol?: "openai_responses" | "openai_chat_completions"; modelCapabilities?: string[]; profiles?: Record<string, { model: string; protocol?: "openai_responses" | "openai_chat_completions"; capabilities?: string[]; reasoningEffort?: string }>; contextMaxTokens?: number; pricing?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>; embedding?: Record<string, unknown>; skills?: string[]; discord?: Record<string, unknown>; webUi?: Record<string, unknown>; plugins?: Array<{ path: string; config?: Record<string, unknown> }> }
+const REQUIRED_BUILTIN_PLUGINS = new Set(["context-files", "memory", "host-tools", "discord-tools"]);
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
 function systemTimezone(): string { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
@@ -36,8 +37,9 @@ async function workspaceTemplates(): Promise<string> {
   throw new Error(`workspace templates not found; checked ${candidates.join(", ")}`);
 }
 async function loadPlugins(): Promise<ManagedPlugin[]> {
-  const raw = JSON.parse(await readFile(pluginsFile, "utf8").catch(() => "[]")) as Array<string | ManagedPlugin>;
-  return raw.map(item => typeof item === "string" ? { source: item, path: item, enabled: true } : item);
+  const raw = JSON.parse(await readFile(pluginsFile, "utf8").catch(() => "[]")) as unknown;
+  if (!Array.isArray(raw) || raw.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof item.source !== "string" || typeof item.path !== "string" || typeof item.enabled !== "boolean")) throw new Error("plugins.json contains an invalid plugin entry");
+  return raw as ManagedPlugin[];
 }
 async function savePlugins(entries: readonly ManagedPlugin[]): Promise<void> {
   await mkdir(dirname(pluginsFile), { recursive: true, mode: 0o700 });
@@ -405,6 +407,9 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   const matches = (item: ManagedPlugin) => item.path === path || (item.source === source && item.workspace === workspaceName);
   const previousEntry = entries.find(matches);
   if (!installing && !previousEntry) throw new Error(`plugin is not installed: ${source}${workspaceName ? `#${workspaceName}` : ""}`);
+  const installedBuiltinId = previousEntry?.source.startsWith("builtin:") ? previousEntry.source.slice("builtin:".length) : undefined;
+  if (action === "remove" && installedBuiltinId) throw new Error("built-in capabilities cannot be removed");
+  if (action === "disable" && installedBuiltinId && REQUIRED_BUILTIN_PLUGINS.has(installedBuiltinId)) throw new Error(`required built-in capability cannot be disabled: ${installedBuiltinId}`);
   if (!installing && previousEntry) path = previousEntry.path;
   let manifest: PluginManifestV0 | undefined;
   let nextConfig: Record<string, unknown> | undefined;

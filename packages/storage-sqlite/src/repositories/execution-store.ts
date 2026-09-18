@@ -814,10 +814,9 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
   }
 
   /** Resolve a transport reply to a canonical Turn in the same Conversation.
-   * Adapter event IDs use `<transport>:<external message id>`; the starter
-   * prefix is retained for conversations created by older releases. Delivery
-   * evidence is also checked so replies to the bot's own messages point at the
-   * originating Turn rather than becoming an unanchored question. */
+   * Adapter event IDs use `<transport>:<external message id>` while synthetic
+   * thread starters use `<transport>:starter:<external message id>`. Delivery
+   * evidence also maps replies to the bot's messages back to their source Turn. */
   private resolveReplyToTurnId(conversationId: string, event: InputEvent, initialTurns: readonly { readonly id: string; readonly inputEventId: string }[] = []): string | undefined {
     const externalId = event.replyToExternalId;
     if (!externalId) return undefined;

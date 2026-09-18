@@ -5,16 +5,24 @@ import { Script } from "node:vm";
 
 const htmlUrl = new URL("../src/control-panel/index.html", import.meta.url);
 const scriptUrl = new URL("../src/control-panel/app.js", import.meta.url);
+const themeScriptUrl = new URL("../src/control-panel/theme.js", import.meta.url);
 const cssUrl = new URL("../src/control-panel/app.css", import.meta.url);
 
 test("control-panel settings use typed controls instead of one raw config textarea", async () => {
-  const [html, script, css] = await Promise.all([readFile(htmlUrl, "utf8"), readFile(scriptUrl, "utf8"), readFile(cssUrl, "utf8")]);
+  const [html, script, themeScript, css] = await Promise.all([readFile(htmlUrl, "utf8"), readFile(scriptUrl, "utf8"), readFile(themeScriptUrl, "utf8"), readFile(cssUrl, "utf8")]);
 
   assert.match(html, /id="configForm"/);
   assert.match(html, /id="secretForm"/);
   assert.doesNotMatch(html, /<textarea id="config"/);
   assert.doesNotMatch(html, /查看 API 可用模型/);
   assert.doesNotThrow(() => new Script(script));
+  assert.doesNotThrow(() => new Script(themeScript));
+  assert.match(html, /<script src="theme\.js"><\/script>\s*<link rel="stylesheet" href="app\.css">/);
+  assert.match(html, /<fieldset id="themeMode"[\s\S]*value="light"[\s\S]*value="system"[\s\S]*value="dark"/);
+  assert.match(themeScript, /prefers-color-scheme: dark/);
+  assert.match(themeScript, /localStorage\.umiroTheme/);
+  assert.match(css, /:root\s*\{[\s\S]*color-scheme: light/);
+  assert.match(css, /:root\[data-theme="dark"\]\s*\{[\s\S]*color-scheme: dark/);
   assert.match(script, /path: 'model', type: 'model'/);
   assert.match(script, /input\.type = 'radio'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'url'/);
@@ -23,7 +31,7 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /config-restart-required/);
   assert.doesNotMatch(script, /儲存後需重啟|儲存後即時生效/);
   assert.match(html, /class="config-restart-legend">此顏色的欄位名稱需重啟/);
-  assert.match(css, /--restart-required: #5d3e3f/);
+  assert.match(css, /--restart-required:/);
   assert.match(html, /id="toastRegion"/);
   assert.match(html, /id="modalBackdrop"/);
   assert.match(html, /id="configSearch"/);

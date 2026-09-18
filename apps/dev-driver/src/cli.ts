@@ -1,4 +1,4 @@
-import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, ToolRegistry, type ExecutionContext, type ExecutionStore, type ModelPort } from "@umiro/core";
+import { capabilities, ContextEngine, ContextProviderRegistry, HeadlessRunEngine, ToolRegistry, type ExecutionContext, type ExecutionStore, type ModelPort, type PluginStateStore } from "@umiro/core";
 import {
   OpenAIChatCompletionsModel,
   type OpenAIConnectionConfig,
@@ -6,7 +6,7 @@ import {
   OpenAIResponsesModel,
 } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
-import { loadPluginModule, FilePluginStateStore } from "@umiro/gateway";
+import { loadPluginModule } from "@umiro/gateway";
 import { PluginHost } from "@umiro/core";
 
 export type ModelProtocol = "openai_responses" | "openai_chat_completions";
@@ -141,7 +141,8 @@ export async function runCli(args: readonly string[], runtime: CliRuntime): Prom
   try {
     const tools = new ToolRegistry();
     const providers = new ContextProviderRegistry();
-    const host = new PluginHost(tools, providers, context.authority, namespace => new FilePluginStateStore(`${database}.plugins/${namespace}`));
+    const statefulStore = store as ExecutionStore & { pluginState?: (namespace: string) => PluginStateStore };
+    const host = new PluginHost(tools, providers, context.authority, statefulStore.pluginState ? namespace => statefulStore.pluginState!(namespace) : undefined);
     for (const path of (runtime.env.UMIRO_PLUGIN_PATHS ?? "").split(",").map(value => value.trim()).filter(Boolean)) {
       const module = await loadPluginModule(path);
       await host.enable(module, { config: module.manifest.id === "context-files" ? { workspacePath: runtime.env.UMIRO_WORKSPACE_PATH?.trim() || process.cwd() } : {} });

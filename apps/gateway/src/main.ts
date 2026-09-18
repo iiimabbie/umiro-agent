@@ -6,9 +6,8 @@ import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, 
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
-import { FilePluginStateStore } from "./file-plugin-state.js";
 import { loadPluginModule } from "./plugin-loader.js";
-import { orderPluginEnableEntries, pluginSecretsFromEnvironment, pluginStateDirectory } from "./plugin-composition.js";
+import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedder, EMBEDDING_API_KEY_SECRET, type EmbeddingConfig } from "./embedding-config.js";
@@ -30,6 +29,7 @@ import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 import { importDiscordAttachments } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
 import { describeImageArtifacts } from "./image-description.js";
+import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
 
 const paths = umiroPaths();
 const processStart = new Date().toISOString();
@@ -65,8 +65,9 @@ let discordPolicy = parseDiscordTriggerPolicy(config.discord);
 let runtimePricing = config.pricing;
 let runtimeMaxParallelTools = config.subagent?.maxParallelTools ?? 2;
 let runtimeMaxConcurrentChildren = config.subagent?.maxConcurrentChildren ?? 2;
-const managedRaw = JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")) as Array<string | { path: string; enabled: boolean; config?: JsonObject }>;
-const managed = managedRaw.map(item => typeof item === "string" ? { path: item, enabled: true } : item).filter(item => item.enabled);
+const managedRaw = validateManagedPluginEntries(JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")));
+assertRequiredBuiltins(managedRaw);
+const managed = managedRaw.filter(item => item.enabled);
 const byPath = new Map<string, { path: string; config?: JsonObject }>();
 for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.config ? { config: item.config } : {}) });
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
@@ -92,25 +93,7 @@ const logger = new JsonLineLogger();
 const pluginHooks = new PluginHookRegistry(logger);
 let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
 const store = observeExecutionStore(new SQLiteExecutionStore(paths.sqlite), { emit: (event, payload) => emitPluginEvent(event, payload) });
-const migratePluginState = async (namespace: string) => {
-  const legacy = new FilePluginStateStore(pluginStateDirectory(paths.data, namespace));
-  const target = store.pluginState(namespace);
-  for (const entry of await legacy.list()) {
-    if (await target.read(entry.key)) continue;
-    const value = await legacy.read(entry.key);
-    if (!value) continue;
-    let expiresAt: string | undefined;
-    if (namespace === "discord-tools" && entry.key.startsWith("buttons/")) {
-      try {
-        const parsed = JSON.parse(new TextDecoder().decode(value)) as { expiresAt?: unknown };
-        if (typeof parsed.expiresAt === "string" && Number.isFinite(Date.parse(parsed.expiresAt))) expiresAt = parsed.expiresAt;
-      } catch { /* Legacy opaque state remains importable without TTL metadata. */ }
-    }
-    await target.writeAtomic(entry.key, value, expiresAt ? { expiresAt } : undefined);
-  }
-};
 const pluginStateNamespaces = new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)]);
-for (const namespace of pluginStateNamespaces) await migratePluginState(namespace);
 const artifacts = new ArtifactFileService(paths.artifacts, store);
 const cleanupExpiredPluginState = async (): Promise<void> => {
   const now = new Date().toISOString();
@@ -120,9 +103,6 @@ const cleanupExpiredPluginState = async (): Promise<void> => {
 await cleanupExpiredPluginState();
 const pluginStateCleanupTimer = setInterval(() => { void cleanupExpiredPluginState().catch(error => logger.write({ level: "warn", event: "plugin_state.expired_cleanup_failed", message: "Expired Plugin state cleanup failed", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } })); }, 60 * 60 * 1_000);
 pluginStateCleanupTimer.unref?.();
-const extractionBackfill = await artifacts.backfillTextExtractions();
-if (extractionBackfill.updated > 0) await store.rebuildSearchProjection();
-if (extractionBackfill.failed > 0) logger.write({ level: "warn", event: "artifact.extraction.backfill_degraded", message: "Some legacy artifact text could not be extracted", occurredAt: new Date().toISOString(), data: extractionBackfill });
 const embedder = createConfiguredEmbedder(config.embedding);
 const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder.forBackground?.() ?? embedder, 15_000, logger) : undefined;
 const search = new HybridConversationSearch(store, embedder, logger);
@@ -130,18 +110,6 @@ const semanticRecall = embedder ? new SemanticRecallProvider(store, embedder, ()
 let runtimeRecall = { limit: config.embedding?.provider === "disabled" ? undefined : config.embedding?.recallLimit, minSimilarity: config.embedding?.provider === "disabled" ? undefined : config.embedding?.minSimilarity };
 if (semanticRecall) providers.register(semanticRecall);
 const scheduler = new DurableScheduler(store);
-const legacyServices = {
-  configDirectory: `${paths.config}/plugin-config`,
-  async ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }) {
-    const execution = { origin: { kind: "event" as const, pluginId: "legacy" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority: ownerAuthority };
-    const fullPrompt = options?.systemPrompt ? `${options.systemPrompt}\n\n${prompt}` : prompt;
-    const runId = crypto.randomUUID(); const assembledContext = await contextEngine.assemble({ runId, execution, prompt: fullPrompt, maxCharacters: 100_000, maxTokens: contextMaxTokens });
-    const result = await engine.run({ runId, context: execution, model: options?.model ?? defaultModelProfile.model, prompt: fullPrompt, assembledContext, ...(options?.maxTurns ? { maxModelTurns: options.maxTurns } : {}) });
-    if (result.status !== "succeeded") throw new Error(`legacy plugin agent Run ended ${result.status}`); return { text: result.text };
-  },
-  sendText: (input: { channelId: string; content: string }) => discord.sendText(input.channelId, input.content),
-  editText: (input: { channelId: string; messageId: string; content: string }) => discord.editText(input.channelId, input.messageId, input.content),
-};
 let host: PluginHost;
 const activeRuns = new Map<string, { readonly controller: AbortController; readonly userId: string }>();
 const activeSessions = new Map<string, { readonly runId: string; readonly gate: SteerGate }>();
@@ -490,7 +458,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     };
   },
 }, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; return { ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
-host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService, legacy: legacyServices }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
+host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
   const module = modules[index]!;
   const secrets = pluginSecretsFromEnvironment(module.manifest, process.env);
@@ -586,7 +554,8 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     logger.write({ level: "debug", event: "discord.ingress.observed", message: "Discord event evaluated without a Run", occurredAt: new Date().toISOString(), data: { reason: decision.reason, recorded: observed !== undefined, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
     return;
   }
-  await discord.sendTyping(message.channelId);
+  const stopTyping = discord.startTyping(message.channelId);
+  try {
   const profile = await sessionProfile(message.channelId);
   const resolved = await identities.resolve({ transport: "discord", externalId: message.authorId, principalId: null });
   const imported = await importDiscordAttachments(artifacts, message.attachments ?? [], resolved.principal.id, message.messageId, failure => {
@@ -640,12 +609,16 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
+  stopTyping();
   await delivery.drain();
   if (profile.capabilities.includes("vision") && importedArtifacts.some(artifact => artifact.mediaType.toLowerCase().startsWith("image/")) && store.updateArtifactExtractedText) {
     void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort).then(async descriptions => {
       for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description!, new Date().toISOString());
       if (descriptions.length) await store.rebuildSearchProjection();
     }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
+  }
+  } finally {
+    stopTyping();
   }
 };
 discord.onSteer(async message => {

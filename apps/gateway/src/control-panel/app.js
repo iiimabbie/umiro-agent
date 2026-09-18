@@ -637,7 +637,9 @@ async function schedules() {
       $('scheduleFrequency').value = 'custom';
       $('scheduleTimezone').value = x.timezone;
       $('schedulePrompt').value = x.input?.prompt || '';
-      $('scheduleChannel').value = x.destination?.channelId || '';
+      const destinationChannelId = x.destination?.channelId || '';
+      $('scheduleChannel').value = channelCatalog.has(destinationChannelId) ? destinationChannelId : '';
+      $('scheduleChannelId').value = channelCatalog.has(destinationChannelId) ? '' : destinationChannelId;
       $('createSchedule').textContent = '儲存修改';
       updateScheduleControls();
     };
@@ -706,6 +708,8 @@ function sourceBaseName(source) {
 
 function renderPluginRow(x) {
   const builtin = x.source.startsWith('builtin:');
+  const builtinId = builtin ? x.source.slice('builtin:'.length) : undefined;
+  const requiredBuiltin = ['context-files', 'memory', 'host-tools', 'discord-tools'].includes(builtinId);
   const d = document.createElement('div');
   d.className = 'plugin';
 
@@ -716,7 +720,7 @@ function renderPluginRow(x) {
   const info = document.createElement('span');
   const name = document.createElement('span');
   name.className = 'plugin-name';
-  name.textContent = builtin ? x.source.slice('builtin:'.length) : (x.workspace || sourceBaseName(x.source));
+  name.textContent = builtin ? builtinId : (x.workspace || sourceBaseName(x.source));
   info.append(name);
   if (!builtin) {
     const source = document.createElement('small');
@@ -730,6 +734,8 @@ function renderPluginRow(x) {
 
   const toggle = document.createElement('button');
   toggle.textContent = x.enabled ? '停用' : '啟用';
+  toggle.disabled = requiredBuiltin;
+  if (toggle.disabled) toggle.title = '必要內掛：ümiro 的基本 Agent 能力不可停用';
   toggle.onclick = () => withBusy(toggle, async () => { await pluginAction(x.enabled ? 'disable' : 'enable', x.source, x.workspace); showToast(x.enabled ? '外掛已停用' : '外掛已啟用', 'success'); }).catch(reportError);
 
   const configure = document.createElement('button');
@@ -816,7 +822,7 @@ async function connect() {
     b.onclick = () => withBusy(b, () => load(n), '載入中…').catch(reportError);
     return b;
   }));
-  await channels();
+  await Promise.all([channels(), archived()]);
   await plugins();
   clearInterval(channelRefreshTimer);
   channelRefreshTimer = setInterval(() => channels().catch(() => {}), 60000);
@@ -867,6 +873,8 @@ $('createSchedule').onclick = () => withBusy($('createSchedule'), async () => {
   const kind = $('scheduleKind').value;
   let schedule;
   try { schedule = scheduleInput(); } catch { return showToast('請填入有效的提醒時間', 'error'); }
+  const manualChannelId = $('scheduleChannelId').value.trim();
+  if (manualChannelId && !/^[0-9]{2,32}$/.test(manualChannelId)) return showToast('頻道 ID 必須是 2–32 位數字', 'error');
   const body = {
     name: $('scheduleName').value,
     kind,
@@ -874,7 +882,7 @@ $('createSchedule').onclick = () => withBusy($('createSchedule'), async () => {
     at: schedule.at,
     timezone: $('scheduleTimezone').value,
     prompt: $('schedulePrompt').value,
-    channelId: $('scheduleChannel').value || undefined,
+    channelId: manualChannelId || $('scheduleChannel').value || undefined,
   };
   const path = editingSchedule ? '/api/schedules/' + encodeURIComponent(editingSchedule) : '/api/schedules';
   try { await api(path, { method: editingSchedule ? 'PATCH' : 'POST', body: JSON.stringify(body) });
@@ -892,6 +900,13 @@ $('refreshChannels').onclick = () => withBusy($('refreshChannels'), channels).ca
 $('refreshArchived').onclick = () => withBusy($('refreshArchived'), archived).catch(reportError);
 $('restartGateway').onclick = async () => { if (!await confirmAction('重新啟動 Gateway', '目前進行中的工作會先嘗試安全結束，確定立即重啟？', '立即重啟')) return; try { await api('/api/runtime/restart', { method: 'POST', body: '{}' }); showToast('Gateway 正在重新啟動', 'success'); $('restartGateway').hidden = true; } catch (error) { reportError(error); } };
 $('token').value = localStorage.umiroToken || '';
+const selectedTheme = ['light', 'dark'].includes(localStorage.umiroTheme) ? localStorage.umiroTheme : 'system';
+document.querySelector(`input[name="theme"][value="${selectedTheme}"]`).checked = true;
+$('themeMode').onchange = event => {
+  if (event.target.name !== 'theme') return;
+  localStorage.umiroTheme = event.target.value;
+  window.applyUmiroTheme(event.target.value);
+};
 $('scheduleTimezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 $('modalCancel').onclick = () => closeModal(false);
 $('modalConfirm').onclick = () => closeModal(true);
@@ -907,6 +922,8 @@ $('scheduleTime').oninput = updateScheduleControls;
 $('scheduleWeekday').onchange = updateScheduleControls;
 $('scheduleWhen').oninput = updateScheduleControls;
 $('scheduleTimezone').oninput = updateScheduleControls;
+$('scheduleChannel').onchange = () => { if ($('scheduleChannel').value) $('scheduleChannelId').value = ''; };
+$('scheduleChannelId').oninput = () => { if ($('scheduleChannelId').value.trim()) $('scheduleChannel').value = ''; };
 $('document').oninput = () => { workspaceDirty = true; markWorkspaceDirty(); if (!$('documentPreview').hidden) renderMarkdownPreview(); };
 $('togglePreview').onclick = () => {
   const preview = $('documentPreview').hidden;
@@ -921,7 +938,7 @@ updateScheduleControls();
 
 const pages = [...document.querySelectorAll('.page')];
 const navLinks = [...document.querySelectorAll('nav a')];
-const pageLoaders = { channels, archived, schedules, plugins, runs, usage: async () => { await Promise.all([usage(), logs()]); } };
+const pageLoaders = { channels: async () => { await Promise.all([channels(), archived()]); }, schedules, plugins, runs, usage: async () => { await Promise.all([usage(), logs()]); } };
 
 function currentPageName() {
   const hash = (location.hash || '#status').slice(1);

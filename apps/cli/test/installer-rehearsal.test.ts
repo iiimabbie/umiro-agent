@@ -25,6 +25,9 @@ test("clean home completes install, configure, daemon, upgrade, backup, restore,
     const first = await readlink(join(home, "app", "current")); assert.match(first, /rev1/);
     const installedPlugins = JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")) as Array<{ source: string; config: Record<string, unknown> }>;
     assert.equal(installedPlugins.find(plugin => plugin.source === "builtin:scheduler")?.config.timezone, "Europe/London");
+    for (const id of ["context-files", "memory", "host-tools", "discord-tools"]) {
+      await assert.rejects(exec(process.execPath, [cli, "plugin", "disable", `builtin:${id}`], { env: environment("rev1") }), /required built-in capability cannot be disabled/);
+    }
     for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) await access(join(home, "workspace", name));
     for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) await access(join(home, "workspace", "memory", name));
 
