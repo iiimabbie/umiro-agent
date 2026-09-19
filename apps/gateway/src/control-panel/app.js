@@ -75,7 +75,7 @@ const CONFIG_GROUPS = [
   { title: 'Embedding 與跨對話記憶', fields: [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
     { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
-    { path: 'embedding.baseUrl', type: 'secret', secretName: 'UMIRO_EMBEDDING_BASE_URL', wide: true, placeholder: 'https://api.example.com/v1' },
+    { path: 'embedding.baseUrl', type: 'secret', inputType: 'url', secretName: 'UMIRO_EMBEDDING_BASE_URL', wide: true, placeholder: 'https://api.example.com/v1' },
     { path: 'embedding.apiKey', type: 'secret', secretName: 'UMIRO_EMBEDDING_API_KEY', wide: true },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
     { path: 'embedding.recallLimit', type: 'number', min: 1, max: 20, step: 1 },
@@ -228,8 +228,9 @@ function configControl(field, value, models) {
   if (field.type === 'secret') {
     const input = document.createElement('input');
     input.id = id;
-    input.type = 'password';
+    input.type = field.inputType || 'password';
     input.autocomplete = 'new-password';
+    if (typeof secretStatus[field.secretName] === 'string') input.value = secretStatus[field.secretName];
     input.placeholder = field.placeholder || (secretStatus[field.secretName] ? '已設定；留空不變' : '尚未設定');
     return input;
   }
@@ -904,7 +905,7 @@ async function connect() {
   secretStatus = secrets;
   renderConfigForm(schema, config, models);
   renderRuntime(runtime);
-  secretNames = [...SECRET_ORDER.filter(name => !name.startsWith('UMIRO_EMBEDDING_') && Object.hasOwn(secrets, name)), ...Object.keys(secrets).filter(name => !name.startsWith('UMIRO_EMBEDDING_') && !SECRET_ORDER.includes(name)).sort()];
+  secretNames = SECRET_ORDER.filter(name => !name.startsWith('UMIRO_EMBEDDING_') && Object.hasOwn(secrets, name));
   $('secretForm').replaceChildren(...secretNames.map(name => {
     const presentation = SECRET_PRESENTATION[name];
     const label = document.createElement('label');
@@ -913,8 +914,9 @@ async function connect() {
     if (presentation?.description) label.title = presentation.description;
     const input = document.createElement('input');
     input.id = 'secret-' + name;
-    input.type = name === 'UMIRO_OWNER_DISCORD_ID' ? 'text' : 'password';
+    input.type = name === 'UMIRO_OWNER_DISCORD_ID' || name === 'LLM_BASE_URL' ? 'text' : 'password';
     input.autocomplete = 'off';
+    if (typeof secrets[name] === 'string') input.value = secrets[name];
     input.placeholder = secrets[name] ? '已設定；留空不變' : '尚未設定';
     const status = document.createElement('small');
     status.textContent = secrets[name] ? '已設定' : '未設定';
@@ -969,7 +971,6 @@ $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
     if (Object.keys(embeddingSecrets).length) {
       secretResult = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(embeddingSecrets) });
       for (const name of Object.keys(embeddingSecrets)) secretStatus[name] = true;
-      $('config-embedding-baseUrl').value = '';
       $('config-embedding-apiKey').value = '';
     }
     loadedConfig = next; markConfigSaved();
