@@ -26,7 +26,7 @@ export interface ControlPanelSchedules {
   remove(id: string): Promise<boolean>;
   preview?(input: { readonly kind: "cron" | "once"; readonly expression?: string; readonly at?: string; readonly timezone: string }): Promise<string | null> | string | null;
 }
-export interface ControlPanelPlugins { list(): Promise<unknown>; run(action: "install" | "configure" | "enable" | "disable" | "update" | "remove", source: string, workspace?: string, config?: Record<string, unknown>): Promise<unknown> }
+export interface ControlPanelPlugins { list(): Promise<unknown>; run(action: "install" | "configure" | "enable" | "disable" | "update" | "remove", source: string, workspace?: string, config?: Record<string, unknown>, removeSecrets?: boolean): Promise<unknown> }
 export interface ControlPanelRuns { list(limit: number): Promise<unknown>; get(id: string): Promise<unknown | undefined> }
 export interface ControlPanelChannels { list(): Promise<unknown> }
 export interface ControlPanelConversations {
@@ -230,7 +230,14 @@ export class ControlPanelServer {
         if (input.action !== "install" && input.action !== "configure" && input.action !== "enable" && input.action !== "disable" && input.action !== "update" && input.action !== "remove") throw new TypeError("unsupported plugin action");
         if (typeof input.source !== "string" || !input.source.trim()) throw new TypeError("plugin source is required");
         if (input.config !== undefined && (!input.config || typeof input.config !== "object" || Array.isArray(input.config))) throw new TypeError("plugin config must be an object");
-        const result = await this.options.plugins.run(input.action, input.source, typeof input.workspace === "string" && input.workspace ? input.workspace : undefined, input.config as Record<string, unknown> | undefined); this.audit("control.plugin.action", { action: input.action }); return json(response, 200, result);
+        if (input.removeSecrets !== undefined && typeof input.removeSecrets !== "boolean") throw new TypeError("removeSecrets must be a boolean");
+        if (input.removeSecrets === true && input.action !== "remove") throw new TypeError("removeSecrets is only valid with remove action");
+        const workspace = typeof input.workspace === "string" && input.workspace ? input.workspace : undefined;
+        const config = input.config as Record<string, unknown> | undefined;
+        const result = input.removeSecrets === undefined || input.removeSecrets === false
+          ? await this.options.plugins.run(input.action, input.source, workspace, config)
+          : await this.options.plugins.run(input.action, input.source, workspace, config, true);
+        this.audit("control.plugin.action", { action: input.action, ...(input.removeSecrets === true ? { removeSecrets: true } : {}) }); return json(response, 200, result);
       }
       if (request.method === "GET" && url.pathname === "/api/runtime") return json(response, 200, this.options.runtime ? await this.options.runtime() : { status: "running" });
       if (request.method === "POST" && url.pathname === "/api/runtime/restart") {

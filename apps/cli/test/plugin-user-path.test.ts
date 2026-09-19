@@ -1,13 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 const cli = new URL("../src/main.js", import.meta.url).pathname;
+
+async function createSecretPlugin(directory: string, id: string, optionalSecrets: readonly string[]): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "umiro.plugin.json"), `${JSON.stringify({ schemaVersion: 0, id, version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: id, permissions: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, optionalSecrets, contributes: {} })}\n`);
+  await writeFile(join(directory, "index.js"), "export function createPlugin() { return { contributions: {} }; }\n");
+}
+
+const secretFixture = [
+  "PLUGIN_ONLY=ONLYSECRET_VALUE_123",
+  "SHARED_SECRET=SHAREDSECRET_VALUE_456",
+  "LLM_API_KEY=CORESECRET_VALUE_789",
+  "UNRELATED_SECRET=UNRELATEDSECRET_VALUE_000",
+  "",
+].join("\n");
 
 test("clean-home Plugin CLI runs install, list, configure, disable, enable, update, and remove", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-plugin-user-path-"));
@@ -44,6 +58,50 @@ test("Plugin install rejects required config that the host cannot derive", async
     await exec(process.execPath, [cli, "init"], { env });
     await assert.rejects(exec(process.execPath, [cli, "plugin", "install", plugin], { env }), /required.*accountId|accountId.*required/);
     assert.deepEqual(JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Plugin disable and default remove preserve declared and unrelated secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-plugin-secret-preserve-"));
+  const home = join(root, "home"); const target = join(root, "target-plugin"); const shared = join(root, "shared-plugin"); const env = { ...process.env, UMIRO_HOME: home, UMIRO_NO_SYSTEMD: "1" };
+  await createSecretPlugin(target, "secret-target", ["PLUGIN_ONLY", "SHARED_SECRET", "LLM_API_KEY"]);
+  await createSecretPlugin(shared, "secret-shared", ["SHARED_SECRET"]);
+  try {
+    await exec(process.execPath, [cli, "init"], { env });
+    await exec(process.execPath, [cli, "plugin", "install", target], { env });
+    await exec(process.execPath, [cli, "plugin", "install", shared], { env });
+    await writeFile(join(home, "config", "secrets.env"), secretFixture, { mode: 0o600 });
+    await exec(process.execPath, [cli, "plugin", "disable", target], { env });
+    assert.equal(await readFile(join(home, "config", "secrets.env"), "utf8"), secretFixture);
+    await exec(process.execPath, [cli, "plugin", "remove", target], { env });
+    assert.equal(await readFile(join(home, "config", "secrets.env"), "utf8"), secretFixture);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Plugin remove --remove-secrets deletes only an exclusive optional secret", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-plugin-secret-cleanup-"));
+  const home = join(root, "home"); const target = join(root, "target-plugin"); const shared = join(root, "shared-plugin"); const env = { ...process.env, UMIRO_HOME: home, UMIRO_NO_SYSTEMD: "1" };
+  await createSecretPlugin(target, "secret-target", ["PLUGIN_ONLY", "SHARED_SECRET", "LLM_API_KEY"]);
+  await createSecretPlugin(shared, "secret-shared", ["SHARED_SECRET"]);
+  try {
+    await exec(process.execPath, [cli, "init"], { env });
+    await exec(process.execPath, [cli, "plugin", "install", target], { env });
+    await exec(process.execPath, [cli, "plugin", "install", shared], { env });
+    await exec(process.execPath, [cli, "plugin", "disable", shared], { env });
+    await writeFile(join(home, "config", "secrets.env"), secretFixture, { mode: 0o600 });
+    const invalid = await exec(process.execPath, [cli, "plugin", "disable", target, "--remove-secrets"], { env }).catch(error => error as { stdout?: string; stderr?: string; message?: string });
+    assert.match("message" in invalid ? String(invalid.message) : "", /only valid with plugin remove/);
+    assert.doesNotMatch(`${invalid.stdout ?? ""}${invalid.stderr ?? ""}`, /ONLYSECRET_VALUE_123|SHAREDSECRET_VALUE_456|CORESECRET_VALUE_789|UNRELATEDSECRET_VALUE_000/);
+    const result = await exec(process.execPath, [cli, "plugin", "remove", target, "--remove-secrets"], { env });
+    assert.doesNotMatch(`${result.stdout}${result.stderr ?? ""}`, /ONLYSECRET_VALUE_123|SHAREDSECRET_VALUE_456|CORESECRET_VALUE_789|UNRELATEDSECRET_VALUE_000/);
+    const secrets = await readFile(join(home, "config", "secrets.env"), "utf8");
+    assert.doesNotMatch(secrets, /^PLUGIN_ONLY=/m);
+    assert.match(secrets, /^SHARED_SECRET=SHAREDSECRET_VALUE_456$/m);
+    assert.match(secrets, /^LLM_API_KEY=CORESECRET_VALUE_789$/m);
+    assert.match(secrets, /^UNRELATED_SECRET=UNRELATEDSECRET_VALUE_000$/m);
+    assert.equal((await stat(join(home, "config", "secrets.env"))).mode & 0o777, 0o600);
+    const entries = JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")) as Array<{ source: string; enabled: boolean }>;
+    assert.deepEqual(entries, [{ source: shared, path: shared, enabled: false }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

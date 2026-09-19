@@ -166,12 +166,15 @@ External plugins add capabilities and are installed separately. The official col
 umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
 umo plugin list
 umo plugin enable | disable | update | remove <source>
+umo plugin remove <source> [--workspace <name>] --remove-secrets
 umo plugin configure <source> --config '{"key":"value"}'
 ```
 
 Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin declares the capabilities it needs; the host caps them at what the calling principal is allowed to do.
 
 Disabling a plugin unregisters its tools, policies, hooks, jobs, commands, skills, and search projections, and lifecycle-disables its schedules until the plugin is enabled again. Removing a plugin also deletes its owned schedules and search projections. User data produced by the plugin, such as journals and reports, is preserved.
+
+Disabling a plugin always retains its declared secrets, and removing one retains them by default. The control panel's remove modal can explicitly request secret cleanup. The CLI equivalent is `umo plugin remove <source> [--workspace <name>] --remove-secrets`; it removes only secrets declared by the target plugin that are exclusive to it. Core secrets and secrets still declared by any other installed plugin are retained.
 
 ## CLI
 

@@ -102,6 +102,10 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.deepEqual(await (await fetch(`${endpoint}/api/plugins`, { headers })).json(), [{ source: "builtin:memory", enabled: true }]);
     assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "configure", source: "builtin:memory", config: { limit: 10 } }) })).status, 200);
     assert.deepEqual(pluginAction, ["configure", "builtin:memory", undefined, { limit: 10 }]);
+    assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "remove", source: "external:secret", removeSecrets: true }) })).status, 200);
+    assert.deepEqual(pluginAction, ["remove", "external:secret", undefined, undefined, true]);
+    assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "remove", source: "external:secret", removeSecrets: "true" }) })).status, 400);
+    assert.equal((await fetch(`${endpoint}/api/plugins/action`, { method: "POST", headers, body: JSON.stringify({ action: "configure", source: "external:secret", removeSecrets: true }) })).status, 400);
     assert.deepEqual(await (await fetch(`${endpoint}/api/runtime`, { headers })).json(), { status: "running", bot: { tag: "dev" } });
     assert.equal((await fetch(`${endpoint}/api/runtime/restart`, { method: "POST", headers, body: "{}" })).status, 202); assert.equal(restarted, true);
     assert.deepEqual(await (await fetch(`${endpoint}/api/runs?limit=30`, { headers })).json(), [{ id: "run-1", state: "succeeded", channelId: "channel-1" }]); assert.equal(runLimit, 30);
@@ -112,7 +116,7 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.equal((await fetch(`${endpoint}/api/logs?limit=501`, { headers })).status, 400);
     assert.deepEqual(await (await fetch(`${endpoint}/api/usage`, { headers })).json(), { completedRuns: 2, inputTokens: 10, outputTokens: 5 });
     assert.equal((await fetch(`${endpoint}/api/unknown`, { headers })).status, 404);
-    assert.deepEqual(audits.map(item => item.event), ["control.config.saved", "control.workspace.saved", "control.workspace.saved", "control.schedule.created", "control.schedule.toggled", "control.schedule.updated", "control.schedule.removed", "control.plugin.action", "control.runtime.restart"]);
+    assert.deepEqual(audits.map(item => item.event), ["control.config.saved", "control.workspace.saved", "control.workspace.saved", "control.schedule.created", "control.schedule.toggled", "control.schedule.updated", "control.schedule.removed", "control.plugin.action", "control.plugin.action", "control.runtime.restart"]);
     assert.doesNotMatch(JSON.stringify(audits), /new-model|after|builtin:memory/);
   } finally { await server.stop(); await rm(root, { recursive: true, force: true }); }
 });

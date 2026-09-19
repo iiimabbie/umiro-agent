@@ -66,6 +66,33 @@ async function saveSecret(name: string, value: string): Promise<void> {
   await writeFile(secretsFile, `${lines.filter((line, index) => line || index < lines.length - 1).join("\n").trimEnd()}\n`, { mode: 0o600 });
 }
 
+const CORE_SECRET_NAMES = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", "UMIRO_EMBEDDING_BASE_URL", "UMIRO_EMBEDDING_API_KEY"]);
+const SECRET_ASSIGNMENT = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=.*$/;
+
+function declaredSecretNames(manifest: PluginManifestV0): Set<string> {
+  return new Set([...(manifest.requiredSecrets ?? []), ...(manifest.optionalSecrets ?? [])]);
+}
+
+async function removePluginSecrets(names: ReadonlySet<string>): Promise<void> {
+  const source = await readFile(secretsFile, "utf8").catch(error => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  });
+  const retained = source.split(/\r?\n/).filter(line => {
+    const match = SECRET_ASSIGNMENT.exec(line);
+    return !match || !names.has(match[1]!);
+  });
+  const content = retained.join("\n");
+  const output = content.length === 0 ? "" : content.endsWith("\n") ? content : `${content}\n`;
+  const temporary = join(dirname(secretsFile), `.secrets-${crypto.randomUUID()}.env`);
+  await mkdir(dirname(secretsFile), { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(temporary, output, { mode: 0o600 });
+    await chmod(temporary, 0o600);
+    await rename(temporary, secretsFile);
+  } finally { await rm(temporary, { force: true }); }
+}
+
 async function migrateLegacyEmbeddingSecret(): Promise<void> {
   const config = await loadConfig();
   const embedding = config.embedding;
@@ -440,7 +467,8 @@ async function backupFiles(root: string, directory = root): Promise<Array<{ path
   return output.sort((left, right) => left.path.localeCompare(right.path));
 }
 
-async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string): Promise<void> {
+async function plugin(action: string, source?: string, workspaceName?: string, configJson?: string, removeSecrets = false): Promise<void> {
+  if (removeSecrets && action !== "remove") throw new Error("--remove-secrets is only valid with plugin remove");
   const entries = await loadPlugins(); if (action === "list") { console.log(entries.map(item => `${item.source.startsWith("builtin:") ? "built-in" : "external"}\t${item.enabled ? "enabled" : "disabled"}\t${item.source}${item.workspace ? `#${item.workspace}` : ""}`).join("\n")); return; } if (!source) throw new Error(`plugin ${action} requires a path`);
   const restartRuntime = process.env.UMIRO_PLUGIN_ACTION_FROM_GATEWAY !== "1" && (await systemdActive() || Boolean(await fallbackProcess()));
   if (action === "remove" && source.startsWith("builtin:")) throw new Error("built-in capabilities cannot be removed; disable them instead");
@@ -489,9 +517,23 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
   else if (action === "enable" || action === "disable") next = entries.map(item => matches(item) ? { ...item, enabled: action === "enable", ...(action === "enable" && nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
   else if (action === "configure") next = entries.map(item => matches(item) ? { ...item, ...(nextConfig && Object.keys(nextConfig).length ? { config: nextConfig } : {}) } : item);
   else throw new Error(`unsupported plugin action: ${action}`);
-  await savePlugins(next); if (action === "remove" && path.startsWith(`${join(app, "plugins")}/`) && !source.startsWith("builtin:")) await rm(path, { recursive: true, force: true }); console.log(`${action}: ${path}`);
+  let removableSecrets: Set<string> | undefined;
+  if (action === "remove" && removeSecrets) {
+    if (!manifest) manifest = await validatePluginDirectory(path);
+    if (!manifest) throw new Error("cannot safely remove plugin secrets: target manifest is unavailable");
+    const remainingSecretNames = new Set<string>();
+    for (const entry of entries.filter(item => !matches(item))) {
+      const remainingManifest = await validatePluginDirectory(entry.path);
+      if (!remainingManifest) throw new Error(`cannot safely remove plugin secrets: manifest unavailable for ${entry.source}`);
+      for (const name of declaredSecretNames(remainingManifest)) remainingSecretNames.add(name);
+    }
+    removableSecrets = new Set([...declaredSecretNames(manifest)].filter(name => !CORE_SECRET_NAMES.has(name) && !remainingSecretNames.has(name)));
+  }
+  await savePlugins(next);
+  if (removableSecrets) await removePluginSecrets(removableSecrets);
+  if (action === "remove" && path.startsWith(`${join(app, "plugins")}/`) && !source.startsWith("builtin:")) await rm(path, { recursive: true, force: true }); console.log(`${action}: ${path}`);
   if (restartRuntime) await restart();
 }
 
 const args = process.argv.slice(2).filter((value, index) => value !== "--" || index > 0); const [command, action, source] = args; const option = (name: string) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
-if (command === "--version" || command === "version") console.log(VERSION); else if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "restart") await restart(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config")); else throw new Error("usage: umo --version|install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|restart|status|plugin ...");
+if (command === "--version" || command === "version") console.log(VERSION); else if (command === "install") await install(); else if (command === "upgrade") await upgrade(); else if (command === "uninstall") await uninstall(args.includes("--purge")); else if (command === "init") await init(); else if (command === "configure") await configure(option("--from-env")); else if (command === "embedding") await embedding(action ?? "status", option("--provider"), option("--model"), option("--base-url"), option("--requests-per-minute"), option("--recall-limit"), option("--min-similarity")); else if (command === "discord") await discord(action ?? "status", { ignoredChannels: option("--ignored-channels"), ambientChannels: option("--ambient-channels"), allowedChannels: option("--allowed-channels"), allowedGuilds: option("--allowed-guilds"), respondToBots: option("--respond-to-bots"), queueMode: option("--queue-mode"), status: option("--status"), activity: option("--activity") }); else if (command === "web") await web(action ?? "status"); else if (command === "start") await start(); else if (command === "stop") await stop(); else if (command === "restart") await restart(); else if (command === "status") await status(); else if (command === "rollback") await rollback(); else if (command === "backup") await backup(action); else if (command === "restore") await restore(action); else if (command === "plugin") await plugin(action ?? "list", source, option("--workspace"), option("--config"), args.includes("--remove-secrets")); else throw new Error("usage: umo --version|install|upgrade|rollback|backup DIR|restore DIR|uninstall [--purge]|init|configure --from-env .env|embedding configure|disable|status|discord configure|status|web status|token|start|stop|restart|status|plugin ...");

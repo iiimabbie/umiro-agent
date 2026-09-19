@@ -166,12 +166,15 @@ umo web status
 umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
 umo plugin list
 umo plugin enable | disable | update | remove <source>
+umo plugin remove <source> [--workspace <name>] --remove-secrets
 umo plugin configure <source> --config '{"key":"value"}'
 ```
 
 內掛與外掛共用同一套 manifest、權限、生命週期與 runtime。外掛宣告需要的 capability，host 會把它限制在呼叫者本身被允許的範圍內。
 
 停用外掛時，它註冊的工具、policy、hook、job、command、skill 與搜尋 projection 會從 runtime 撤下，所屬排程會標記為生命週期停用；再次啟用時才恢復。移除外掛時，所屬排程與搜尋 projection 會一併刪除。外掛執行後產生的日記、報告等使用者資料會保留。
+
+停用外掛永遠保留它宣告的 Secret；移除外掛預設也保留。控制台的移除 modal 可以明確勾選同時清理 Secret。CLI 用 `umo plugin remove <source> [--workspace <name>] --remove-secrets`；只會刪除目標外掛宣告、且只由它獨占的 Secret。ümiro 核心 Secret，以及其他仍安裝外掛宣告的共用 Secret，都會保留。
 
 ## CLI
 

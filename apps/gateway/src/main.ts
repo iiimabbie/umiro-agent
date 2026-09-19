@@ -350,7 +350,7 @@ const namedConversationScopes = async (locations: readonly ConversationLocation[
     }];
   }));
 };
-const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_BASE_URL_SECRET, EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => [...(module.manifest.requiredSecrets ?? []), ...(module.manifest.optionalSecrets ?? [])])]);
+const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_BASE_URL_SECRET, EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => [...(module.manifest.requiredSecrets ?? []), ...(module.manifest.optionalSecrets ?? [])]), ...disabledManifests.flatMap(manifest => [...(manifest.requiredSecrets ?? []), ...(manifest.optionalSecrets ?? [])])]);
 const persistSecrets = async (values: Readonly<Record<string, string>>): Promise<void> => {
   const source = await readFile(paths.secrets, "utf8").catch(() => "");
   const lines = source.split(/\r?\n/);
@@ -363,6 +363,34 @@ const persistSecrets = async (values: Readonly<Record<string, string>>): Promise
   const temporary = `${paths.secrets}.${crypto.randomUUID()}.tmp`;
   try { await writeFile(temporary, `${lines.filter((line, index) => line || index < lines.length - 1).join("\n").trimEnd()}\n`, { mode: 0o600 }); await rename(temporary, paths.secrets); }
   catch (error) { await rm(temporary, { force: true }); throw error; }
+};
+const SECRET_ASSIGNMENT = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=.*$/;
+const CORE_SECRET_NAMES = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_BASE_URL_SECRET, EMBEDDING_API_KEY_SECRET]);
+function parseSecretAssignmentNames(source: string): { readonly names: ReadonlySet<string>; readonly certain: boolean } {
+  const names = new Set<string>();
+  for (const line of source.split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const match = SECRET_ASSIGNMENT.exec(line);
+    if (!match) return { names, certain: false };
+    names.add(match[1]!);
+  }
+  return { names, certain: true };
+}
+const syncRemovedPluginSecrets = async (targetManifest: PluginManifestV0, remainingEntries: readonly { path: string }[]): Promise<void> => {
+  let source: string;
+  try { source = await readFile(paths.secrets, "utf8"); } catch { return; }
+  const parsed = parseSecretAssignmentNames(source);
+  if (!parsed.certain) return;
+  const protectedNames = new Set(CORE_SECRET_NAMES);
+  try {
+    for (const entry of remainingEntries) {
+      const manifest = await loadPluginManifest(entry.path);
+      for (const name of [...(manifest.requiredSecrets ?? []), ...(manifest.optionalSecrets ?? [])]) protectedNames.add(name);
+    }
+  } catch { return; }
+  for (const name of [...(targetManifest.requiredSecrets ?? []), ...(targetManifest.optionalSecrets ?? [])]) {
+    if (!protectedNames.has(name) && !parsed.names.has(name)) delete process.env[name];
+  }
 };
 let connectDiscordFromSecrets: () => Promise<boolean> = async () => false;
 let discordStartAttempted = false;
@@ -386,11 +414,11 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
       } catch { return entry; }
     }));
   },
-  run: async (action, source, workspace, pluginConfig) => {
+  run: async (action, source, workspace, pluginConfig, removeSecrets = false) => {
     const before = validateManagedPluginEntries(JSON.parse(await readFile(`${paths.config}/plugins.json`, "utf8").catch(() => "[]")));
     const target = before.find(entry => entry.source === source && entry.workspace === workspace);
     const targetManifest = target && (action === "disable" || action === "remove") ? await loadPluginManifest(target.path).catch(() => undefined) : undefined;
-    const args = ["plugin", action, source, ...(workspace ? ["--workspace", workspace] : []), ...(pluginConfig ? ["--config", JSON.stringify(pluginConfig)] : [])];
+    const args = ["plugin", action, source, ...(workspace ? ["--workspace", workspace] : []), ...(pluginConfig ? ["--config", JSON.stringify(pluginConfig)] : []), ...(removeSecrets ? ["--remove-secrets"] : [])];
     const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024, env: { ...process.env, UMIRO_PLUGIN_ACTION_FROM_GATEWAY: "1" } });
     if (targetManifest && (action === "disable" || action === "remove")) {
       const loaded = host.get(targetManifest.id);
@@ -405,6 +433,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
       }
       await reconcilePluginSchedules(scheduler, pluginStates, pluginJobStates);
     }
+    if (removeSecrets && action === "remove" && targetManifest) await syncRemovedPluginSecrets(targetManifest, before.filter(entry => entry.source !== source || entry.workspace !== workspace));
     return { ok: true, output: result.stdout.trim(), restartRequired: action !== "disable" && action !== "remove" };
   },
 }, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), updateSecrets: async values => {

@@ -696,8 +696,10 @@ async function schedules() {
   if (items.length === 0) $('schedules').append(emptyState('尚無排程', '使用上方表單建立第一個 Cron 或 Reminder。', '建立第一個排程', () => $('scheduleName').focus()));
 }
 
-async function pluginAction(action, source, workspace, config) {
-  await api('/api/plugins/action', { method: 'POST', body: JSON.stringify({ action, source, workspace, config }) });
+async function pluginAction(action, source, workspace, config, removeSecrets = false) {
+  const payload = { action, source, workspace, config };
+  if (action === 'remove' && removeSecrets === true) payload.removeSecrets = true;
+  await api('/api/plugins/action', { method: 'POST', body: JSON.stringify(payload) });
   await plugins();
 }
 
@@ -788,6 +790,26 @@ function sourceBaseName(source) {
   return last.replace(/\.git$/, '');
 }
 
+async function confirmPluginRemoval(x) {
+  $('modalTitle').textContent = '移除外掛';
+  const body = $('modalBody'); body.replaceChildren();
+  const message = document.createElement('p'); message.textContent = '確定移除「' + (x.manifest?.id || sourceBaseName(x.source)) + '」？外掛程式會被移除，使用者資料仍依外掛契約保存。'; body.append(message);
+  const declared = [...new Set([...(Array.isArray(x.manifest?.requiredSecrets) ? x.manifest.requiredSecrets : []), ...(Array.isArray(x.manifest?.optionalSecrets) ? x.manifest.optionalSecrets : [])])].filter(name => typeof name === 'string' && secretStatus[name]);
+  let removeSecrets = false;
+  if (declared.length) {
+    const label = document.createElement('label'); label.className = 'modal-field';
+    const control = document.createElement('input'); control.type = 'checkbox'; control.checked = false; control.dataset.removePluginSecrets = 'true';
+    const text = document.createElement('span'); text.textContent = '同時刪除此外掛專用 Secret';
+    const help = document.createElement('small'); help.textContent = '停用不會刪除 Secret；其他外掛共用或 ümiro 核心 Secret 會保留。';
+    label.append(control, text, help); body.append(label);
+    removeSecrets = control.checked;
+    control.addEventListener('change', () => { removeSecrets = control.checked; });
+  }
+  $('modalConfirm').textContent = '移除'; $('modalBackdrop').hidden = false;
+  const accepted = await new Promise(resolve => { modalResolve = resolve; });
+  return accepted ? removeSecrets : undefined;
+}
+
 function renderPluginRow(x) {
   const builtin = x.source.startsWith('builtin:');
   const builtinId = builtin ? x.source.slice('builtin:'.length) : undefined;
@@ -831,7 +853,7 @@ function renderPluginRow(x) {
     update.onclick = () => withBusy(update, async () => { await pluginAction('update', x.source, x.workspace); showToast('外掛已更新', 'success'); }, '更新中…').catch(reportError);
     const remove = document.createElement('button');
     remove.textContent = '移除';
-    remove.onclick = async () => { if (!await confirmAction('移除外掛', '確定移除「' + name.textContent + '」？外掛程式會被移除，使用者資料仍依外掛契約保存。', '移除')) return; await withBusy(remove, async () => { await pluginAction('remove', x.source, x.workspace); showToast('外掛已移除', 'success'); }, '移除中…').catch(reportError); };
+    remove.onclick = async () => { const removeSecrets = await confirmPluginRemoval(x); if (removeSecrets === undefined) return; await withBusy(remove, async () => { await pluginAction('remove', x.source, x.workspace, undefined, removeSecrets); showToast('外掛已移除', 'success'); }, '移除中…').catch(reportError); };
     d.append(update, remove);
   }
   return d;
