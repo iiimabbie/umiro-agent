@@ -7,6 +7,8 @@ import { HeadlessRunEngine, type HeadlessRunResult } from "../run/engine.js";
 import type { ExecutionStore } from "../ports/execution-store.js";
 import { inputText, type InputEvent } from "./event.js";
 import type { ModelCapability, ModelContent, ReasoningEffort } from "../model/contract.js";
+import { conversationHistoryToMessages } from "../conversation/history.js";
+import { partitionContextTokenBudget } from "./budget.js";
 
 export interface InteractiveIngressRequest {
   readonly event: InputEvent;
@@ -20,6 +22,7 @@ export interface InteractiveIngressRequest {
   readonly signal?: AbortSignal;
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
   readonly onRunCreated?: (runId: string) => void;
+  readonly onContextOmission?: (details: { readonly omittedHistoryMessages: number; readonly retainedHistoryMessages: number; readonly truncatedHistoryMessages: number }) => void;
   readonly steerControl?: { readonly flush: () => Promise<void>; readonly seal: () => Promise<void> };
   readonly initialTurns?: readonly ConversationSeedTurn[];
 }
@@ -112,17 +115,21 @@ export class InteractiveIngress {
     const replyTarget = ingested.turn.replyToTurnId
       ? await this.conversations.getHistoryItem(ingested.turn.replyToTurnId)
       : undefined;
+    const recentHistory = await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, historyLimit);
+    const history = conversationHistoryToMessages(recentHistory);
+    const currentMessage = { role: "user" as const, content: request.userContent ?? prompt };
+    const contextBudget = request.maxContextTokens === undefined ? undefined : partitionContextTokenBudget(request.maxContextTokens, history, currentMessage);
     const assembledContext = await this.contexts.assemble({
       runId: primaryRunId,
       execution,
       prompt,
       inputEvent: request.event,
       recentTurns: await this.conversations.listTurns(ingested.conversation.id, 12),
-      recentHistory: await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, historyLimit),
+      recentHistory,
       ...(replyTarget ? { replyTarget } : {}),
       ...(conversationCompaction ? { conversationCompaction } : {}),
       maxCharacters: request.maxContextCharacters,
-      ...(request.maxContextTokens !== undefined ? { maxTokens: request.maxContextTokens } : {}),
+      ...(contextBudget ? { maxTokens: contextBudget.contextMaxTokens } : {}),
       ...(request.signal ? { signal: request.signal } : {}),
       ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),
     });
@@ -135,6 +142,9 @@ export class InteractiveIngress {
       ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
       prompt,
       ...(request.userContent ? { userContent: request.userContent } : {}),
+      history,
+      ...(request.maxContextTokens !== undefined ? { maxContextTokens: request.maxContextTokens } : {}),
+      ...(request.onContextOmission ? { onContextOmission: request.onContextOmission } : {}),
       assembledContext,
       deliveryDestination: request.deliveryDestination,
       ...(request.signal ? { signal: request.signal } : {}),

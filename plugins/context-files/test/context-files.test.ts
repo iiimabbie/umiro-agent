@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { createPlugin } from "../src/index.js";
+import { createPlugin, renderToolEvidenceLedger, TOOL_EVIDENCE_LIMIT } from "../src/index.js";
 
 const exec = promisify(execFile);
 const memoryFiles = async (root: string) => {
@@ -46,17 +46,25 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.match(await (await import("node:fs/promises")).readFile(join(root, "OWNER.md"), "utf8"), /稱呼：主人/);
   assert.equal((await replace.execute({ oldText: "稱呼：主人", newText: "稱呼：Owner" }, {} as never) as { ok: boolean }).ok, true);
   const history = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, conversationCompaction: { conversationId: "c", throughSequence: 3, sourceHash: "abc", summary: "先前談過授權邊界", updatedAt: "now" }, recentHistory: [{ turn: { id: "t", conversationId: "c", sequence: 4, actorPrincipalId: "user", actorIdentity: { transport: "discord", externalId: "123456789012345678" }, inputEventId: "discord:e", content: [{ type: "text", text: "我叫小明" }], createdAt: "2026-09-12T00:00:00.000Z" }, actorDisplayName: "小明", assistantText: "記住了", assistantCreatedAt: "2026-09-12T00:00:02.000Z", toolEvidence: "Tool: discord_fetch_message\nResult: fetched message" }] });
-  assert.deepEqual(history.map(block => block.id), ["context.conversation_history:compacted", "context.conversation_history:recent"]);
+  assert.deepEqual(history.map(block => block.id), ["context.conversation_history:compacted", "context.conversation_history:tool-evidence"]);
   assert.match(history[0]?.content ?? "", /先前談過授權邊界/);
-  assert.match(history[1]?.content ?? "", /我叫小明[\s\S]*記住了/);
-  assert.match(history[1]?.content ?? "", /\[context\] \[msg:discord:e 2026-09-12T00:00:00\.000Z\] <@123456789012345678>\(小明\)/);
-  assert.match(history[1]?.content ?? "", /Assistant \[2026-09-12T00:00:02\.000Z\]: 記住了/);
-  assert.match(history[1]?.content ?? "", /tool-evidence trust="untrusted-data"[\s\S]*fetched message/);
+  assert.match(history[1]?.content ?? "", /tool-evidence-ledger[\s\S]*fetched message/);
+  assert.doesNotMatch(history[1]?.content ?? "", /我叫小明|記住了/);
   const reply = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, replyTarget: { turn: { id: "reply-turn", conversationId: "c", sequence: 1, actorPrincipalId: "user", inputEventId: "e-reply", content: [{ type: "text", text: "被回覆的內容" }], createdAt: "now" }, assistantText: "原本的回答" } });
   assert.match(reply[0]?.content ?? "", /discord-reply-target[\s\S]*被回覆的內容[\s\S]*原本的回答/);
   const fetchedReply = await providers.find(provider => provider.id === "context.conversation_history")!.load({ ...request, inputEvent: { metadata: { replyToMessageId: "discord-message-1", replyAuthorId: "member-1", replyToContent: "尚未入庫的被回覆訊息" } } as never });
   assert.match(fetchedReply[0]?.content ?? "", /external-message-id="discord-message-1"[\s\S]*尚未入庫的被回覆訊息/);
   await plugin.stop?.();
+});
+
+test("tool evidence ledger is globally bounded and newest-first", () => {
+  const ledger = renderToolEvidenceLedger([
+    { turn: { inputEventId: "old" }, toolEvidence: "old evidence ".repeat(500) },
+    { turn: { inputEventId: "new" }, toolEvidence: "new evidence ".repeat(500) },
+  ]);
+  assert.ok(ledger.length <= TOOL_EVIDENCE_LIMIT);
+  assert.match(ledger, /\[msg:new\]/);
+  assert.doesNotMatch(ledger, /\[msg:old\]/);
 });
 
 test("bootstrap is owner-only and disappears after both identity files leave shipped templates", async () => {

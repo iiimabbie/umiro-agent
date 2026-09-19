@@ -8,6 +8,7 @@ import { intersectAuthority } from "../authorization/authority.js";
 import { renderContextAssembly, type ContextAssembly } from "../context/index.js";
 import type { Run, Step } from "./entities.js";
 import { RunNotRecoverableError, type RecoveryClaim } from "./recovery.js";
+import { estimateModelMessageTokens } from "../model/estimate.js";
 
 export interface HeadlessRunRequest {
   readonly context: ExecutionContext;
@@ -16,6 +17,12 @@ export interface HeadlessRunRequest {
   readonly prompt: string;
   /** Optional multimodal user content; when absent, prompt is sent as text. */
   readonly userContent?: ModelContent;
+  /** Native historical user/assistant messages, oldest first. */
+  readonly history?: readonly ModelMessage[];
+  /** Overall initial model-input token ceiling, including context and history. */
+  readonly maxContextTokens?: number;
+  /** Reports history omitted by the overall input budget. */
+  readonly onContextOmission?: (details: { readonly omittedHistoryMessages: number; readonly retainedHistoryMessages: number; readonly truncatedHistoryMessages: number }) => void;
   readonly signal?: AbortSignal;
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
   /** Adapter-owned live ingress gate. flush waits for accepted writes; seal first
@@ -54,13 +61,69 @@ export interface HeadlessRunEngineOptions {
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 
-function initialMessages(request: Pick<HeadlessRunRequest, "prompt" | "userContent" | "assembledContext">): ModelMessage[] {
-  return [
-    ...(request.assembledContext?.blocks.length
-      ? [{ role: "system" as const, content: renderContextAssembly(request.assembledContext) }]
-      : []),
-    { role: "user" as const, content: request.userContent ?? request.prompt },
-  ];
+function messageTokens(message: ModelMessage): number {
+  return estimateModelMessageTokens(message);
+}
+
+function truncateHistoricalMessage(message: ModelMessage, availableTokens: number): ModelMessage | undefined {
+  if (message.role !== "user" || typeof message.content !== "string" || availableTokens <= 0) return undefined;
+  const marker = "\n[history truncated]";
+  if (messageTokens(message) <= availableTokens) return message;
+  const candidate = (length: number): ModelMessage => {
+    const head = Math.max(1, Math.ceil(length * 0.65));
+    const tail = Math.max(0, length - head);
+    return { role: "user", content: `${message.content.slice(0, head)}${marker}${tail ? message.content.slice(-tail) : ""}` };
+  };
+  let low = 0;
+  let high = message.content.length;
+  let best: ModelMessage | undefined;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidateMessage = candidate(middle);
+    if (messageTokens(candidateMessage) <= availableTokens) {
+      best = candidateMessage;
+      low = middle + 1;
+    } else high = middle - 1;
+  }
+  return best;
+}
+
+export function buildInitialMessages(request: Pick<HeadlessRunRequest, "prompt" | "userContent" | "assembledContext" | "history" | "maxContextTokens" | "onContextOmission">): ModelMessage[] {
+  const system = request.assembledContext?.blocks.length
+    ? { role: "system" as const, content: renderContextAssembly(request.assembledContext) }
+    : undefined;
+  const current = { role: "user" as const, content: request.userContent ?? request.prompt };
+  const history = [...(request.history ?? [])].filter(message => message.role === "user" || message.role === "assistant");
+  if (request.maxContextTokens === undefined || history.length === 0) return [...(system ? [system] : []), ...history, current];
+
+  const fixedTokens = (system ? messageTokens(system) : 0) + messageTokens(current);
+  let available = Math.max(0, request.maxContextTokens - fixedTokens);
+  const groups: ModelMessage[][] = [];
+  for (const message of history) {
+    if (message.role === "user") groups.push([message]);
+    else if (groups.length) groups.at(-1)!.push(message);
+  }
+  const retained: ModelMessage[][] = [];
+  let truncatedHistoryMessages = 0;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index]!;
+    const cost = group.reduce((total, message) => total + messageTokens(message), 0);
+    if (cost <= available) {
+      retained.unshift(group);
+      available -= cost;
+      continue;
+    }
+    const truncated = truncateHistoricalMessage(group[0]!, available);
+    if (truncated) {
+      retained.unshift([truncated]);
+      truncatedHistoryMessages += 1;
+    }
+    break;
+  }
+  const retainedMessages = retained.flat();
+  const omittedHistoryMessages = history.length - retainedMessages.length;
+  if (omittedHistoryMessages > 0 || truncatedHistoryMessages > 0) request.onContextOmission?.({ omittedHistoryMessages, retainedHistoryMessages: retainedMessages.length, truncatedHistoryMessages });
+  return [...(system ? [system] : []), ...retainedMessages, current];
 }
 
 function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
@@ -187,7 +250,7 @@ export class HeadlessRunEngine {
       throw new ExecutionStoreConflictError(`prepared Run ${runId} does not have one pending model Step`);
     }
     const deliveryDestination = request.deliveryDestination ?? { kind: "caller" };
-    const messages = initialMessages(request);
+    const messages = buildInitialMessages(request);
     await this.store.updateExecutionProgress({
       runId,
       expectedRunRevision: 0,
@@ -652,7 +715,7 @@ export class HeadlessRunEngine {
     let checkpointVersion = restored?.checkpointVersion ?? 0;
     let usage = restored?.usage ?? ZERO_USAGE;
     const deliveryDestination = restored?.deliveryDestination ?? request.deliveryDestination ?? { kind: "caller" };
-    const messages: ModelMessage[] = restored?.messages ?? initialMessages(request);
+    const messages: ModelMessage[] = restored?.messages ?? buildInitialMessages(request);
     let executionContext = request.context;
     let modelStep = restored?.modelStep ?? this.newStep(runId, sequence++, "model_call");
     if (!restored) {
