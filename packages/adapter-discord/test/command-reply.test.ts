@@ -11,3 +11,6 @@ test("built-in operational commands render their returned content", () => {
   assert.equal(commandReplyContent("status", { content: "狀態" }), "狀態");
   assert.equal(commandReplyContent("restart", { content: "Restarting... wait for me!" }), "Restarting... wait for me!");
 });
+test("plugin commands render their text response", () => {
+  assert.equal(commandReplyContent("google-auth", { text: "Open this link to authorize:\nhttps://accounts.google.com/..." }), "Open this link to authorize:\nhttps://accounts.google.com/...");
+});

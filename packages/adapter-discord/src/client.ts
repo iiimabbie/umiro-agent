@@ -37,6 +37,8 @@ export function parseButtonCustomId(value: string): { buttonSetId: string; butto
 
 export function commandReplyContent(name: string, result: Record<string, unknown>): string {
   if (typeof result.content === "string") return result.content;
+  // Plugin commands use `text` for their user-facing response.
+  if (typeof result.text === "string") return result.text;
   if (name === "model" && typeof result.model === "string") return `已切換模型：${result.model}`;
   if (name === "queue" && typeof result.queueMode === "string") return `訊息模式已設定為：${result.queueMode}`;
   if (name === "new") return result.archived === true ? "已開新對話；舊對話已封存。" : "目前沒有進行中的對話；下一則訊息會開始新對話。";
