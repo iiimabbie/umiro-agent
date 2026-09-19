@@ -41,6 +41,7 @@ test("plugin enable order rejects cyclic tool dependencies", () => {
 
 test("plugin secret injection includes only declared non-blank environment values", () => {
   const module = plugin("secret-user");
-  const manifest = { ...module.manifest, requiredSecrets: ["OWNER_ID", "OPTIONAL_KEY"] };
+  const manifest = { ...module.manifest, requiredSecrets: ["OWNER_ID"], optionalSecrets: ["OPTIONAL_KEY"] };
   assert.deepEqual(pluginSecretsFromEnvironment(manifest, { OWNER_ID: "123", OPTIONAL_KEY: "  ", UNDECLARED: "hidden" }), { OWNER_ID: "123" });
+  assert.deepEqual(pluginSecretsFromEnvironment(manifest, { OWNER_ID: "123", OPTIONAL_KEY: "available", UNDECLARED: "hidden" }), { OWNER_ID: "123", OPTIONAL_KEY: "available" });
 });

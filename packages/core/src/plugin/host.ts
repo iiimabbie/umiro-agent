@@ -126,8 +126,9 @@ export class PluginHost {
 
     const config = structuredClone(options.config ?? {});
     validatePluginConfig(manifest, config);
-    const allowedSecrets = new Set(manifest.requiredSecrets ?? []);
-    for (const secret of allowedSecrets) {
+    const requiredSecrets = new Set(manifest.requiredSecrets ?? []);
+    const allowedSecrets = new Set([...requiredSecrets, ...(manifest.optionalSecrets ?? [])]);
+    for (const secret of requiredSecrets) {
       if (!options.secrets?.[secret]) throw new TypeError(`plugin ${manifest.id} requires secret ${secret}`);
     }
 

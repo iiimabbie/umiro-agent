@@ -61,6 +61,8 @@ export interface PluginManifestV0 {
   readonly namespace: string;
   readonly configSchema?: Record<string, unknown>;
   readonly requiredSecrets?: readonly string[];
+  /** Secrets the plugin may consume when configured, but which do not gate loading. */
+  readonly optionalSecrets?: readonly string[];
   readonly contributes: {
     readonly tools?: readonly string[];
       readonly contextProviders?: readonly string[];

@@ -5,7 +5,7 @@ import { loadPluginModule } from "./plugin-loader.js";
 export interface PluginEnableEntry<T> { readonly configured: T; readonly module: PluginModule }
 
 export function pluginSecretsFromEnvironment(manifest: PluginManifestV0, environment: NodeJS.ProcessEnv): Record<string, string> {
-  return Object.fromEntries((manifest.requiredSecrets ?? []).flatMap(name => {
+  return Object.fromEntries([...(manifest.requiredSecrets ?? []), ...(manifest.optionalSecrets ?? [])].flatMap(name => {
     const value = environment[name];
     return value?.trim() ? [[name, value]] : [];
   }));
@@ -45,7 +45,7 @@ export async function enableConfiguredPlugins(
     if (!configured.enabled) continue;
     const module = await loadPluginModule(configured.path);
     const requiredSecrets = Object.fromEntries(
-      (module.manifest.requiredSecrets ?? []).flatMap(name => {
+      [...(module.manifest.requiredSecrets ?? []), ...(module.manifest.optionalSecrets ?? [])].flatMap(name => {
         const value = secrets.get(name);
         return value === undefined ? [] : [[name, value]];
       }),

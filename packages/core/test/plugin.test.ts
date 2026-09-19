@@ -117,6 +117,18 @@ test("plugin logger is namespaced, redacts secrets, and cannot break startup", a
   assert.deepEqual(records, [{ level: "warn", event: "plugin.logger.seed_failed", message: "continuing", occurredAt: (records[0] as { occurredAt: string }).occurredAt, pluginId: "logger-plugin", data: { token: "[REDACTED]", detail: "[REDACTED] appeared" } }]);
 });
 
+test("optional plugin secrets are visible when present and do not gate startup", async () => {
+  const seen: Array<string | undefined> = [];
+  const module: PluginModule = {
+    manifest: { schemaVersion: 0, id: "optional-secret", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "optional-secret", permissions: authority, optionalSecrets: ["OPTIONAL_TOKEN"], contributes: {} },
+    create: context => { seen.push(context.getSecret("OPTIONAL_TOKEN"), context.getSecret("UNDECLARED")); return { contributions: {} }; },
+  };
+  await new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority).enable(module);
+  await new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority).enable(module, { secrets: { OPTIONAL_TOKEN: "configured", UNDECLARED: "hidden" } });
+  assert.deepEqual(seen, [undefined, undefined, "configured", undefined]);
+  assert.throws(() => validatePluginManifest({ ...module.manifest, requiredSecrets: ["OPTIONAL_TOKEN"] }), /both required and optional/);
+});
+
 test("Plugin search documents are scoped to the manifest namespace", async () => {
   const calls: string[] = [];
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority, undefined, undefined, undefined, undefined, {

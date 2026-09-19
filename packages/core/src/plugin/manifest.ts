@@ -19,6 +19,7 @@ const validateShape = new Ajv({ allErrors: true, strict: true }).compile<PluginM
     namespace: { type: "string" },
     configSchema: { type: "object" },
     requiredSecrets: { type: "array", items: { type: "string" }, uniqueItems: true },
+    optionalSecrets: { type: "array", items: { type: "string" }, uniqueItems: true },
     permissions: {
       type: "object",
       additionalProperties: false,
@@ -143,6 +144,10 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
   }
   if (totalProfileInstructions > 32000) throw new TypeError("plugin manifest subagent profile instructions exceed 32000 characters in total");
   unique(manifest.requiredSecrets, "requiredSecrets", /^[A-Z][A-Z0-9_]*$/);
+  unique(manifest.optionalSecrets, "optionalSecrets", /^[A-Z][A-Z0-9_]*$/);
+  const requiredSecrets = new Set(manifest.requiredSecrets ?? []);
+  const overlappingSecret = (manifest.optionalSecrets ?? []).find(secret => requiredSecrets.has(secret));
+  if (overlappingSecret) throw new TypeError(`plugin manifest secret ${overlappingSecret} cannot be both required and optional`);
   if (hostCeiling && !isAuthoritySubset(manifest.permissions, hostCeiling)) {
     throw new TypeError(`plugin ${manifest.id} permissions exceed the host ceiling`);
   }
