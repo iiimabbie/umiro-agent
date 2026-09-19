@@ -722,11 +722,43 @@ function pluginConfigControl(name, property, value) {
   return label;
 }
 
+function pluginSecretControl(name, required) {
+  const label = document.createElement('label');
+  label.className = 'modal-field';
+  label.textContent = name.endsWith('_API_KEY') ? 'API Key' : name;
+  const control = document.createElement('input');
+  control.type = 'password';
+  control.autocomplete = 'new-password';
+  control.dataset.pluginSecretKey = name;
+  control.placeholder = secretStatus[name] ? '已設定；留空不變' : required ? '必填' : '選填';
+  const help = document.createElement('small');
+  help.textContent = `${name} · ${secretStatus[name] ? '已設定' : '未設定'}；只會儲存在 secrets.env，不會回顯。`;
+  label.append(control, help);
+  return label;
+}
+
+function markPluginSecretsConfigured(body, names) {
+  for (const control of body.querySelectorAll('[data-plugin-secret-key]')) {
+    const name = control.dataset.pluginSecretKey;
+    if (!names.has(name)) continue;
+    secretStatus[name] = true;
+    control.value = '';
+    control.placeholder = '已設定；留空不變';
+    const help = control.closest('label')?.querySelector('small');
+    if (help) help.textContent = `${name} · 已設定；只會儲存在 secrets.env，不會回顯。`;
+  }
+}
+
 async function configurePlugin(x) {
   const schema = x.manifest?.configSchema;
-  if (!schema || schema.type !== 'object' || !schema.properties) return showToast('此外掛沒有可顯示的設定欄位', 'error');
+  const requiredSecrets = Array.isArray(x.manifest?.requiredSecrets) ? x.manifest.requiredSecrets.filter(name => typeof name === 'string' && name) : [];
+  const optionalSecrets = Array.isArray(x.manifest?.optionalSecrets) ? x.manifest.optionalSecrets.filter(name => typeof name === 'string' && name && !requiredSecrets.includes(name)) : [];
+  const secretNames = new Set([...requiredSecrets, ...optionalSecrets]);
+  if ((!schema || schema.type !== 'object' || !schema.properties) && requiredSecrets.length + optionalSecrets.length === 0) return showToast('此外掛沒有可顯示的設定欄位', 'error');
   $('modalTitle').textContent = '設定 ' + (x.manifest?.id || sourceBaseName(x.source));
-  const body = $('modalBody'); body.replaceChildren(...Object.entries(schema.properties).map(([name, property]) => pluginConfigControl(name, property, x.config?.[name])));
+  const configControls = Object.entries(schema?.properties ?? {}).filter(([name]) => !secretNames.has(name)).map(([name, property]) => pluginConfigControl(name, property, x.config?.[name]));
+  const secretControls = [...requiredSecrets.map(name => pluginSecretControl(name, true)), ...optionalSecrets.map(name => pluginSecretControl(name, false))];
+  const body = $('modalBody'); body.replaceChildren(...configControls, ...secretControls);
   $('modalConfirm').textContent = '儲存設定'; $('modalBackdrop').hidden = false;
   const accepted = await new Promise(resolve => { modalResolve = resolve; });
   if (!accepted) return;
@@ -741,7 +773,13 @@ async function configurePlugin(x) {
       else if (type === 'array' || type === 'object') config[key] = JSON.parse(raw);
       else config[key] = raw;
     }
-    await pluginAction('configure', x.source, x.workspace, config); showToast('外掛設定已儲存，重啟後完整生效', 'success');
+    const secrets = Object.fromEntries([...body.querySelectorAll('[data-plugin-secret-key]')].map(control => [control.dataset.pluginSecretKey, control.value.trim()]).filter(([, value]) => value));
+    await pluginAction('configure', x.source, x.workspace, config);
+    if (Object.keys(secrets).length) {
+      await api('/api/secrets', { method: 'PUT', body: JSON.stringify(secrets) });
+      markPluginSecretsConfigured(body, new Set(Object.keys(secrets)));
+    }
+    showToast('外掛設定已儲存，重啟後完整生效', 'success');
   } catch (error) { reportError(error); }
 }
 
