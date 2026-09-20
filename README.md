@@ -50,6 +50,24 @@ export PATH="$HOME/.umiro/bin:$PATH"
 
 No `UMIRO_HOME` setting is needed for a normal installation; these commands install into the current user's `~/.umiro`.
 
+`umo install` writes a user-level systemd unit and enables it when `systemctl --user` is available. It uses the absolute Node.js executable detected during installation, so boot does not depend on the systemd manager's interactive shell `PATH`. Installation does not start the gateway; run `umo start` after configuration. To keep `umo` available in future shells, add `export PATH="$HOME/.umiro/bin:$PATH"` to the startup file used by your shell, such as `~/.profile` for a POSIX login shell or `~/.zshrc` for zsh.
+
+For a user service to start before you log in after a reboot, enable linger once (the installer only checks and reports its current state; it never runs `sudo`):
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Verify the service and inspect its logs with:
+
+```bash
+systemctl --user is-enabled umiro.service
+systemctl --user is-active umiro.service
+journalctl --user -u umiro.service -e
+```
+
+If user systemd is unavailable or cannot be enabled, installation reports `daemon fallback available`. The fallback can be started with `umo start`, but it does not provide boot auto-start; configure systemd before relying on automatic startup.
+
 Start the daemon and open the local setup UI:
 
 ```bash

@@ -4,7 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { validatePluginConfig, validatePluginManifest, type PluginManifestV0 } from "@umiro/core";
@@ -187,26 +187,77 @@ async function registerBuiltins(): Promise<void> {
   await savePlugins([...entries, builtin("context-files", { workspacePath: workspace, configFile, skills: current.skills ?? [] }), builtin("memory", { workspacePath: workspace }), builtin("scheduler", { timezone: systemTimezone() }), builtin("subagent"), builtin("host-tools", { workspacePath: workspace }), builtin("discord-tools", { workspacePath: workspace })]);
 }
 
+function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
+function systemdQuote(value: string): string { return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`; }
+function systemdPath(value: string): string {
+  let escaped = "";
+  for (const byte of Buffer.from(value)) {
+    const character = String.fromCharCode(byte);
+    if (/[A-Za-z0-9_./:+@-]/.test(character)) escaped += character;
+    else if (character === "%") escaped += "%%";
+    else escaped += `\\x${byte.toString(16).padStart(2, "0")}`;
+  }
+  return escaped;
+}
+
 async function writeLaunchers(): Promise<void> {
   await mkdir(join(home, "bin"), { recursive: true, mode: 0o700 });
-  const launcher = (entry: string) => `#!/bin/sh\nexport UMIRO_HOME=\"\${UMIRO_HOME:-${home}}\"\nexec node \"$UMIRO_HOME/app/current/${entry}\" \"$@\"\n`;
+  const nodePath = shellQuote(process.execPath);
+  const launcherHome = shellQuote(home);
+  const launcher = (entry: string) => `#!/bin/sh\nif [ -z "\${UMIRO_HOME:-}" ]; then UMIRO_HOME=${launcherHome}; fi\nexport UMIRO_HOME\nexec ${nodePath} "$UMIRO_HOME/app/current/${entry}" "$@"\n`;
   await writeFile(join(home, "bin", "umo"), launcher("cli/dist/src/main.js"), { mode: 0o700 });
   await writeFile(join(home, "bin", "umo-gateway"), launcher("gateway/dist/src/main.js"), { mode: 0o700 });
   await chmod(join(home, "bin", "umo"), 0o700); await chmod(join(home, "bin", "umo-gateway"), 0o700);
 }
 
 const unitPath = join(home, "state", "umiro.service");
-async function installService(): Promise<boolean> {
-  const unit = `[Unit]\nDescription=Umiro Discord Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=UMIRO_HOME=${home}\nEnvironmentFile=-${secretsFile}\nWorkingDirectory=${workspace}\nExecStart=${join(home, "bin", "umo-gateway")}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`;
+type LingerState = "yes" | "no" | "unavailable" | "not-checked";
+interface ServiceInstallResult { enabled: boolean; reason?: string; linger: LingerState; lingerDetail?: string }
+
+function commandFailure(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error).replace(/\s+/g, " ").trim().slice(0, 240) || "unknown error";
+  const record = error as { stderr?: unknown; code?: unknown; message?: unknown };
+  const raw = typeof record.stderr === "string" && record.stderr.trim() ? record.stderr : typeof record.message === "string" ? record.message : record.code !== undefined ? `exit code ${String(record.code)}` : "unknown error";
+  return raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1)?.slice(0, 240) || "unknown error";
+}
+
+async function checkLinger(): Promise<{ state: LingerState; detail?: string }> {
+  let username: string;
+  try { username = userInfo().username; } catch (error) { return { state: "unavailable", detail: `cannot determine current user (${commandFailure(error)})` }; }
+  try {
+    const result = await exec("loginctl", ["show-user", username, "--property=Linger", "--value"]);
+    const state = result.stdout.trim().toLowerCase();
+    if (state === "yes" || state === "no") return { state };
+    return { state: "unavailable", detail: `loginctl returned an unexpected Linger value (${state || "empty"})` };
+  } catch (error) { return { state: "unavailable", detail: `loginctl unavailable (${commandFailure(error)})` }; }
+}
+
+async function installService(): Promise<ServiceInstallResult> {
+  const gatewayEntry = join(currentRelease, "gateway", "dist", "src", "main.js");
+  const unit = `[Unit]\nDescription=Umiro Discord Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`UMIRO_HOME=${home}`)}\nEnvironmentFile=-${systemdPath(secretsFile)}\nWorkingDirectory=${systemdPath(workspace)}\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(gatewayEntry)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(join(home, "state"), { recursive: true, mode: 0o700 }); await writeFile(unitPath, unit, { mode: 0o600 });
-  if (process.env.UMIRO_NO_SYSTEMD === "1") return false;
-  try { await exec("systemctl", ["--user", "link", unitPath]); await exec("systemctl", ["--user", "daemon-reload"]); await exec("systemctl", ["--user", "enable", "umiro.service"]); return true; } catch { return false; }
+  if (process.env.UMIRO_NO_SYSTEMD === "1") return { enabled: false, reason: "disabled by UMIRO_NO_SYSTEMD=1", linger: "not-checked" };
+  try {
+    await exec("systemctl", ["--user", "link", unitPath]);
+    await exec("systemctl", ["--user", "daemon-reload"]);
+    await exec("systemctl", ["--user", "enable", "umiro.service"]);
+  } catch (error) {
+    return { enabled: false, reason: `systemd user service could not be enabled (${commandFailure(error)})`, linger: "not-checked" };
+  }
+  const linger = await checkLinger();
+  return { enabled: true, linger: linger.state, ...(linger.detail ? { lingerDetail: linger.detail } : {}) };
 }
 
 async function install(): Promise<void> {
   for (const name of ["bin", "app", "config", "workspace", "data", "state"]) await mkdir(join(home, name), { recursive: true, mode: 0o700 });
-  await init(); const release = await deployRelease(); await registerBuiltins(); await writeLaunchers(); const systemd = await installService();
-  console.log(`installed ${release}${systemd ? " (systemd user service enabled)" : " (daemon fallback available)"}`);
+  await init(); const release = await deployRelease(); await registerBuiltins(); await writeLaunchers(); const service = await installService();
+  console.log(`installed ${release}`);
+  if (service.enabled) {
+    console.log("systemd user service enabled (not started; run `umo start` when ready)");
+    if (service.linger === "yes") console.log("systemd linger: yes (starts at boot before login)");
+    else if (service.linger === "no") console.log(`systemd linger: no; run \`sudo loginctl enable-linger ${userInfo().username}\` to start before login`);
+    else console.log(`systemd linger: unavailable${service.lingerDetail ? ` (${service.lingerDetail})` : ""}; run \`sudo loginctl enable-linger <username>\` if this host supports it`);
+  } else console.log(`daemon fallback available (no boot auto-start): ${service.reason ?? "systemd user service unavailable"}`);
 }
 
 async function upgrade(): Promise<void> {

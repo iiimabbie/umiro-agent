@@ -24,8 +24,7 @@ test("clean home completes install, configure, daemon, upgrade, backup, restore,
     await exec(process.execPath, [cli, "install"], { env: environment("rev1") });
     const first = await readlink(join(home, "app", "current")); assert.match(first, /rev1/);
     const gatewayLauncher = await readFile(join(home, "bin", "umo-gateway"), "utf8");
-    assert.match(gatewayLauncher, /exec node "\$UMIRO_HOME\/app\/current\/gateway\/dist\/src\/main\.js"/);
-    assert.doesNotMatch(gatewayLauncher, new RegExp(process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(gatewayLauncher, new RegExp(`exec '${process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' \\\"\\$UMIRO_HOME/app/current/gateway/dist/src/main\\.js\\\"`));
     const installedPlugins = JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")) as Array<{ source: string; config: Record<string, unknown> }>;
     assert.equal(installedPlugins.find(plugin => plugin.source === "builtin:scheduler")?.config.timezone, "Europe/London");
     for (const id of ["context-files", "memory", "host-tools", "discord-tools"]) {

@@ -50,6 +50,24 @@ export PATH="$HOME/.umiro/bin:$PATH"
 
 一般安裝不需要設定 `UMIRO_HOME`；以上指令會安裝到目前使用者自己的 `~/.umiro`。
 
+`umo install` 會寫入 user-level systemd unit，並在 `systemctl --user` 可用時啟用它。unit 會使用安裝當下偵測到的絕對 Node.js 執行檔，因此開機啟動不依賴 systemd manager 的互動式 shell `PATH`。安裝不會啟動 gateway；完成設定後再執行 `umo start`。若要讓之後開啟的 shell 也能找到 `umo`，請把 `export PATH="$HOME/.umiro/bin:$PATH"` 加進目前 shell 使用的啟動檔，例如 POSIX login shell 使用 `~/.profile`，zsh 使用 `~/.zshrc`。
+
+若希望重開機且尚未登入時也能啟動 user service，請手動啟用一次 linger（安裝器只會檢查並回報狀態，不會執行 `sudo`）：
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+可用以下指令確認 service 與查看日誌：
+
+```bash
+systemctl --user is-enabled umiro.service
+systemctl --user is-active umiro.service
+journalctl --user -u umiro.service -e
+```
+
+若 user systemd 不可用或無法啟用，安裝器會回報 `daemon fallback available`。fallback 可以用 `umo start` 啟動，但不具備開機自啟能力；若需要自動啟動，請先完成 systemd 設定。
+
 啟動 daemon，再開啟本機設定介面：
 
 ```bash
