@@ -6,7 +6,6 @@ The person this agent serves. Read on every turn, so keep it short and current.
 
 - Name:
 - How to address them:
-- Pronouns:
 - Timezone:
 - Languages:
 
