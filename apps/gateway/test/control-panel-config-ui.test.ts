@@ -29,6 +29,10 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /path: 'embedding\.baseUrl', type: 'secret'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'secret', inputType: 'url'/);
   assert.match(script, /title: '模型與 Context'[\s\S]*?secretName: 'LLM_BASE_URL'[\s\S]*?secretName: 'LLM_API_KEY'/);
+  assert.match(script, /connectModels: true/);
+  assert.match(script, /api\('\/api\/models\/discover', \{ method: 'POST'/);
+  assert.match(script, /showToast\('連接成功，共取得 '/);
+  assert.match(css, /\.provider-connect/);
   assert.match(script, /title: 'Discord'[\s\S]*?secretName: 'DISCORD_TOKEN'[\s\S]*?secretName: 'UMIRO_OWNER_DISCORD_ID'/);
   assert.doesNotMatch(script, /UMIRO_WEB_UI_TOKEN/);
   const editableSecrets = main.slice(main.indexOf("const editableSecretNames"), main.indexOf("const persistSecrets"));

@@ -64,7 +64,7 @@ function markWorkspaceDirty() {
 const CONFIG_GROUPS = [
   { title: '模型與 Context', fields: [
     { path: 'LLM_BASE_URL', type: 'secret', secretName: 'LLM_BASE_URL', inputType: 'url', publicValue: true, wide: true, label: 'LLM Base URL', description: 'OpenAI-compatible API 的端點，例如 https://api.openai.com/v1。', defaultValue: null, risk: '模型請求會傳送到此 endpoint；只能使用信任的服務。', restartRequired: false },
-    { path: 'LLM_API_KEY', type: 'secret', secretName: 'LLM_API_KEY', wide: true, label: 'LLM API Key', description: '主要模型 provider 的密鑰；只寫入 secrets.env，不會回傳已設定值。', defaultValue: null, risk: '這是 provider 憑證，只應填入信任的服務。', restartRequired: false },
+    { path: 'LLM_API_KEY', type: 'secret', secretName: 'LLM_API_KEY', wide: true, connectModels: true, label: 'LLM API Key', description: '主要模型 provider 的密鑰；只寫入 secrets.env，不會回傳已設定值。填好 URL 與 Key 後可按「連接」取得模型清單。', defaultValue: null, risk: '這是 provider 憑證，只應填入信任的服務。', restartRequired: false },
     { path: 'protocol', type: 'select', options: [['openai_responses', 'OpenAI Responses'], ['openai_chat_completions', 'Chat Completions']] },
     { path: 'model', type: 'model', required: true },
     { path: 'modelCapabilities', type: 'checks', wide: true, options: [['vision', '圖片理解'], ['function_tools', '工具呼叫'], ['hosted_web_search', 'Hosted Web Search'], ['hosted_image_generation', 'Hosted Image Generation'], ['hosted_code_execution', 'Hosted Code Execution']] },
@@ -209,9 +209,10 @@ function configControl(field, value, models) {
     const select = document.createElement('select');
     select.id = id;
     let options = field.type === 'model' ? models.map(model => [model, model]) : field.options;
-    if (value !== undefined && value !== null && !options.some(([raw]) => String(raw) === String(value))) options = [[String(value), String(value) + '（目前設定）'], ...options];
+    const selectedValue = field.type === 'model' && value === 'not-configured' ? undefined : value;
+    if (selectedValue !== undefined && selectedValue !== null && !options.some(([raw]) => String(raw) === String(selectedValue))) options = [[String(selectedValue), String(selectedValue) + '（目前設定）'], ...options];
     select.replaceChildren(...options.map(([raw, label]) => option(raw, label)));
-    select.value = value === undefined || value === null ? String(field.options?.[0]?.[0] ?? '') : String(value);
+    select.value = selectedValue === undefined || selectedValue === null ? String(options[0]?.[0] ?? '') : String(selectedValue);
     if (field.required) select.required = true;
     return select;
   }
@@ -281,7 +282,13 @@ function renderConfigForm(schema, config, models) {
       path.textContent = field.secretName || field.path;
       const value = getPath(config, field.path);
       const controlValue = value === undefined && field.type !== 'json' ? explanation.defaultValue : value;
-      wrapper.append(label, path, configControl(field, controlValue, models));
+      const control = configControl(field, controlValue, models);
+      if (field.connectModels) {
+        const row = document.createElement('div'); row.className = 'provider-connect';
+        const button = document.createElement('button'); button.id = 'connectModels'; button.type = 'button'; button.textContent = '連接';
+        button.onclick = () => withBusy(button, discoverModels, '連接中…').catch(reportError);
+        row.append(control, button); wrapper.append(label, path, row);
+      } else wrapper.append(label, path, control);
       grid.append(wrapper);
     }
     section.append(title, grid);
@@ -291,6 +298,24 @@ function renderConfigForm(schema, config, models) {
   markConfigSaved('設定已載入');
   $('configForm').oninput = markConfigDirty;
   $('configForm').onchange = markConfigDirty;
+}
+
+async function discoverModels() {
+  const baseUrl = $('config-LLM_BASE_URL');
+  const apiKey = $('config-LLM_API_KEY');
+  if (!baseUrl?.value.trim() || !baseUrl.checkValidity()) { baseUrl?.reportValidity(); throw new Error('請先填入有效的 LLM Base URL'); }
+  const current = $('config-model')?.value;
+  const payload = { baseUrl: baseUrl.value.trim(), ...(apiKey?.value.trim() ? { apiKey: apiKey.value.trim() } : {}) };
+  const models = (await api('/api/models/discover', { method: 'POST', body: JSON.stringify(payload) })).filter(model => typeof model === 'string');
+  if (!models.length) throw new Error('模型端點沒有回傳可用模型');
+  const field = configFields().find(candidate => candidate.path === 'model');
+  const wrapper = document.querySelector('[data-config-path="model"]');
+  const previous = wrapper?.querySelector('#config-model');
+  if (!field || !wrapper || !previous) throw new Error('找不到主要模型欄位');
+  const next = configControl(field, current, models);
+  previous.replaceWith(next);
+  if (next.value !== current) markConfigDirty();
+  showToast('連接成功，共取得 ' + models.length + ' 個模型', 'success');
 }
 
 function filterConfigFields() {

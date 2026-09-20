@@ -462,7 +462,14 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   for (const name of Object.keys(values)) if (!["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "LLM_BASE_URL", "LLM_API_KEY"].includes(name)) restartRequired.push(name);
   refreshConfigurationRequirements();
   return { applied: [...new Set(applied)], restartRequired: [...new Set(restartRequired)] };
-}, models: async () => configuredBaseUrl ? modelCatalog.listConversationModels() : [], applyConfig: async raw => {
+}, models: async connection => {
+  if (!connection) return configuredBaseUrl ? modelCatalog.listConversationModels() : [];
+  const requestedBaseUrl = connection.baseUrl.trim();
+  const sameEndpoint = requestedBaseUrl.replace(/\/+$/, "") === configuredBaseUrl?.replace(/\/+$/, "");
+  const requestedApiKey = connection.apiKey?.trim() || (sameEndpoint ? apiKey : undefined);
+  const requestedConnection = { baseUrl: modelEndpoint(requestedBaseUrl), auth: requestedApiKey ? "bearer" as const : "none" as const, ...(requestedApiKey ? { apiKey: requestedApiKey } : {}), timeoutMs: 10_000 };
+  return new OpenAIModelCatalog(requestedConnection).listConversationModels();
+}, applyConfig: async raw => {
   const next = raw as unknown as GatewayConfig;
   const applied: string[] = [];
   const restartRequired: string[] = [];

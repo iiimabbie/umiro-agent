@@ -272,6 +272,9 @@ pre:empty { display: none; }
 .config-field textarea { height: 96px; margin-bottom: 0; }
 .config-field textarea.config-json { height: 180px; }
 .config-field input, .config-field select { margin-bottom: 0; }
+.provider-connect { display: flex; align-items: stretch; gap: 8px; }
+.provider-connect input { flex: 1 1 auto; min-width: 0; }
+.provider-connect button { flex: 0 0 auto; margin: 0; }
 .config-toolbar { display: flex; align-items: center; gap: 10px; margin: 12px 0; position: sticky; top: var(--config-header-offset, 0px); z-index: 5; padding: 8px 0; background: var(--surface); }
 .config-toolbar input { max-width: 360px; margin: 0; }
 .config-toolbar nav { display: flex; flex-wrap: wrap; gap: 4px; }
