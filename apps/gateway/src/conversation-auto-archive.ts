@@ -110,5 +110,13 @@ export class ConversationAutoArchiveCoordinator {
     }
   }
 
+  onScopeUntracked(externalId: string): void {
+    this.pending.delete(externalId);
+    this.retries.delete(externalId);
+    const retryTimer = this.retryTimers.get(externalId);
+    if (retryTimer) clearTimeout(retryTimer);
+    this.retryTimers.delete(externalId);
+  }
+
   clear(): void { this.pending.clear(); this.retries.clear(); for (const timer of this.retryTimers.values()) clearTimeout(timer); this.retryTimers.clear(); }
 }

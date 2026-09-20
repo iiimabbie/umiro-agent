@@ -182,6 +182,8 @@ The panel binds to loopback only (`http://127.0.0.1:3210` by default). It shows 
 
 To keep the next day from inheriting the previous day's recent context, open the Web UI configuration and enable **Conversation auto archive**. Set a daily `HH:mm` time and an IANA timezone such as `Asia/Taipei`; the setting is hot-reloaded and is disabled by default. At that time active Discord channel, thread/forum-post, and DM conversations are archived (history is retained and searchable, and model/reasoning/queue preferences are preserved). A Run already in progress finishes before its scope is archived. Disabling the option stops future runs; it does not unarchive existing conversations. `/new` remains available for an immediate manual rollover. In Docker, set the timezone explicitly rather than relying on the container's UTC default.
 
+The channel list also provides **Stop tracking**. This archives the current conversation and removes the scope from tracking, so ordinary messages from other people are no longer recorded; existing conversations, replies, locations, preferences and journal/search data remain available. A later explicit @mention or bot reply can track the scope again. This action does not modify `discord.ignoredChannels`; use that setting separately when even explicit triggers must be blocked. The operation is authenticated and refuses a channel with an active Run until it finishes.
+
 ## Internal / External Plugins
 
 Internal plugins ship with each release and can be disabled but not removed: `context-files`, `memory`, `scheduler`, `subagent`, `host-tools`, `discord-tools`. Without any external plugin, ümiro is a complete agent.

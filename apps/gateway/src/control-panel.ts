@@ -28,7 +28,10 @@ export interface ControlPanelSchedules {
 }
 export interface ControlPanelPlugins { list(): Promise<unknown>; run(action: "install" | "configure" | "enable" | "disable" | "update" | "remove", source: string, workspace?: string, config?: Record<string, unknown>, removeSecrets?: boolean): Promise<unknown> }
 export interface ControlPanelRuns { list(limit: number): Promise<unknown>; get(id: string): Promise<unknown | undefined> }
-export interface ControlPanelChannels { list(): Promise<unknown> }
+export interface ControlPanelChannels {
+  list(): Promise<unknown>;
+  untrack(externalId: string): Promise<{ readonly tracked: boolean; readonly archivedConversationId?: string }>;
+}
 export interface ControlPanelConversations {
   list(filter: { readonly scope?: { readonly transport: string; readonly externalId: string }; readonly state?: "active" | "archived"; readonly limit: number }): Promise<unknown>;
   messages(conversationId: string, limit: number, after?: number): Promise<unknown | undefined>;
@@ -238,6 +241,17 @@ export class ControlPanelServer {
         return json(response, 200, await this.options.models({ baseUrl: input.baseUrl.trim(), ...(typeof input.apiKey === "string" ? { apiKey: input.apiKey.trim() } : {}) }));
       }
       if (request.method === "GET" && url.pathname === "/api/channels") { if (!this.options.channels) return json(response, 503, { error: "Discord channel catalog unavailable" }); return json(response, 200, await this.options.channels.list()); }
+      const trackingMatch = /^\/api\/channels\/([^/]+)\/tracking$/.exec(url.pathname);
+      if (request.method === "DELETE" && trackingMatch) {
+        if (!this.options.channels) return json(response, 503, { error: "Discord channel catalog unavailable" });
+        if (url.search || (request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0") || request.headers["transfer-encoding"] !== undefined) throw new TypeError("tracking request must not include a body or query parameters");
+        let externalId: string;
+        try { externalId = decodeURIComponent(trackingMatch[1]!); } catch { throw new TypeError("channel ID is invalid"); }
+        if (!/^\d{2,32}$/.test(externalId)) throw new TypeError("channel ID must be a Discord snowflake");
+        const result = await this.options.channels.untrack(externalId);
+        this.audit("control.channel.untracked", { channelId: externalId, tracked: result.tracked, archived: result.archivedConversationId !== undefined });
+        return json(response, 200, result);
+      }
       if (request.method === "GET" && url.pathname === "/api/conversations") {
         if (!this.options.conversations) return json(response, 503, { error: "conversation view unavailable" });
         const stateRaw = url.searchParams.get("state");
@@ -325,6 +339,6 @@ export class ControlPanelServer {
         if (request.method === "PUT") { const input = await body(request) as { content?: unknown }; if (typeof input.content !== "string") throw new TypeError("content must be a string"); await atomicWrite(path, input.content); this.audit("control.workspace.saved", { name, bytes: Buffer.byteLength(input.content) }); return json(response, 200, { saved: true }); }
       }
       return json(response, 404, { error: "not found" });
-    } catch (error) { return json(response, error instanceof RangeError ? 413 : error instanceof SyntaxError || error instanceof TypeError ? 400 : 500, { error: error instanceof Error ? error.message : "request failed" }); }
+    } catch (error) { const statusCode = error instanceof Error && typeof (error as { readonly statusCode?: unknown }).statusCode === "number" ? Number((error as unknown as { readonly statusCode: number }).statusCode) : undefined; return json(response, statusCode ?? (error instanceof RangeError ? 413 : error instanceof SyntaxError || error instanceof TypeError ? 400 : 500), { error: error instanceof Error ? error.message : "request failed" }); }
   }
 }

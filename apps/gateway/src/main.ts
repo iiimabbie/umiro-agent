@@ -37,6 +37,7 @@ import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
 import { ConversationAutoArchiveCoordinator, parseConversationAutoArchiveConfig, syncConversationAutoArchiveSchedule, CONVERSATION_AUTO_ARCHIVE_JOB_REF } from "./conversation-auto-archive.js";
+import { ConversationScopeLifecycleCoordinator } from "./conversation-scope-lifecycle.js";
 
 const paths = umiroPaths();
 const pendingRestartFile = `${paths.state}/pending-restart.json`;
@@ -141,6 +142,7 @@ let host: PluginHost;
 const activeRuns = new Map<string, { readonly controller: AbortController; readonly userId: string }>();
 const activeSessions = new Map<string, { readonly runId: string; readonly gate: SteerGate }>();
 const activeWork = new ActiveWorkTracker();
+const conversationScopeLifecycle = new ConversationScopeLifecycleCoordinator();
 let conversationAutoArchiveConfig = parseConversationAutoArchiveConfig(config.conversation);
 const conversationAutoArchive = new ConversationAutoArchiveCoordinator(store, () => [...activeSessions.keys()], (event, data) => logger.write({ level: "info", event, message: "Conversation auto archive lifecycle event", occurredAt: new Date().toISOString(), data: data as JsonObject }));
 
@@ -580,7 +582,15 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
       hasMore: page.hasMore,
     };
   },
-}, channels: { list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)) }, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; return { ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
+}, channels: {
+  list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)),
+  untrack: externalId => conversationScopeLifecycle.untrack(externalId, async () => {
+    const result = await store.untrackConversationScope({ transport: "discord", externalId, archivedAt: new Date().toISOString() });
+    conversationAutoArchive.onScopeUntracked(externalId);
+    logger.write({ level: "info", event: "conversation.scope.untracked", message: "Discord conversation scope was untracked", occurredAt: new Date().toISOString(), data: { transport: "discord", externalId, tracked: result.tracked, archived: result.archivedConversationId !== undefined } });
+    return result;
+  }),
+}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; return { ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, conversationHistory, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
 for (let index = 0; index < modules.length; index++) {
   const module = modules[index]!;
@@ -741,6 +751,8 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     botMentioned: message.botMentioned === true,
     replyToBot: message.replyToBot === true,
   }, { ...discordPolicy, respondToBots: discord.respondsToBots() }, ownerDiscordId);
+  const scopeId = message.threadId ?? message.channelId;
+  return conversationScopeLifecycle.run(scopeId, async () => {
   const route = await analyzeDiscordIngress({
     decision,
     text: message.content,
@@ -751,7 +763,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     return;
   }
   if (route.kind === "observe") {
-    const observed = await ingress.observe(toInputEvent(message));
+    const observed = await ingress.observe(toInputEvent(message), decision.disposition === "trigger");
     logger.write({ level: "debug", event: "discord.ingress.observed", message: "Discord event evaluated without a Run", occurredAt: new Date().toISOString(), data: { reason: decision.reason, recorded: observed !== undefined, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
     return;
   }
@@ -843,6 +855,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   } finally {
     stopTyping();
   }
+  });
 };
 discord.onSteer(async message => {
   const activeSession = activeSessions.get(message.threadId ?? message.channelId);

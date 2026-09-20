@@ -492,6 +492,18 @@ const channelName = id => {
   return x ? x.guildName + ' · ' + (x.kind === 'thread' && x.parentName ? x.parentName + ' / ' : '') + '#' + x.name : id || '未指定頻道';
 };
 
+async function untrackChannel(channel, event, button) {
+  event.stopPropagation();
+  const label = channelName(channel.id);
+  if (!await confirmAction('停止追蹤頻道', '要停止追蹤「' + label + '」嗎？目前對話會封存，之後其他人的一般聊天不再記錄；歷史不會刪除。未來再次 @ Umiro 時，這個頻道會重新加入。若要永久忽略，請另外加入 ignoredChannels。', '停止追蹤')) return;
+  await withBusy(button, async () => {
+    const result = await api('/api/channels/' + encodeURIComponent(channel.id) + '/tracking', { method: 'DELETE' });
+    if (selectedChannelId === channel.id) { selectedChannelId = undefined; $('channelConversation').replaceChildren(); }
+    await channels();
+    showToast(result.tracked ? '已停止追蹤 ' + label + '；歷史仍保留。' : '這個頻道已不在追蹤清單；歷史仍保留。', 'success');
+  }, '處理中…').catch(reportError);
+}
+
 async function channels() {
   const items = await api('/api/channels');
   channelCatalog = new Map(items.map(x => [x.id, x]));
@@ -499,11 +511,20 @@ async function channels() {
     const d = document.createElement('div');
     d.className = 'channel';
     d.dataset.channelId = x.id;
+    const info = document.createElement('span');
+    info.className = 'channel-info';
     const name = document.createElement('span');
     name.textContent = channelName(x.id);
     const id = document.createElement('small');
     id.textContent = ' — ' + x.id;
-    d.append(name, id);
+    info.append(name, id);
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.className = 'channel-untrack';
+    stop.textContent = '停止追蹤';
+    stop.setAttribute('aria-label', '停止追蹤 ' + channelName(x.id));
+    stop.onclick = event => untrackChannel(x, event, stop);
+    d.append(info, stop);
     d.onclick = () => selectChannel(x.id, d).catch(reportError);
     return d;
   }));

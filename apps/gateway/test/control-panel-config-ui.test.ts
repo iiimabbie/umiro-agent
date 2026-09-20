@@ -45,6 +45,13 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /subgroup: 'conversation-auto-archive'/);
   assert.match(script, /preserveWhenHidden: true/);
   assert.match(script, /每天指定時間後會封存各 Discord 頻道/);
+  assert.match(script, /停止追蹤/);
+  assert.match(script, /stopPropagation\(\)/);
+  assert.match(script, /method: 'DELETE'/);
+  assert.match(script, /\/api\/channels\/.*tracking/);
+  assert.match(script, /aria-label/);
+  assert.match(css, /channel-info/);
+  assert.match(css, /channel-untrack/);
   assert.doesNotMatch(script, /UMIRO_WEB_UI_TOKEN/);
   const editableSecrets = main.slice(main.indexOf("const editableSecretNames"), main.indexOf("const persistSecrets"));
   assert.match(editableSecrets, /editableSecretNames\.delete\("UMIRO_WEB_UI_TOKEN"\)/);

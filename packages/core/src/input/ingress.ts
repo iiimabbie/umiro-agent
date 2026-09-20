@@ -174,7 +174,7 @@ export class InteractiveIngress {
     return { conversationId: result.conversation.id, turnId: result.turn.id, duplicate: result.duplicate };
   }
 
-  async observe(event: InputEvent): Promise<IngestInputEventResult | undefined> {
+  async observe(event: InputEvent, establishScope = false): Promise<IngestInputEventResult | undefined> {
     const prompt = inputText(event).trim();
     if (!prompt) return undefined;
     const resolved = await this.identities.resolve(event.identity);
@@ -184,6 +184,7 @@ export class InteractiveIngress {
       newConversationId: this.createId("conversation"),
       newTurnId: this.createId("turn"),
       createdAt: this.now(),
+      ...(establishScope ? { establishScope: true } : {}),
     });
   }
 }

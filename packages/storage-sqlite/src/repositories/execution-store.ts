@@ -41,6 +41,8 @@ import {
   type UpdateConversationStateRequest,
   type ArchiveActiveConversationsRequest,
   type ArchiveActiveConversationsResult,
+  type UntrackConversationScopeRequest,
+  type UntrackConversationScopeResult,
   type IngestInputEventRequest,
   type IngestInputEventResult,
   type SteerInputEventRequest,
@@ -621,15 +623,18 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       if (!binding || !boundRow || boundRow.state !== "active") {
         const scope = this.database.prepare("SELECT 1 AS present FROM conversation_scopes WHERE transport = ? AND external_id = ?")
           .get(request.event.conversation.transport, request.event.conversation.externalId) as { present: number } | undefined;
-        if (!scope) return undefined;
+        if (!scope && request.establishScope !== true) return undefined;
         const conversation: Conversation = { id: request.newConversationId, revision: 0, state: "active", createdAt: request.createdAt, updatedAt: request.createdAt };
         const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: 0, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
         this.database.prepare("INSERT INTO conversations(id, revision, state, created_at, updated_at) VALUES (?, 0, 'active', ?, ?)").run(conversation.id, conversation.createdAt, conversation.updatedAt);
         this.insertConversationLocation(conversation.id, request.event, request.createdAt);
         this.database.prepare("INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, conversation_id=excluded.conversation_id, created_at=excluded.created_at")
           .run(request.event.conversation.transport, request.event.conversation.externalId, request.event.conversation.kind, conversation.id, request.createdAt);
-        this.database.prepare("UPDATE conversation_scopes SET kind=?, last_seen_at=? WHERE transport=? AND external_id=?")
-          .run(request.event.conversation.kind, request.createdAt, request.event.conversation.transport, request.event.conversation.externalId);
+        this.database.prepare(`
+          INSERT INTO conversation_scopes(transport, external_id, kind, created_at, last_seen_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, last_seen_at=excluded.last_seen_at
+        `).run(request.event.conversation.transport, request.event.conversation.externalId, request.event.conversation.kind, request.createdAt, request.createdAt);
         this.insertTurn(turn);
         return { conversation, turn, duplicate: false, conversationCreated: true };
       }
@@ -792,6 +797,37 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         }
       }
       return { archived, skipped };
+    })();
+  }
+
+  async untrackConversationScope(request: UntrackConversationScopeRequest): Promise<UntrackConversationScopeResult> {
+    if (!request.transport.trim() || !request.externalId.trim() || !request.archivedAt) throw new TypeError("untrack request requires transport, externalId and archivedAt");
+    return this.database.transaction(() => {
+      const scope = this.database.prepare("SELECT 1 AS present FROM conversation_scopes WHERE transport = ? AND external_id = ?")
+        .get(request.transport, request.externalId) as { present: number } | undefined;
+      if (!scope) return { tracked: false };
+      const binding = this.database.prepare("SELECT conversation_id FROM conversation_bindings WHERE transport = ? AND external_id = ?")
+        .get(request.transport, request.externalId) as { conversation_id: string } | undefined;
+      let archivedConversationId: string | undefined;
+      if (binding) {
+        const conversation = this.database.prepare("SELECT * FROM conversations WHERE id = ?")
+          .get(binding.conversation_id) as ConversationRow | undefined;
+        if (!conversation) throw new ExecutionStoreConflictError(`conversation binding ${binding.conversation_id} is dangling`);
+        if (conversation.state !== "active") throw new ExecutionStoreConflictError(`conversation ${conversation.id} is not active`);
+        const updated = this.database.prepare(`
+          UPDATE conversations SET revision = revision + 1, state = 'archived', updated_at = ?
+          WHERE id = ? AND revision = ? AND state = 'active'
+        `).run(request.archivedAt, conversation.id, conversation.revision);
+        expectOne(updated.changes, `conversation ${conversation.id} changed concurrently`);
+        const removedBinding = this.database.prepare("DELETE FROM conversation_bindings WHERE transport = ? AND external_id = ? AND conversation_id = ?")
+          .run(request.transport, request.externalId, conversation.id);
+        expectOne(removedBinding.changes, `conversation binding ${request.transport}:${request.externalId} changed concurrently`);
+        archivedConversationId = conversation.id;
+      }
+      const removedScope = this.database.prepare("DELETE FROM conversation_scopes WHERE transport = ? AND external_id = ?")
+        .run(request.transport, request.externalId);
+      expectOne(removedScope.changes, `conversation scope ${request.transport}:${request.externalId} changed concurrently`);
+      return { tracked: true, ...(archivedConversationId ? { archivedConversationId } : {}) };
     })();
   }
 

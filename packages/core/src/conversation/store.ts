@@ -38,6 +38,17 @@ export interface ArchiveActiveConversationsResult {
   readonly skipped: readonly ArchivedConversationReference[];
 }
 
+export interface UntrackConversationScopeRequest {
+  readonly transport: string;
+  readonly externalId: string;
+  readonly archivedAt: string;
+}
+
+export interface UntrackConversationScopeResult {
+  readonly tracked: boolean;
+  readonly archivedConversationId?: string;
+}
+
 export interface UpdateConversationPreferencesRequest {
   readonly transport: string;
   readonly externalId: string;
@@ -75,6 +86,7 @@ export interface ConversationStore {
   archiveBoundConversation(transport: string, externalId: string, archivedAt: string): Promise<Conversation | undefined>;
   archiveBoundConversationIfCurrent(transport: string, externalId: string, conversationId: string, archivedAt: string): Promise<Conversation | undefined>;
   archiveActiveConversationsBefore(request: ArchiveActiveConversationsRequest): Promise<ArchiveActiveConversationsResult>;
+  untrackConversationScope(request: UntrackConversationScopeRequest): Promise<UntrackConversationScopeResult>;
 }
 
 export interface IngestInputEventRequest {
@@ -88,6 +100,9 @@ export interface IngestInputEventRequest {
    * new Conversation binding is created. */
   readonly initialTurns?: readonly ConversationSeedTurn[];
   readonly createdAt: string;
+  /** Establish a tracked scope when this is an explicit trigger that the
+   * analyzer intentionally observes without starting a Run. */
+  readonly establishScope?: boolean;
 }
 
 export interface ConversationSeedTurn {
