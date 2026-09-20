@@ -23,3 +23,33 @@ test("host-tools confines file and shell operations to the configured workspace"
     assert.equal((await tools.get("web_fetch")!.execute({ url: "http://127.0.0.1/private" }, execution)).ok, false);
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
+
+test("download_file reports the authoritative materialized path and enforces a streamed size limit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-host-download-"));
+  const previousFetch = globalThis.fetch;
+  let oversized = false;
+  globalThis.fetch = async () => new Response(oversized ? new Uint8Array(1025) : new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "application/octet-stream" } });
+  const artifact = { id: "download", ownerPrincipalId: "owner", visibility: "shared" as const, mediaType: "application/octet-stream", filename: "file.bin", size: 3, sha256: "a".repeat(64), location: "/unused", state: "stored" as const, createdAt: "now", updatedAt: "now" };
+  const setup = {
+    pluginId: "host-tools", namespace: "host-tools", permissionCeiling: authority,
+    config: { workspacePath: root, maxWebBytes: 1024 }, getSecret() { return undefined; },
+    services: { artifacts: {
+      async read() { return undefined; },
+      async createFromBytes() { return artifact; },
+      async createFromFile() { return artifact; },
+      async getWorkspaceRelativePath() { return "attachments/downloads/file (2).bin"; },
+    } },
+  } satisfies PluginSetupContext;
+  const plugin = createPlugin(setup); await plugin.start?.();
+  const tools = new Map(plugin.contributions.tools!.map(tool => [tool.name, tool]));
+  try {
+    const downloaded = await tools.get("download_file")!.execute({ url: "https://8.8.8.8/file.bin" }, execution);
+    assert.equal(downloaded.ok, true);
+    assert.equal(downloaded.ok && (downloaded.output as { path: string }).path, "attachments/downloads/file (2).bin");
+    oversized = true;
+    assert.equal((await tools.get("download_file")!.execute({ url: "https://8.8.8.8/large.bin" }, execution)).ok, false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -25,8 +25,9 @@ import { SOURCE_EMBEDDINGS_SCHEMA } from "./024-source-embeddings.js";
 import { CONVERSATION_SCOPES_SCHEMA } from "./025-conversation-scopes.js";
 import { CONVERSATION_LOCATIONS_SCHEMA } from "./026-conversation-locations.js";
 import { SEARCH_DOCUMENT_SOURCES_SCHEMA } from "./027-search-document-sources.js";
+import { ARTIFACT_WORKSPACE_ENTRIES_SCHEMA } from "./028-artifact-workspace-entries.js";
 
-const LATEST_VERSION = 27;
+const LATEST_VERSION = 28;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -201,6 +202,12 @@ export function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(SEARCH_DOCUMENT_SOURCES_SCHEMA);
       database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(27, new Date().toISOString());
+    })();
+  }
+  if (current.version < 28) {
+    database.transaction(() => {
+      database.exec(ARTIFACT_WORKSPACE_ENTRIES_SCHEMA);
+      database.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(28, new Date().toISOString());
     })();
   }
 }

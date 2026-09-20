@@ -1,4 +1,4 @@
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { isDeepStrictEqual, promisify } from "node:util";
@@ -105,7 +105,12 @@ const pluginHooks = new PluginHookRegistry(logger);
 let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
 const store = observeExecutionStore(new SQLiteExecutionStore(paths.sqlite), { emit: (event, payload) => emitPluginEvent(event, payload) });
 const pluginStateNamespaces = new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)]);
-const artifacts = new ArtifactFileService(paths.artifacts, store);
+await mkdir(paths.workspace, { recursive: true, mode: 0o700 });
+for (const directory of ["attachments/inbox/discord", "attachments/downloads", "attachments/generated", ".trash"]) await mkdir(`${paths.workspace}/${directory}`, { recursive: true, mode: 0o700 });
+const artifacts = new ArtifactFileService(paths.artifacts, store, undefined, undefined, paths.workspace);
+await artifacts.reconcileWorkspace().catch(error => logger.write({ level: "warn", event: "artifact.workspace_reconcile_failed", message: "Artifact workspace reconciliation failed; continuing in degraded mode", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
+const workspaceReconcileTimer = setInterval(() => { void artifacts.reconcileWorkspace().catch(error => logger.write({ level: "warn", event: "artifact.workspace_reconcile_failed", message: "Artifact workspace reconciliation failed", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } })); }, 30_000);
+workspaceReconcileTimer.unref?.();
 const cleanupExpiredPluginState = async (): Promise<void> => {
   const now = new Date().toISOString();
   const removed = (await Promise.all([...pluginStateNamespaces].map(namespace => store.pluginState(namespace).deleteExpired?.(now) ?? 0))).reduce((sum, count) => sum + count, 0);
@@ -185,7 +190,8 @@ if (hostedImageGeneration) tools.register({
     if (!profile.capabilities.includes("hosted_image_generation")) return { ok: false, effectStatus: "unknown", error: { code: "model_capability_unavailable", message: `model profile ${profile.id} does not provide hosted image generation`, retryable: false } };
     try {
       const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: profile.model, prompt: String(input.prompt), signal: context.signal });
-      const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename: typeof input.filename === "string" ? input.filename : "generated-image.png", mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId } });
+      const filename = typeof input.filename === "string" ? input.filename : "generated-image.png";
+      const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename, mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId }, workspaceRelativePath: `attachments/generated/${context.operationId}/${filename}` });
       return { ok: true, output: { artifactId: artifact.id, filename: artifact.filename ?? "generated-image.png" }, artifactIds: [artifact.id], effectStatus: "confirmed" };
     } catch (error) { return { ok: false, effectStatus: "unknown", error: { code: "hosted_image_generation_failed", message: error instanceof Error ? error.message : "hosted image generation failed", retryable: false } }; }
   },
@@ -882,6 +888,7 @@ shutdown = async (exitCode = 0, restart = false) => {
   readiness.discord = false;
   scheduler.stop();
   embeddingWorker?.stop();
+  clearInterval(workspaceReconcileTimer);
   clearInterval(pluginStateCleanupTimer);
   await controlPanel?.stop();
   await discord.stop();

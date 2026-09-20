@@ -113,6 +113,12 @@ The workspace is plain Markdown the agent reads on every run and edits through i
 | `memory/WORKFLOWS.md`, `memory/ONGOING.md`, `memory/FACTS.md` | Only headings are loaded; entries are fetched on demand or recalled by search |
 | `skills/<name>/SKILL.md` | Optional skills; enable them in `config/umiro.json` |
 
+### Attachments and downloads
+
+`workspace/attachments/` is the human- and agent-visible file area. Discord uploads are materialized under `attachments/inbox/discord/`, generated images under `attachments/generated/`, and `download_file` results under `attachments/downloads/`. Use `move_file` for managed renames so the SQLite workspace mapping and displayed artifact filename stay synchronized. `web_fetch` only returns bounded text and does not save a file.
+
+`data/artifacts/` contains internal immutable, content-addressed blobs. Do not rename or edit those files manually; workspace copies are independent and safe to edit. The artifact database keeps the blob location, while `artifact_workspace_entries` records the visible workspace path and rename state.
+
 ### Discord
 
 ```bash

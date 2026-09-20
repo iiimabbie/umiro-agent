@@ -153,6 +153,9 @@ function resolvedPluginConfig(manifest: PluginManifestV0 | undefined, current: R
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
+  for (const directory of ["attachments/inbox/discord", "attachments/downloads", "attachments/generated", ".trash"]) {
+    await mkdir(join(workspace, directory), { recursive: true, mode: 0o700 });
+  }
   const templates = await workspaceTemplates();
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   const memoryDirectory = join(workspace, "memory");
@@ -206,7 +209,7 @@ async function registerBuiltins(): Promise<void> {
 
 async function writeLaunchers(): Promise<void> {
   await mkdir(join(home, "bin"), { recursive: true, mode: 0o700 });
-  const launcher = (entry: string) => `#!/bin/sh\nexport UMIRO_HOME=\"\${UMIRO_HOME:-${home}}\"\nexec \"${process.execPath}\" \"$UMIRO_HOME/app/current/${entry}\" \"$@\"\n`;
+  const launcher = (entry: string) => `#!/bin/sh\nexport UMIRO_HOME=\"\${UMIRO_HOME:-${home}}\"\nexec node \"$UMIRO_HOME/app/current/${entry}\" \"$@\"\n`;
   await writeFile(join(home, "bin", "umo"), launcher("cli/dist/src/main.js"), { mode: 0o700 });
   await writeFile(join(home, "bin", "umo-gateway"), launcher("gateway/dist/src/main.js"), { mode: 0o700 });
   await chmod(join(home, "bin", "umo"), 0o700); await chmod(join(home, "bin", "umo-gateway"), 0o700);

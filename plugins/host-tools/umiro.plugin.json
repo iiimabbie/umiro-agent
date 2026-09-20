@@ -7,5 +7,5 @@
   "permissions": { "capabilities": ["filesystem.read", "filesystem.write", "shell.execute", "web.fetch"], "visibility": { "kind": "all" }, "instructionAuthority": "none" },
   "namespace": "host-tools",
   "configSchema": { "type": "object", "additionalProperties": false, "required": ["workspacePath"], "properties": { "workspacePath": { "type": "string", "minLength": 1 }, "maxReadBytes": { "type": "integer", "minimum": 1024, "maximum": 10485760 }, "maxWebBytes": { "type": "integer", "minimum": 1024, "maximum": 10485760 }, "allowedWebHosts": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true } } },
-  "contributes": { "tools": ["list_files", "read_file", "write_file", "bash", "web_fetch"] }
+  "contributes": { "tools": ["list_files", "read_file", "write_file", "bash", "move_file", "download_file", "web_fetch"] }
 }

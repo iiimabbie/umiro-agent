@@ -56,6 +56,7 @@ import {
   type ConversationMessagePage,
   type ConversationSummary,
   type Artifact,
+  type ArtifactWorkspaceEntry,
   type ArtifactStore,
   type CreateArtifactRequest,
   type UpdateConversationPreferencesRequest,
@@ -188,6 +189,7 @@ interface ConversationCompactionRow {
 interface TriggerRow { id: string; revision: number; name: string; enabled: number; schedule_json: string; timezone: string; job_ref: string; input_json: string; creator_principal_id: string; creator_roles_json: string; authority_json: string; destination_json: string | null; misfire_policy: ScheduledTrigger["misfirePolicy"]; max_attempts: number; retry_backoff_ms: number; next_fire_at: string | null; created_at: string; updated_at: string }
 interface OccurrenceRow { id: string; trigger_id: string; scheduled_for: string; status: ScheduledOccurrence["status"]; attempts: number; run_id: string; next_retry_at: string | null; error: string | null; claimed_at: string; completed_at: string | null }
 interface ArtifactRow { id: string; owner_principal_id: string; visibility: Artifact["visibility"]; media_type: string; filename: string | null; size: number; sha256: string; location: string; extracted_text: string | null; parent_source_json: string | null; state: Artifact["state"]; created_at: string; updated_at: string }
+interface ArtifactWorkspaceEntryRow { artifact_id: string; relative_path: string; original_filename: string; state: ArtifactWorkspaceEntry["state"]; device: string | null; inode: string | null; materialized_sha256: string; created_at: string; updated_at: string }
 
 interface DelegationRow {
   id: string;
@@ -288,6 +290,20 @@ function artifactFromRow(row: ArtifactRow): Artifact {
   return artifact;
 }
 
+function artifactWorkspaceEntryFromRow(row: ArtifactWorkspaceEntryRow): ArtifactWorkspaceEntry {
+  return {
+    artifactId: row.artifact_id,
+    relativePath: row.relative_path,
+    originalFilename: row.original_filename,
+    state: row.state,
+    ...(row.device !== null ? { device: row.device } : {}),
+    ...(row.inode !== null ? { inode: row.inode } : {}),
+    materializedSha256: row.materialized_sha256,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, ConversationIngressStore, ConversationPreferenceStore, DelegationStore, ArtifactStore, SearchDocumentProjection {
   private readonly database: Database.Database;
 
@@ -345,6 +361,50 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     this.database.prepare(`INSERT INTO artifacts(id, owner_principal_id, visibility, media_type, filename, size, sha256, location, extracted_text, parent_source_json, state, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(a.id, a.ownerPrincipalId, a.visibility, a.mediaType, a.filename ?? null, a.size, a.sha256, a.location, a.extractedText ?? null, a.parentSource ? json(a.parentSource) : null, a.state, a.createdAt, a.updatedAt);
+  }
+
+  async createArtifactWithWorkspaceEntry(request: CreateArtifactRequest & { readonly workspaceEntry: ArtifactWorkspaceEntry }): Promise<void> {
+    const a = request.artifact;
+    const e = request.workspaceEntry;
+    if (a.size < 0 || !/^[a-f0-9]{64}$/i.test(a.sha256)) throw new TypeError("invalid artifact metadata");
+    if (a.extractedText !== undefined && a.extractedText.length > 200_000) throw new TypeError("artifact extracted text exceeds 200000 characters");
+    if (e.artifactId !== a.id || !e.relativePath || !e.originalFilename) throw new TypeError("invalid artifact workspace entry");
+    this.database.transaction(() => {
+      this.database.prepare(`INSERT INTO artifacts(id, owner_principal_id, visibility, media_type, filename, size, sha256, location, extracted_text, parent_source_json, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(a.id, a.ownerPrincipalId, a.visibility, a.mediaType, a.filename ?? null, a.size, a.sha256, a.location, a.extractedText ?? null, a.parentSource ? json(a.parentSource) : null, a.state, a.createdAt, a.updatedAt);
+      this.database.prepare(`INSERT INTO artifact_workspace_entries(artifact_id, relative_path, original_filename, state, device, inode, materialized_sha256, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(e.artifactId, e.relativePath, e.originalFilename, e.state, e.device ?? null, e.inode ?? null, e.materializedSha256, e.createdAt, e.updatedAt);
+    })();
+  }
+
+  async getArtifactWorkspaceEntry(artifactId: string): Promise<ArtifactWorkspaceEntry | undefined> {
+    const row = this.database.prepare("SELECT * FROM artifact_workspace_entries WHERE artifact_id=?").get(artifactId) as ArtifactWorkspaceEntryRow | undefined;
+    return row ? artifactWorkspaceEntryFromRow(row) : undefined;
+  }
+
+  async getArtifactWorkspaceEntryByPath(relativePath: string): Promise<ArtifactWorkspaceEntry | undefined> {
+    const row = this.database.prepare("SELECT * FROM artifact_workspace_entries WHERE relative_path=?").get(relativePath) as ArtifactWorkspaceEntryRow | undefined;
+    return row ? artifactWorkspaceEntryFromRow(row) : undefined;
+  }
+
+  async listArtifactWorkspaceEntries(): Promise<readonly ArtifactWorkspaceEntry[]> {
+    const rows = this.database.prepare("SELECT * FROM artifact_workspace_entries ORDER BY created_at, artifact_id").all() as ArtifactWorkspaceEntryRow[];
+    return rows.map(artifactWorkspaceEntryFromRow);
+  }
+
+  async updateArtifactWorkspaceLocation(request: { readonly artifactId: string; readonly relativePath: string; readonly filename: string; readonly device?: string; readonly inode?: string; readonly updatedAt: string }): Promise<void> {
+    this.database.transaction(() => {
+      const updated = this.database.prepare("UPDATE artifact_workspace_entries SET relative_path=?, state='active', device=?, inode=?, updated_at=? WHERE artifact_id=? AND state <> 'trashed'")
+        .run(request.relativePath, request.device ?? null, request.inode ?? null, request.updatedAt, request.artifactId);
+      expectOne(updated.changes, `artifact workspace entry ${request.artifactId} not found or trashed`);
+      const artifact = this.database.prepare("UPDATE artifacts SET filename=?, updated_at=? WHERE id=? AND state <> 'deleted'").run(request.filename, request.updatedAt, request.artifactId);
+      expectOne(artifact.changes, `artifact ${request.artifactId} not found or deleted`);
+    })();
+  }
+
+  async updateArtifactWorkspaceState(artifactId: string, state: ArtifactWorkspaceEntry["state"], updatedAt: string): Promise<void> {
+    const result = this.database.prepare("UPDATE artifact_workspace_entries SET state=?, updated_at=? WHERE artifact_id=?").run(state, updatedAt, artifactId);
+    expectOne(result.changes, `artifact workspace entry ${artifactId} not found`);
   }
 
   async getArtifact(id: string): Promise<Artifact | undefined> {

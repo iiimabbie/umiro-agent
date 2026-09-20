@@ -113,6 +113,12 @@ Workspace 是純 Markdown，agent 每次執行都會讀，並透過工具編輯�
 | `memory/WORKFLOWS.md`、`memory/ONGOING.md`、`memory/FACTS.md` | 只載入標題；內容需要時撈取或由搜尋自動帶入 |
 | `skills/<name>/SKILL.md` | 可選的技能；在 `config/umiro.json` 啟用 |
 
+### 附件與下載檔案
+
+`workspace/attachments/` 是人與 agent 都能看見、管理的檔案區。Discord 上傳檔會放在 `attachments/inbox/discord/`，產生的圖片放在 `attachments/generated/`，`download_file` 的結果放在 `attachments/downloads/`。管理中的檔案請使用 `move_file` 改名，SQLite 的 workspace 對照與 artifact 顯示檔名才會同步；`web_fetch` 只回傳有大小限制的文字，不會儲存檔案。
+
+`data/artifacts/` 是系統內部不可變、以內容雜湊命名的 blob。不要手動改名或編輯其中的檔案；workspace 副本是獨立的，可以安全編輯。artifact 資料表保存 blob 位置，`artifact_workspace_entries` 保存可見 workspace 路徑與改名狀態。
+
 ### Discord
 
 ```bash
