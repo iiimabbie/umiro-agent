@@ -3,6 +3,7 @@ import { normalizeDiscordMentions, toDiscordAttachmentEnvelope, type DiscordMess
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 import { ApplicationEmojiCatalog, type ApplicationEmoji } from "./emoji.js";
 import { extractDiscordMessageText } from "./message-text.js";
+import { suppressDiscordLinkEmbeds } from "./outgoing-text.js";
 
 type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; autocomplete?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
 type DiscordCommandManager = { set(commands: readonly ApplicationCommandDataResolvable[]): Promise<unknown> };
@@ -96,7 +97,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   async stop(): Promise<void> { if (this.emojiRefreshTimer) clearInterval(this.emojiRefreshTimer); this.emojiRefreshTimer = undefined; this.client.destroy(); }
   identity(): { readonly id: string; readonly tag: string } | undefined { return this.client.user ? { id: this.client.user.id, tag: this.client.user.tag } : undefined; }
   applicationEmojis(): readonly ApplicationEmoji[] { return this.emojis.list(); }
-  prepareText(text: string): string { return this.emojis.resolveText(text); }
+  prepareText(text: string): string { return suppressDiscordLinkEmbeds(this.emojis.resolveText(text)); }
 
   async listChannels(channelIds: readonly string[]): Promise<readonly { readonly id: string; readonly name: string; readonly guildId: string; readonly guildName: string; readonly kind: "direct" | "channel" | "forum" | "thread"; readonly parentId?: string; readonly parentName?: string }[]> {
     const supported = new Set<ChannelType>([ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]);

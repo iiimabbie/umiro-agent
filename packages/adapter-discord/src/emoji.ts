@@ -1,3 +1,5 @@
+import { transformOutsideMarkdownCode } from "./outgoing-text.js";
+
 export interface ApplicationEmoji {
   readonly name: string;
   readonly id: string;
@@ -6,27 +8,6 @@ export interface ApplicationEmoji {
 
 const EMOJI_NAME = /^[A-Za-z0-9_]{2,32}$/;
 const EMOJI_REFERENCE = /<a?:[A-Za-z0-9_]{2,32}:\d+>|:([A-Za-z0-9_]{2,32}):/g;
-
-function replaceOutsideInlineCode(line: string, replace: (value: string) => string): string {
-  let output = "";
-  let cursor = 0;
-  let codeDelimiter: string | undefined;
-  for (const match of line.matchAll(/`+/g)) {
-    const index = match.index;
-    const delimiter = match[0];
-    if (!codeDelimiter) {
-      output += replace(line.slice(cursor, index));
-      codeDelimiter = delimiter;
-    } else {
-      output += line.slice(cursor, index);
-      if (delimiter === codeDelimiter) codeDelimiter = undefined;
-    }
-    output += line.slice(index, index + delimiter.length);
-    cursor = index + delimiter.length;
-  }
-  output += codeDelimiter ? line.slice(cursor) : replace(line.slice(cursor));
-  return output;
-}
 
 /** In-memory Application Emoji catalog owned by one Discord adapter instance. */
 export class ApplicationEmojiCatalog {
@@ -53,17 +34,7 @@ export class ApplicationEmojiCatalog {
       if (!emoji) return reference;
       return `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
     });
-    const lines = text.split("\n");
-    let fence: { readonly marker: string } | undefined;
-    return lines.map(line => {
-      const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
-      if (marker) {
-        if (!fence) fence = { marker: marker[1]! };
-        else if (marker[1]![0] === fence.marker[0] && marker[1]!.length >= fence.marker.length && !marker[2]!.trim()) fence = undefined;
-        return line;
-      }
-      return fence ? line : replaceOutsideInlineCode(line, replace);
-    }).join("\n");
+    return transformOutsideMarkdownCode(text, replace);
   }
 
   resolveReaction(value: string): string {
