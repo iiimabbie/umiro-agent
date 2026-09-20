@@ -54,6 +54,10 @@ export const CONFIG_EXPLANATIONS = {
   pricing: { label: "模型價格", description: "依 model ID 設定 inputUsdPerMillion／outputUsdPerMillion；未設定的模型不猜測成本。", defaultValue: {}, risk: "只影響估算；錯誤價格會造成控制台成本顯示不準。", restartRequired: false },
   "embedding.provider": { label: "Embedding provider", description: "disabled、gemini 或 openai-compatible；disabled 時只用 FTS。", defaultValue: "disabled", risk: "啟用後會把可索引文字送往所選 provider。", restartRequired: true },
   "embedding.model": { label: "Embedding model", description: "啟用 embedding 時使用的模型 ID，不可寫死為內建模型。", defaultValue: null, risk: "更換模型或維度會觸發 projection 重建。", restartRequired: true },
+  "embedding.separateQueryModel": { label: "分離 Query 向量模型", description: "只有 provider 官方保證文件模型與 Query 模型共享向量空間時才能啟用；相同維度不等於向量相容。Voyage 4 與 voyage-4-lite 是一個可研究的例子，但不限定 provider。", defaultValue: false, risk: "錯誤分離會讓語意搜尋結果失真；必須使用 provider 保證相容的模型組合。", restartRequired: true },
+  "embedding.separationWarning": { label: "分離模型警告", description: "只有 provider 官方保證兩個模型共享向量空間時才能分離；相同維度不等於向量相容。", defaultValue: null, risk: "請先確認 provider 的向量空間保證。", restartRequired: false },
+  "embedding.queryModel": { label: "Query 向量模型", description: "只在分離模式使用的查詢模型；必須與文件模型共享同一向量空間。", defaultValue: null, risk: "查詢模型不相容會使 recall 失真。", restartRequired: true },
+  "embedding.dimensions": { label: "共用向量維度", description: "文件與 Query request 都會固定要求的向量維度，範圍 1–65536。", defaultValue: null, risk: "provider 回傳不同維度時該向量會被拒絕。", restartRequired: true },
   "embedding.baseUrl": { label: "Embedding API URL", description: "OpenAI-compatible embedding endpoint；與 API key 一起儲存在 secrets.env。", defaultValue: null, risk: "內容會傳送到此 endpoint；只能使用信任的服務。", restartRequired: true },
   "embedding.apiKey": { label: "Embedding API Key", description: "Embedding provider 的密鑰；只寫入 secrets.env，不會回傳已設定值。", defaultValue: null, risk: "這是 provider 憑證，只應填入信任的服務。", restartRequired: true },
   "embedding.recallLimit": { label: "跨對話記憶筆數", description: "每輪自動注入最多幾筆其他 Conversation 的向量搜尋結果。", defaultValue: 5, risk: "調高會佔用更多 context，也可能引入不相關記憶。", restartRequired: false },
@@ -135,7 +139,7 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
   if (config.embedding !== undefined) {
     if (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding)) throw new TypeError("embedding must be an object");
     const embedding = config.embedding as Record<string, unknown>;
-    const allowedEmbeddingFields = new Set(["provider", "model", "recallLimit", "minSimilarity", "requestsPerMinute"]);
+    const allowedEmbeddingFields = new Set(["provider", "model", "separateQueryModel", "queryModel", "dimensions", "recallLimit", "minSimilarity", "requestsPerMinute"]);
     const unknownEmbeddingField = Object.keys(embedding).find(key => !allowedEmbeddingFields.has(key));
     if (unknownEmbeddingField) throw new TypeError(`unsupported embedding field: ${unknownEmbeddingField}`);
     validateEmbeddingConfig(embedding);

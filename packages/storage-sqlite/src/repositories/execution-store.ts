@@ -1146,10 +1146,11 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     };
   }
 
-  async prepareEmbeddingModel(model: string): Promise<void> {
+  async prepareEmbeddingModel(model: string, dimensions?: number): Promise<void> {
     if (!model.trim()) throw new TypeError("embedding model is required");
+    if (dimensions !== undefined && (!Number.isSafeInteger(dimensions) || dimensions < 1 || dimensions > 65_536)) throw new TypeError("embedding dimensions are invalid");
     this.database.transaction(() => {
-      const incompatible = this.database.prepare("SELECT 1 FROM search_embeddings WHERE model <> ? LIMIT 1").get(model);
+      const incompatible = this.database.prepare("SELECT 1 FROM search_embeddings WHERE model <> ? OR (? IS NOT NULL AND dimensions <> ?) LIMIT 1").get(model, dimensions ?? null, dimensions ?? null);
       if (!incompatible) return;
       this.database.prepare("DELETE FROM search_embeddings").run();
       if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_embeddings_vec'").get()) this.database.exec("DROP TABLE search_embeddings_vec");
@@ -1201,7 +1202,9 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   async semanticSearch(vector: readonly number[], model: string, limit: number, visibility: VisibilityScope, options: { readonly excludeConversationId?: string; readonly beforeCreatedAt?: string; readonly minSimilarity?: number } = {}): Promise<readonly SearchHit[]> {
     if (!vector.length || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid semantic search input");
-    this.ensureVectorIndex(model, vector.length);
+    const existing = this.database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='search_embeddings_vec'").get() as { sql: string } | undefined;
+    const configuredDimensions = existing?.sql.match(/embedding\s+float\[(\d+)\]/i)?.[1];
+    if (!existing || Number(configuredDimensions) !== vector.length) throw new TypeError("embedding query dimensions do not match the document index");
     const candidateLimit = Math.min(1_000, Math.max(50, limit * 10));
     const rows = this.database.prepare(`WITH nearest AS (
       SELECT document_key, distance FROM search_embeddings_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance

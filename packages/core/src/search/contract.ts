@@ -44,7 +44,7 @@ export interface EmbeddingJob {
 }
 
 export interface EmbeddingProjection {
-  prepareEmbeddingModel(model: string): Promise<void>;
+  prepareEmbeddingModel(model: string, dimensions?: number): Promise<void>;
   claimEmbeddingJobs(limit: number, now: string, staleBefore: string): Promise<readonly EmbeddingJob[]>;
   completeEmbeddingJob(documentKey: string, contentHash: string, model: string, vector: readonly number[], now: string): Promise<void>;
   failEmbeddingJob(documentKey: string, contentHash: string, error: string, nextRetryAt: string, now: string): Promise<void>;

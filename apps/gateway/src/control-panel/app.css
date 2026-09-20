@@ -280,6 +280,7 @@ pre:empty { display: none; }
 .config-toolbar nav { display: flex; flex-wrap: wrap; gap: 4px; }
 .config-toolbar nav button { margin: 0; padding: 4px 8px; font-size: 12px; }
 .config-field.config-hidden { display: none; }
+.config-warning { border: 1px solid #d97706; background: #fff7ed; color: #9a3412; border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
 .sticky-actions { position: sticky; bottom: 0; z-index: 6; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 10px 0 2px; background: linear-gradient(transparent, var(--surface) 25%); }
 .save-state { margin-right: auto; color: var(--muted); font-size: 13px; }
 .save-state.dirty { color: var(--warning); font-weight: 600; }

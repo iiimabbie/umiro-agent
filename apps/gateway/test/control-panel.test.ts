@@ -17,6 +17,9 @@ test("model capabilities are explicit and reject unknown values", () => {
   assert.deepEqual(validateControlConfig({ model: "gemma4", embedding: { provider: "disabled" } }).embedding, { provider: "disabled" });
   assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible" } }), /embedding.model/);
   assert.deepEqual(validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible", model: "local" } }).embedding, { provider: "openai-compatible", model: "local" });
+  assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible", model: "voyage-4", separateQueryModel: true, dimensions: 1024 } }), /queryModel/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible", model: "voyage-4", queryModel: "voyage-4-lite", dimensions: 1024 } }), /separateQueryModel/);
+  assert.deepEqual(validateControlConfig({ model: "gemma4", embedding: { provider: "openai-compatible", model: "voyage-4", separateQueryModel: true, queryModel: "voyage-4-lite", dimensions: 1024 } }).embedding, { provider: "openai-compatible", model: "voyage-4", separateQueryModel: true, queryModel: "voyage-4-lite", dimensions: 1024 });
   assert.throws(() => validateControlConfig({ model: "gemma4", plugins: [{ path: "/plugin", config: { token: "secret" } }] }), /must use SecretSource/);
   assert.deepEqual(validateControlConfig({ model: "gemma4", authority: { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } } }).authority, { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } });
   assert.deepEqual(validateControlConfig({ model: "gemma4", subagent: { maxConcurrentChildren: 2, maxParallelTools: 1 } }).subagent, { maxConcurrentChildren: 2, maxParallelTools: 1 });

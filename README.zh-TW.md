@@ -115,6 +115,19 @@ LLM_MODEL=
 
 請將 `LLM_BASE_URL` 設為你的 OpenAI 相容端點，並將 `LLM_MODEL` 設為該端點提供的模型；使用 `umo configure` 匯入時會要求兩者都有值，也可以啟動後從 Web UI 完成設定。
 
+### Embedding 模型
+
+Embedding 是選用功能，預設使用同一個文件／Query 模型。若要分離模型，請啟用 `separateQueryModel`，同時提供 `queryModel` 與共用整數 `dimensions`（1–65536）；CLI 可用以下等價設定：
+
+```bash
+umo embedding configure --provider openai-compatible --base-url https://api.example.com/v1 \
+  --model voyage-4 --query-model voyage-4-lite --dimensions 1024
+```
+
+只有 provider 官方保證兩個模型共享同一向量空間時才能分離；維度相同不代表向量相容。Voyage 4 與 voyage-4-lite 是可研究的例子，不代表只支援 Voyage。OpenAI-compatible request 使用 `dimensions`；Voyage 模型 ID（`voyage-*`）使用 `output_dimension`，並依角色送出 `input_type=document` 或 `query`。Gemini request 使用 `outputDimensionality` 與對應的 retrieval task type。每個回傳向量都會驗證是否符合設定維度，不符時拒絕該向量並安全退回文字搜尋。
+
+文件背景索引與 Query recall 共用同一個 provider request 預算。變更 provider、任一模型、分離模式或共用維度都需要重啟，讓 projection 使用穩定的單一 index identity。
+
 ### Workspace
 
 Workspace 是純 Markdown，agent 每次執行都會讀，並透過工具編輯。

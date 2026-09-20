@@ -10,7 +10,7 @@ import { loadPluginManifest, loadPluginModule } from "./plugin-loader.js";
 import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
-import { createConfiguredEmbedder, EMBEDDING_API_KEY_SECRET, EMBEDDING_BASE_URL_SECRET, type EmbeddingConfig } from "./embedding-config.js";
+import { createConfiguredEmbedders, EMBEDDING_API_KEY_SECRET, EMBEDDING_BASE_URL_SECRET, type EmbeddingConfig } from "./embedding-config.js";
 import { reconcilePluginSchedules, DurableScheduler, previewNextFire, type PluginRuntimeState } from "./durable-scheduler.js";
 import { ArtifactFileService } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
@@ -119,19 +119,19 @@ const cleanupExpiredPluginState = async (): Promise<void> => {
 await cleanupExpiredPluginState();
 const pluginStateCleanupTimer = setInterval(() => { void cleanupExpiredPluginState().catch(error => logger.write({ level: "warn", event: "plugin_state.expired_cleanup_failed", message: "Expired Plugin state cleanup failed", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } })); }, 60 * 60 * 1_000);
 pluginStateCleanupTimer.unref?.();
-let embedder: ReturnType<typeof createConfiguredEmbedder>;
+let embedders: ReturnType<typeof createConfiguredEmbedders>;
 try {
-  embedder = createConfiguredEmbedder(config.embedding);
+  embedders = createConfiguredEmbedders(config.embedding);
 } catch (error) {
   // Embeddings are optional. Keep the gateway and Web UI available so an
   // operator can finish provider/endpoint/secret configuration there.
-  embedder = undefined;
+  embedders = undefined;
   logger.write({ level: "warn", event: "embedding.config.unavailable", message: "Embedding is unavailable; continuing without semantic search", occurredAt: new Date().toISOString(), data: { provider: config.embedding?.provider ?? "disabled", errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
 }
-const embeddingWorker = embedder ? new EmbeddingWorker(store, embedder.forBackground?.() ?? embedder, 15_000, logger) : undefined;
-const search = new HybridConversationSearch(store, embedder, logger);
+const embeddingWorker = embedders ? new EmbeddingWorker(store, embedders.document.forBackground?.() ?? embedders.document, 15_000, logger) : undefined;
+const search = new HybridConversationSearch(store, embedders?.query, logger);
 const conversationHistory = new PluginConversationHistory(store);
-const semanticRecall = embedder ? new SemanticRecallProvider(store, embedder, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }) : undefined;
+const semanticRecall = embedders ? new SemanticRecallProvider(store, embedders.query, () => new Date(), logger, config.embedding?.provider === "disabled" ? {} : { ...(config.embedding?.recallLimit !== undefined ? { limit: config.embedding.recallLimit } : {}), ...(config.embedding?.minSimilarity !== undefined ? { minSimilarity: config.embedding.minSimilarity } : {}) }) : undefined;
 let runtimeRecall = { limit: config.embedding?.provider === "disabled" ? undefined : config.embedding?.recallLimit, minSimilarity: config.embedding?.provider === "disabled" ? undefined : config.embedding?.minSimilarity };
 if (semanticRecall) providers.register(semanticRecall);
 const scheduler = new DurableScheduler(store, 1000, () => new Date(), error => logger.write({ level: "error", event: "scheduler.tick.failed", message: "Scheduler cycle failed; the next cycle will continue", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
@@ -335,7 +335,7 @@ const replies = { async send(runId: string, text: string, signal?: AbortSignal) 
 const webUiConfig = config.webUi ?? { enabled: false, host: "127.0.0.1", port: 3210 };
 const embeddingRuntimeIdentity = (value: EmbeddingConfig | undefined): unknown => {
   if (!value || value.provider === "disabled") return { provider: "disabled" };
-  return { provider: value.provider, model: value.model, ...(value.requestsPerMinute !== undefined ? { requestsPerMinute: value.requestsPerMinute } : {}) };
+  return { provider: value.provider, model: value.model, ...(value.separateQueryModel === true ? { separateQueryModel: true, queryModel: value.queryModel, dimensions: value.dimensions } : {}), ...(value.requestsPerMinute !== undefined ? { requestsPerMinute: value.requestsPerMinute } : {}) };
 };
 const changed = (left: unknown, right: unknown): boolean => !isDeepStrictEqual(left, right);
 const namedConversationScopes = async (locations: readonly ConversationLocation[]) => {
@@ -478,7 +478,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
 
   restartIfChanged("skills", config.skills, next.skills);
   if (changed(embeddingRuntimeIdentity(config.embedding), embeddingRuntimeIdentity(next.embedding))) {
-    restartRequired.push("embedding.provider", "embedding.model", "embedding.requestsPerMinute");
+    restartRequired.push("embedding.provider", "embedding.model", "embedding.separateQueryModel", "embedding.queryModel", "embedding.dimensions", "embedding.requestsPerMinute");
   }
   restartIfChanged("authority", config.authority, next.authority);
   restartIfChanged("plugins", config.plugins, next.plugins);

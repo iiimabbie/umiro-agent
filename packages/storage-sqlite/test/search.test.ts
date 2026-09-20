@@ -105,3 +105,16 @@ test("one memory entry keeps its source identity through semantic projection", a
   assert.equal(hit?.sourceId, "memory/FACTS.md#Kobe trip");
   store.close();
 });
+
+test("query dimension mismatch fails without deleting the document index", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  await store.createConversationWithTurn(
+    { id: "c", revision: 0, state: "active", createdAt: "now", updatedAt: "now" },
+    { id: "t", conversationId: "c", sequence: 0, actorPrincipalId: "p", inputEventId: "e", content: [{ type: "text", text: "stable vector space" }], createdAt: "now" },
+  );
+  const [job] = await store.claimEmbeddingJobs(10, "now", "before");
+  await store.completeEmbeddingJob(job!.documentKey, job!.contentHash, "space:1024", [1, 0], "now");
+  await assert.rejects(store.semanticSearch([1, 0, 0], "space:1024", 5, { kind: "all" }), /dimensions/);
+  assert.equal((await store.semanticSearch([1, 0], "space:1024", 5, { kind: "all" }))[0]?.turnId, "t");
+  store.close();
+});

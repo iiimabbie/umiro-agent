@@ -115,6 +115,19 @@ LLM_MODEL=
 
 Set `LLM_BASE_URL` to your OpenAI-compatible endpoint and `LLM_MODEL` to a model that endpoint provides. Both are required by `umo configure`.
 
+### Embedding models
+
+Embedding is optional and uses one document/query model by default. To use separate models, enable `separateQueryModel`, provide both `queryModel` and a shared integer `dimensions` (1–65536), or use the equivalent CLI flags:
+
+```bash
+umo embedding configure --provider openai-compatible --base-url https://api.example.com/v1 \
+  --model voyage-4 --query-model voyage-4-lite --dimensions 1024
+```
+
+The provider must officially guarantee that the two models share one vector space; equal dimensions alone do not make vectors compatible. Voyage 4 and voyage-4-lite are an example to evaluate, not a provider-specific restriction. OpenAI-compatible requests use `dimensions`; Voyage model IDs (`voyage-*`) use `output_dimension` plus `input_type=document` or `query`. Gemini requests use `outputDimensionality` and the corresponding retrieval task type. Every response vector is checked against the configured dimension, and mismatches are rejected and fall back to lexical search.
+
+Document indexing and Query recall share one provider request budget. Changing the provider, either model, split mode, or shared dimensions requires a restart so the projection can use one stable index identity.
+
 ### Workspace
 
 The workspace is plain Markdown the agent reads on every run and edits through its tools.

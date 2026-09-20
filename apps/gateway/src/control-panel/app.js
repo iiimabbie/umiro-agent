@@ -76,6 +76,10 @@ const CONFIG_GROUPS = [
   { title: 'Embedding 與跨對話記憶', fields: [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
     { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
+    { path: 'embedding.separateQueryModel', type: 'checkbox', label: '分離 Query 向量模型', dependsOn: { path: 'embedding.provider', not: 'disabled' } },
+    { path: 'embedding.separationWarning', type: 'warning', dependsOn: { path: 'embedding.separateQueryModel', value: true }, wide: true },
+    { path: 'embedding.queryModel', type: 'text', placeholder: '例如 voyage-4-lite', required: true, dependsOn: { path: 'embedding.separateQueryModel', value: true } },
+    { path: 'embedding.dimensions', type: 'number', min: 1, max: 65536, step: 1, required: true, dependsOn: { path: 'embedding.separateQueryModel', value: true } },
     { path: 'embedding.baseUrl', type: 'secret', inputType: 'url', secretName: 'UMIRO_EMBEDDING_BASE_URL', publicValue: true, wide: true, placeholder: 'https://api.example.com/v1' },
     { path: 'embedding.apiKey', type: 'secret', secretName: 'UMIRO_EMBEDDING_API_KEY', wide: true },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
@@ -178,6 +182,12 @@ function configControl(field, value, models) {
     input.required = true;
     return input;
   }
+  if (field.type === 'warning') {
+    const warning = document.createElement('div'); warning.className = 'config-warning'; warning.textContent = '只有 provider 官方保證文件與 Query 模型共享向量空間時才能分離；相同維度不等於向量相容。Voyage 4 與 voyage-4-lite 可作為例子，但請以你選用 provider 的官方保證為準。'; return warning;
+  }
+  if (field.type === 'checkbox') {
+    const input = document.createElement('input'); input.type = 'checkbox'; input.id = id; input.checked = value === true; return input;
+  }
   if (field.type === 'boolean') {
     const box = document.createElement('div');
     box.className = 'radio-group';
@@ -266,6 +276,7 @@ function renderConfigForm(schema, config, models) {
       if (!explanation) continue;
       const wrapper = document.createElement('div');
       wrapper.className = 'config-field' + (field.wide ? ' config-wide' : '');
+      if (field.dependsOn) { wrapper.dataset.dependsOn = field.dependsOn.path; wrapper.dataset.dependsValue = field.dependsOn.value === undefined ? `not:${field.dependsOn.not}` : String(field.dependsOn.value); }
       wrapper.dataset.configPath = field.secretName || field.path; wrapper.dataset.configLabel = explanation.label;
       const label = document.createElement('label');
       label.className = 'config-label' + (explanation.restartRequired ? ' config-restart-required' : '');
@@ -296,8 +307,19 @@ function renderConfigForm(schema, config, models) {
   });
   $('configForm').replaceChildren(...groups);
   markConfigSaved('設定已載入');
-  $('configForm').oninput = markConfigDirty;
-  $('configForm').onchange = markConfigDirty;
+  const updateConditionalFields = () => {
+    for (const field of configFields()) {
+      if (!field.dependsOn) continue;
+      const dependency = $(fieldId(field.dependsOn.path));
+      const actual = dependency?.type === 'checkbox' ? dependency.checked : dependency?.value;
+      const visible = field.dependsOn.value === undefined ? actual !== field.dependsOn.not : actual === field.dependsOn.value;
+      const wrapper = document.querySelector(`[data-config-path="${field.path}"]`);
+      if (wrapper) { wrapper.hidden = !visible; for (const control of wrapper.querySelectorAll('input,select,textarea')) control.disabled = !visible; }
+    }
+  };
+  $('configForm').oninput = () => { updateConditionalFields(); markConfigDirty(); };
+  $('configForm').onchange = () => { updateConditionalFields(); markConfigDirty(); };
+  updateConditionalFields();
 }
 
 async function discoverModels() {
@@ -328,8 +350,25 @@ function filterConfigFields() {
 
 function readConfigForm() {
   const next = structuredClone(loadedConfig);
+  if ($('config-embedding-provider')?.value === 'disabled') {
+    deletePath(next, 'embedding.separateQueryModel');
+    deletePath(next, 'embedding.queryModel');
+    deletePath(next, 'embedding.dimensions');
+  }
   for (const field of configFields()) {
     if (field.type === 'secret') continue;
+    if (field.type === 'warning') continue;
+    if (field.dependsOn) {
+      const dependency = $(fieldId(field.dependsOn.path));
+      const actual = dependency?.type === 'checkbox' ? dependency.checked : dependency?.value;
+      const visible = field.dependsOn.value === undefined ? actual !== field.dependsOn.not : actual === field.dependsOn.value;
+      if (!visible) { deletePath(next, field.path); continue; }
+    }
+    if (field.type === 'checkbox') {
+      const control = $(fieldId(field.path));
+      setPath(next, field.path, Boolean(control?.checked));
+      continue;
+    }
     const id = fieldId(field.path);
     if (field.type === 'boolean') {
       const checked = document.querySelector('input[name="' + id + '"]:checked');
