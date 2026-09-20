@@ -33,6 +33,11 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /api\('\/api\/models\/discover', \{ method: 'POST'/);
   assert.match(script, /showToast\('連接成功，共取得 '/);
   assert.match(css, /\.provider-connect/);
+  assert.match(script, /classList\.add\('config-checkbox-label'\)/);
+  assert.match(script, /subgroup\.className = 'config-subgroup config-wide'/);
+  assert.match(css, /\.config-checkbox-label \{[^}]*inline-flex/);
+  assert.match(css, /\.config-subgroup \{[^}]*border:/);
+  assert.match(css, /\.config-subgroup\[hidden\] \{ display: none; \}/);
   assert.match(script, /title: 'Discord'[\s\S]*?secretName: 'DISCORD_TOKEN'[\s\S]*?secretName: 'UMIRO_OWNER_DISCORD_ID'/);
   assert.doesNotMatch(script, /UMIRO_WEB_UI_TOKEN/);
   const editableSecrets = main.slice(main.indexOf("const editableSecretNames"), main.indexOf("const persistSecrets"));

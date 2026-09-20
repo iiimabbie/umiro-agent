@@ -76,10 +76,10 @@ const CONFIG_GROUPS = [
   { title: 'Embedding 與跨對話記憶', fields: [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
     { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
-    { path: 'embedding.separateQueryModel', type: 'checkbox', label: '分離 Query 向量模型', dependsOn: { path: 'embedding.provider', not: 'disabled' } },
-    { path: 'embedding.separationWarning', type: 'warning', dependsOn: { path: 'embedding.separateQueryModel', value: true }, wide: true },
-    { path: 'embedding.queryModel', type: 'text', placeholder: '例如 voyage-4-lite', required: true, dependsOn: { path: 'embedding.separateQueryModel', value: true } },
-    { path: 'embedding.dimensions', type: 'number', min: 1, max: 65536, step: 1, required: true, dependsOn: { path: 'embedding.separateQueryModel', value: true } },
+    { path: 'embedding.separateQueryModel', type: 'checkbox', label: '分離 Query 向量模型', dependsOn: { path: 'embedding.provider', not: 'disabled' }, wide: true },
+    { path: 'embedding.separationWarning', type: 'warning', dependsOn: { path: 'embedding.separateQueryModel', value: true }, subgroup: 'embedding-query', wide: true },
+    { path: 'embedding.queryModel', type: 'text', placeholder: '例如 voyage-4-lite', required: true, dependsOn: { path: 'embedding.separateQueryModel', value: true }, subgroup: 'embedding-query' },
+    { path: 'embedding.dimensions', type: 'number', min: 1, max: 65536, step: 1, required: true, dependsOn: { path: 'embedding.separateQueryModel', value: true }, subgroup: 'embedding-query' },
     { path: 'embedding.baseUrl', type: 'secret', inputType: 'url', secretName: 'UMIRO_EMBEDDING_BASE_URL', publicValue: true, wide: true, placeholder: 'https://api.example.com/v1' },
     { path: 'embedding.apiKey', type: 'secret', secretName: 'UMIRO_EMBEDDING_API_KEY', wide: true },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
@@ -271,6 +271,7 @@ function renderConfigForm(schema, config, models) {
     title.textContent = group.title;
     const grid = document.createElement('div');
     grid.className = 'config-grid';
+    const subgroups = new Map();
     for (const field of group.fields) {
       const explanation = field.type === 'secret' && field.label ? field : schema[field.path];
       if (!explanation) continue;
@@ -294,13 +295,30 @@ function renderConfigForm(schema, config, models) {
       const value = getPath(config, field.path);
       const controlValue = value === undefined && field.type !== 'json' ? explanation.defaultValue : value;
       const control = configControl(field, controlValue, models);
-      if (field.connectModels) {
+      if (field.type === 'checkbox') {
+        label.classList.add('config-checkbox-label');
+        label.htmlFor = control.id;
+        label.replaceChildren(control, labelText, tooltip);
+        wrapper.append(label);
+      } else if (field.type === 'warning') {
+        wrapper.append(control);
+      } else if (field.connectModels) {
         const row = document.createElement('div'); row.className = 'provider-connect';
         const button = document.createElement('button'); button.id = 'connectModels'; button.type = 'button'; button.textContent = '連接';
         button.onclick = () => withBusy(button, discoverModels, '連接中…').catch(reportError);
         row.append(control, button); wrapper.append(label, path, row);
       } else wrapper.append(label, path, control);
-      grid.append(wrapper);
+      if (field.subgroup) {
+        let subgroup = subgroups.get(field.subgroup);
+        if (!subgroup) {
+          subgroup = document.createElement('div');
+          subgroup.className = 'config-subgroup config-wide';
+          subgroup.dataset.conditionalGroup = field.subgroup;
+          subgroups.set(field.subgroup, subgroup);
+          grid.append(subgroup);
+        }
+        subgroup.append(wrapper);
+      } else grid.append(wrapper);
     }
     section.append(title, grid);
     return section;
@@ -316,6 +334,7 @@ function renderConfigForm(schema, config, models) {
       const wrapper = document.querySelector(`[data-config-path="${field.path}"]`);
       if (wrapper) { wrapper.hidden = !visible; for (const control of wrapper.querySelectorAll('input,select,textarea')) control.disabled = !visible; }
     }
+    for (const subgroup of document.querySelectorAll('[data-conditional-group]')) subgroup.hidden = ![...subgroup.children].some(child => !child.hidden);
   };
   $('configForm').oninput = () => { updateConditionalFields(); markConfigDirty(); };
   $('configForm').onchange = () => { updateConditionalFields(); markConfigDirty(); };

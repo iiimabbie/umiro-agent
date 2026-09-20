@@ -272,6 +272,10 @@ pre:empty { display: none; }
 .config-field textarea { height: 96px; margin-bottom: 0; }
 .config-field textarea.config-json { height: 180px; }
 .config-field input, .config-field select { margin-bottom: 0; }
+.config-checkbox-label { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; }
+.config-checkbox-label input { width: auto; margin: 0; box-shadow: none; }
+.config-subgroup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: color-mix(in srgb, var(--surface) 92%, var(--accent) 8%); }
+.config-subgroup[hidden] { display: none; }
 .provider-connect { display: flex; align-items: stretch; gap: 8px; }
 .provider-connect input { flex: 1 1 auto; min-width: 0; }
 .provider-connect button { flex: 0 0 auto; margin: 0; }
@@ -402,7 +406,7 @@ pre:empty { display: none; }
   .content { padding: 16px; }
   section { padding: 16px; }
   .grid { grid-template-columns: 1fr; }
-  .config-grid, .stat-grid { grid-template-columns: 1fr; }
+  .config-grid, .config-subgroup, .stat-grid { grid-template-columns: 1fr; }
   .config-toolbar { align-items: stretch; flex-direction: column; }
   .config-toolbar input { max-width: none; }
   .config-page-header { align-items: flex-start; flex-direction: column; gap: 4px; }
