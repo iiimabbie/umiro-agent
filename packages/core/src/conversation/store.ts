@@ -20,6 +20,24 @@ export interface UpdateConversationStateRequest {
   readonly updatedAt: string;
 }
 
+export interface ArchiveActiveConversationsRequest {
+  readonly transport: string;
+  readonly cutoff: string;
+  readonly archivedAt: string;
+  readonly excludeExternalIds?: readonly string[];
+  readonly externalIds?: readonly string[];
+}
+
+export interface ArchivedConversationReference {
+  readonly conversationId: string;
+  readonly externalId: string;
+}
+
+export interface ArchiveActiveConversationsResult {
+  readonly archived: readonly ArchivedConversationReference[];
+  readonly skipped: readonly ArchivedConversationReference[];
+}
+
 export interface UpdateConversationPreferencesRequest {
   readonly transport: string;
   readonly externalId: string;
@@ -55,6 +73,8 @@ export interface ConversationStore {
     readonly updatedAt: string;
   }): Promise<ConversationCompaction | undefined>;
   archiveBoundConversation(transport: string, externalId: string, archivedAt: string): Promise<Conversation | undefined>;
+  archiveBoundConversationIfCurrent(transport: string, externalId: string, conversationId: string, archivedAt: string): Promise<Conversation | undefined>;
+  archiveActiveConversationsBefore(request: ArchiveActiveConversationsRequest): Promise<ArchiveActiveConversationsResult>;
 }
 
 export interface IngestInputEventRequest {

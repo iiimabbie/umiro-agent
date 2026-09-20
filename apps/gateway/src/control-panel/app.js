@@ -98,6 +98,12 @@ const CONFIG_GROUPS = [
     { path: 'discord.presence.status', type: 'select', options: [['online', 'Online'], ['idle', 'Idle'], ['dnd', 'Do Not Disturb'], ['invisible', 'Invisible']] },
     { path: 'discord.presence.activity', type: 'text', placeholder: 'Bot 名稱下方顯示的文字' },
   ] },
+  { title: '對話', fields: [
+    { path: 'conversation.autoArchive.enabled', type: 'checkbox', label: '對話自動封存', wide: true },
+    { path: 'conversation.autoArchive.explanation', type: 'warning', dependsOn: { path: 'conversation.autoArchive.enabled', value: true }, subgroup: 'conversation-auto-archive', wide: true, label: '對話自動封存說明' },
+    { path: 'conversation.autoArchive.time', type: 'time', required: true, preserveWhenHidden: true, dependsOn: { path: 'conversation.autoArchive.enabled', value: true }, subgroup: 'conversation-auto-archive' },
+    { path: 'conversation.autoArchive.timezone', type: 'text', required: true, preserveWhenHidden: true, placeholder: '例如 Asia/Taipei', dependsOn: { path: 'conversation.autoArchive.enabled', value: true }, subgroup: 'conversation-auto-archive' },
+  ] },
   { title: '權限與 Subagent', fields: [
     { path: 'authority.owner', type: 'json', wide: true },
     { path: 'authority.member', type: 'json', wide: true },
@@ -183,7 +189,9 @@ function configControl(field, value, models) {
     return input;
   }
   if (field.type === 'warning') {
-    const warning = document.createElement('div'); warning.className = 'config-warning'; warning.textContent = '只有 provider 官方保證文件與 Query 模型共享向量空間時才能分離；相同維度不等於向量相容。Voyage 4 與 voyage-4-lite 可作為例子，但請以你選用 provider 的官方保證為準。'; return warning;
+    const warning = document.createElement('div'); warning.className = 'config-warning'; warning.textContent = field.path === 'conversation.autoArchive.explanation'
+      ? '每天指定時間後會封存各 Discord 頻道、Thread／Forum post 與私訊目前的 conversation。下一則訊息會開始新的 conversation；封存不會刪除歷史，model、reasoning、queue 等偏好也會保留。執行中的 Run 會在完成後補封存；關閉只停止未來排程，/new 仍可手動提早封存。'
+      : '只有 provider 官方保證文件與 Query 模型共享向量空間時才能分離；相同維度不等於向量相容。Voyage 4 與 voyage-4-lite 可作為例子，但請以你選用 provider 的官方保證為準。'; return warning;
   }
   if (field.type === 'checkbox') {
     const input = document.createElement('input'); input.type = 'checkbox'; input.id = id; input.checked = value === true; return input;
@@ -381,7 +389,7 @@ function readConfigForm() {
       const dependency = $(fieldId(field.dependsOn.path));
       const actual = dependency?.type === 'checkbox' ? dependency.checked : dependency?.value;
       const visible = field.dependsOn.value === undefined ? actual !== field.dependsOn.not : actual === field.dependsOn.value;
-      if (!visible) { deletePath(next, field.path); continue; }
+      if (!visible) { if (!field.preserveWhenHidden) deletePath(next, field.path); continue; }
     }
     if (field.type === 'checkbox') {
       const control = $(fieldId(field.path));

@@ -39,6 +39,8 @@ import {
   type Turn,
   type AppendTurnRequest,
   type UpdateConversationStateRequest,
+  type ArchiveActiveConversationsRequest,
+  type ArchiveActiveConversationsResult,
   type IngestInputEventRequest,
   type IngestInputEventResult,
   type SteerInputEventRequest,
@@ -729,7 +731,67 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       if (row.state !== "active") throw new ExecutionStoreConflictError(`conversation ${row.id} is not active`);
       const update = this.database.prepare("UPDATE conversations SET revision = revision + 1, state = 'archived', updated_at = ? WHERE id = ? AND revision = ? AND state = 'active'").run(archivedAt, row.id, row.revision);
       expectOne(update.changes, `conversation ${row.id} changed concurrently`);
+      this.database.prepare("DELETE FROM conversation_bindings WHERE transport = ? AND external_id = ? AND conversation_id = ?").run(transport, externalId, row.id);
       return { ...this.conversationFromRow(row), revision: row.revision + 1, state: "archived" as const, updatedAt: archivedAt };
+    })();
+  }
+
+  async archiveBoundConversationIfCurrent(transport: string, externalId: string, conversationId: string, archivedAt: string): Promise<Conversation | undefined> {
+    if (!transport.trim() || !externalId.trim() || !conversationId.trim() || !archivedAt) throw new TypeError("conditional archive requires transport, externalId, conversationId and archivedAt");
+    return this.database.transaction(() => {
+      const row = this.database.prepare(`
+        SELECT c.* FROM conversations c
+        JOIN conversation_bindings b ON b.conversation_id = c.id
+        WHERE b.transport = ? AND b.external_id = ? AND b.conversation_id = ?
+      `).get(transport, externalId, conversationId) as ConversationRow | undefined;
+      if (!row || row.state !== "active") return undefined;
+      const update = this.database.prepare(`
+        UPDATE conversations SET revision = revision + 1, state = 'archived', updated_at = ?
+        WHERE id = ? AND revision = ? AND state = 'active'
+          AND EXISTS (SELECT 1 FROM conversation_bindings WHERE transport = ? AND external_id = ? AND conversation_id = ?)
+      `).run(archivedAt, row.id, row.revision, transport, externalId, conversationId);
+      if (update.changes !== 1) return undefined;
+      this.database.prepare("DELETE FROM conversation_bindings WHERE transport = ? AND external_id = ? AND conversation_id = ?").run(transport, externalId, conversationId);
+      return { ...this.conversationFromRow(row), revision: row.revision + 1, state: "archived" as const, updatedAt: archivedAt };
+    })();
+  }
+
+  async archiveActiveConversationsBefore(request: ArchiveActiveConversationsRequest): Promise<ArchiveActiveConversationsResult> {
+    if (!request.transport.trim() || !request.cutoff || !request.archivedAt) throw new TypeError("archive request requires transport, cutoff and archivedAt");
+    const excluded = new Set(request.excludeExternalIds ?? []);
+    const selected = request.externalIds ? [...new Set(request.externalIds)] : undefined;
+    return this.database.transaction(() => {
+      const values: Array<string> = [request.transport, request.cutoff];
+      const candidateActivity = "MAX(c.updated_at, COALESCE((SELECT MAX(t.created_at) FROM turns t WHERE t.conversation_id = c.id), c.created_at), COALESCE((SELECT MAX(o.created_at) FROM run_outputs o JOIN turns rt ON rt.primary_run_id = o.run_id WHERE rt.conversation_id = c.id), c.created_at))";
+      const clauses = ["b.transport = ?", "c.state = 'active'", `${candidateActivity} <= ?`];
+      if (selected) {
+        if (selected.length === 0) return { archived: [], skipped: [] };
+        clauses.push(`b.external_id IN (${selected.map(() => "?").join(",")})`);
+        values.push(...selected);
+      }
+      const candidates = this.database.prepare(`
+        SELECT c.id, c.revision, b.external_id
+        FROM conversations c JOIN conversation_bindings b ON b.conversation_id = c.id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY b.external_id, c.id
+      `).all(...values) as Array<{ id: string; revision: number; external_id: string }>;
+      const archived: Array<{ conversationId: string; externalId: string }> = [];
+      const skipped: Array<{ conversationId: string; externalId: string }> = [];
+      const update = this.database.prepare(`
+        UPDATE conversations SET revision = revision + 1, state = 'archived', updated_at = ?
+        WHERE id = ? AND revision = ? AND state = 'active'
+          AND MAX(updated_at, COALESCE((SELECT MAX(t.created_at) FROM turns t WHERE t.conversation_id = conversations.id), created_at), COALESCE((SELECT MAX(o.created_at) FROM run_outputs o JOIN turns rt ON rt.primary_run_id = o.run_id WHERE rt.conversation_id = conversations.id), created_at)) <= ?
+          AND EXISTS (SELECT 1 FROM conversation_bindings WHERE transport = ? AND external_id = ? AND conversation_id = ?)
+      `);
+      for (const candidate of candidates) {
+        if (excluded.has(candidate.external_id)) { skipped.push({ conversationId: candidate.id, externalId: candidate.external_id }); continue; }
+        const result = update.run(request.archivedAt, candidate.id, candidate.revision, request.cutoff, request.transport, candidate.external_id, candidate.id);
+        if (result.changes === 1) {
+          this.database.prepare("DELETE FROM conversation_bindings WHERE transport = ? AND external_id = ? AND conversation_id = ?").run(request.transport, candidate.external_id, candidate.id);
+          archived.push({ conversationId: candidate.id, externalId: candidate.external_id });
+        }
+      }
+      return { archived, skipped };
     })();
   }
 

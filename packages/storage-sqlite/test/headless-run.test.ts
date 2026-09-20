@@ -228,7 +228,7 @@ test("sends image data to the provider but omits base64 from model-call audit", 
   } finally { store.close(); }
 });
 
-test("defaults the main Run to 25 model turns", async () => {
+test("defaults the main Run to 50 model turns", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   let modelCalls = 0;
   let toolCalls = 0;
@@ -258,9 +258,9 @@ test("defaults the main Run to 25 model turns", async () => {
     const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() })
       .run({ context: ownerContext("test.continue"), model: "fake-model", prompt: "keep going" });
     assert.equal(result.status, "failed");
-    if (result.status === "failed") assert.match(result.error, /model turn limit exceeded: 25/);
-    assert.equal(modelCalls, 25);
-    assert.equal(toolCalls, 25);
+    if (result.status === "failed") assert.match(result.error, /model turn limit exceeded: 50/);
+    assert.equal(modelCalls, 50);
+    assert.equal(toolCalls, 50);
   } finally { store.close(); }
 });
 

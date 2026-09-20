@@ -36,6 +36,7 @@ import { analyzeDiscordIngress, buildDiscordAnalysisText } from "./ingress-analy
 import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
+import { ConversationAutoArchiveCoordinator, parseConversationAutoArchiveConfig, syncConversationAutoArchiveSchedule, CONVERSATION_AUTO_ARCHIVE_JOB_REF } from "./conversation-auto-archive.js";
 
 const paths = umiroPaths();
 const pendingRestartFile = `${paths.state}/pending-restart.json`;
@@ -48,7 +49,7 @@ const readiness: { storage: boolean; plugins: boolean; discord: boolean; schedul
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-type GatewayConfig = { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; skills?: readonly string[]; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
+type GatewayConfig = { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; skills?: readonly string[]; discord?: DiscordTriggerPolicyConfig; conversation?: { autoArchive?: { enabled?: boolean; time?: string; timezone?: string } }; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as GatewayConfig;
 const initialModels = compileModelProfiles(config);
 let defaultProtocol = initialModels.defaultProtocol;
@@ -140,6 +141,8 @@ let host: PluginHost;
 const activeRuns = new Map<string, { readonly controller: AbortController; readonly userId: string }>();
 const activeSessions = new Map<string, { readonly runId: string; readonly gate: SteerGate }>();
 const activeWork = new ActiveWorkTracker();
+let conversationAutoArchiveConfig = parseConversationAutoArchiveConfig(config.conversation);
+const conversationAutoArchive = new ConversationAutoArchiveCoordinator(store, () => [...activeSessions.keys()], (event, data) => logger.write({ level: "info", event, message: "Conversation auto archive lifecycle event", occurredAt: new Date().toISOString(), data: data as JsonObject }));
 
 let configuredBaseUrl = process.env.LLM_BASE_URL?.trim();
 let baseUrl = modelEndpoint(configuredBaseUrl);
@@ -477,6 +480,15 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   const applyIfChanged = (path: string, before: unknown, after: unknown, apply: () => void): void => { if (!changed(before, after)) return; apply(); applied.push(path); };
   const restartIfChanged = (path: string, before: unknown, after: unknown): void => { if (changed(before, after)) restartRequired.push(path); };
 
+  // Reconcile the durable trigger before mutating other live runtime state. A
+  // scheduler failure therefore leaves this apply operation safely retryable.
+  const nextConversationAutoArchive = parseConversationAutoArchiveConfig(next.conversation);
+  if (changed(conversationAutoArchiveConfig, nextConversationAutoArchive)) {
+    await syncConversationAutoArchiveSchedule(scheduler, nextConversationAutoArchive);
+    conversationAutoArchiveConfig = nextConversationAutoArchive;
+    applied.push("conversation.autoArchive");
+  }
+
   restartIfChanged("skills", config.skills, next.skills);
   if (changed(embeddingRuntimeIdentity(config.embedding), embeddingRuntimeIdentity(next.embedding))) {
     restartRequired.push("embedding.provider", "embedding.model", "embedding.separateQueryModel", "embedding.queryModel", "embedding.dimensions", "embedding.requestsPerMinute");
@@ -578,11 +590,13 @@ for (let index = 0; index < modules.length; index++) {
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
 await reconcilePluginSchedules(scheduler, pluginStates, pluginJobStates);
 await scheduler.syncPluginJobs(host.listJobs(), pluginJobOwners);
+await syncConversationAutoArchiveSchedule(scheduler, conversationAutoArchiveConfig);
 const enabledSearchNamespaces = new Set(host.list().filter(plugin => plugin.state === "enabled").map(plugin => plugin.manifest.namespace));
 for (const namespace of await store.listSearchNamespaces()) if (!enabledSearchNamespaces.has(namespace)) await store.removeSearchNamespace(namespace);
 readiness.plugins = true;
 embeddingWorker?.start();
 scheduler.setDispatcher(async (trigger, occurrence, signal) => {
+  if (trigger.jobRef === CONVERSATION_AUTO_ARCHIVE_JOB_REF) { await conversationAutoArchive.run(occurrence, signal); return; }
   if (trigger.jobRef.startsWith("plugin:")) { await host.runJob(trigger.jobRef.slice("plugin:".length), signal); return; }
   if (trigger.jobRef !== "agent.prompt" || typeof trigger.input.prompt !== "string") throw new Error(`unsupported scheduled job: ${trigger.jobRef}`);
   const execution = { origin: { kind: "schedule" as const, scheduleId: trigger.id }, actor: { id: trigger.creatorPrincipalId, kind: trigger.creatorRoles.includes("system") ? "system" as const : "human" as const, roles: trigger.creatorRoles }, authority: intersectAuthority(trigger.authority, ownerAuthority) };
@@ -799,7 +813,13 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: analysis.selectedToolNames } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
   activeRuns.set(runKey, active);
   let result;
-  try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
+  try { result = await execution; } finally {
+    activeRuns.delete(runKey); activeRuns.delete(event.id);
+    if (activeSessions.get(event.conversation.externalId)?.runId === runKey) {
+      activeSessions.delete(event.conversation.externalId);
+      await conversationAutoArchive.onScopeIdle(event.conversation.externalId);
+    }
+  }
   if (result.status === "executed" && (result.result.status === "failed" || result.result.status === "cancelled")) {
     logger.write({ level: "error", event: "run.failed", message: "Interactive Run failed", occurredAt: new Date().toISOString(), runId: result.result.runId, data: {
       channelId: message.channelId,
@@ -914,6 +934,7 @@ shutdown = async (exitCode = 0, restart = false) => {
   readiness.scheduler = false;
   readiness.discord = false;
   scheduler.stop();
+  conversationAutoArchive.clear();
   embeddingWorker?.stop();
   clearInterval(workspaceReconcileTimer);
   clearInterval(pluginStateCleanupTimer);

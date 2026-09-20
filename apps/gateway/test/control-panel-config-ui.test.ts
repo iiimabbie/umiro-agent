@@ -39,6 +39,12 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(css, /\.config-subgroup \{[^}]*border:/);
   assert.match(css, /\.config-subgroup\[hidden\] \{ display: none; \}/);
   assert.match(script, /title: 'Discord'[\s\S]*?secretName: 'DISCORD_TOKEN'[\s\S]*?secretName: 'UMIRO_OWNER_DISCORD_ID'/);
+  assert.match(script, /path: 'conversation\.autoArchive\.enabled', type: 'checkbox'/);
+  assert.match(script, /path: 'conversation\.autoArchive\.time', type: 'time'/);
+  assert.match(script, /path: 'conversation\.autoArchive\.timezone', type: 'text'/);
+  assert.match(script, /subgroup: 'conversation-auto-archive'/);
+  assert.match(script, /preserveWhenHidden: true/);
+  assert.match(script, /每天指定時間後會封存各 Discord 頻道/);
   assert.doesNotMatch(script, /UMIRO_WEB_UI_TOKEN/);
   const editableSecrets = main.slice(main.indexOf("const editableSecretNames"), main.indexOf("const persistSecrets"));
   assert.match(editableSecrets, /editableSecretNames\.delete\("UMIRO_WEB_UI_TOKEN"\)/);

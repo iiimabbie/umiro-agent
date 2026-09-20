@@ -24,6 +24,11 @@ test("model capabilities are explicit and reject unknown values", () => {
   assert.deepEqual(validateControlConfig({ model: "gemma4", authority: { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } } }).authority, { member: { capabilities: ["memory.search"], visibility: { kind: "restricted", principalIds: [], labels: [], resources: [] } } });
   assert.deepEqual(validateControlConfig({ model: "gemma4", subagent: { maxConcurrentChildren: 2, maxParallelTools: 1 } }).subagent, { maxConcurrentChildren: 2, maxParallelTools: 1 });
   assert.throws(() => validateControlConfig({ model: "gemma4", subagent: { maxConcurrentChildren: 3 } }), /must be 1 or 2/);
+  assert.deepEqual(validateControlConfig({ model: "gemma4", conversation: { autoArchive: { enabled: true, time: "09:05", timezone: "Asia/Taipei" } } }).conversation, { autoArchive: { enabled: true, time: "09:05", timezone: "Asia/Taipei" } });
+  assert.equal((validateControlConfig({ model: "gemma4", conversation: { autoArchive: { enabled: true } } }).conversation as { autoArchive: { time: string; timezone: string } }).autoArchive.time, "00:00");
+  for (const time of ["24:00", "9:00", "00:60", ""]) assert.throws(() => validateControlConfig({ model: "gemma4", conversation: { autoArchive: { time } } }), /HH:mm/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", conversation: { autoArchive: { timezone: "Not/AZone" } } }), /invalid IANA/);
+  assert.throws(() => validateControlConfig({ model: "gemma4", conversation: { autoArchive: { unexpected: true } } }), /unsupported field/);
 });
 
 test("model profiles validate model, capability, and reasoning selection", () => {

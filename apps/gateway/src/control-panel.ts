@@ -75,6 +75,10 @@ export const CONFIG_EXPLANATIONS = {
   "authority.member": { label: "一般成員權限", description: "一般成員可用的 capability 與 restricted 可見範圍；預設只開放聊天所需的 11 類能力。", defaultValue: { visibility: { kind: "restricted" }, instructionAuthority: "scoped" }, risk: "擴大 capability 或 resource visibility 會讓群組成員操作更多資料與服務。", restartRequired: true },
   "subagent.maxConcurrentChildren": { label: "每人並行下屬上限", description: "每個 Principal 同時 active 的 Child Run 數；超過直接拒絕，不排隊。", defaultValue: 2, risk: "提高並行數會同步提高模型成本；目前架構硬上限為 2。", restartRequired: false },
   "subagent.maxParallelTools": { label: "單輪並行工具上限", description: "同一 model turn 連續 parallel-safe tools 的最大並行數。", defaultValue: 2, risk: "只應用於明確宣告 parallel-safe 的工具；目前硬上限為 2。", restartRequired: false },
+  "conversation.autoArchive.enabled": { label: "對話自動封存", description: "每天在指定時間封存 Discord 頻道、Thread／Forum post 與私訊的目前 conversation；關閉時不會還原已封存資料。", defaultValue: false, risk: "封存會讓下一則訊息開始新的 conversation，但歷史仍保留且可供 recall。", restartRequired: false },
+  "conversation.autoArchive.time": { label: "封存時間", description: "每日執行對話自動封存的當地時間，使用 24 小時制 HH:mm。執行中的 Run 會在完成後補封存。", defaultValue: "00:00", risk: "時間設定會影響每天何時切換對話上下文。", restartRequired: false },
+  "conversation.autoArchive.timezone": { label: "封存時區", description: "封存時間使用的 IANA timezone，例如 Asia/Taipei；Docker 環境請明確設定，避免使用 UTC。", defaultValue: "UTC", risk: "錯誤時區會讓封存發生在非預期時間。", restartRequired: false },
+  "conversation.autoArchive.explanation": { label: "功能說明", description: "每天指定時間後封存各 Discord 頻道、Thread／Forum post 與私訊目前的 conversation；下一則訊息會開始新的 conversation。封存不等於刪除，歷史仍可瀏覽與 semantic recall，model、reasoning、queue 等 scope preferences 不會重設。執行中的 Run 會在完成後補封存；關閉只停止未來排程，/new 仍可手動提早封存。", defaultValue: null, risk: "請確認時間與 timezone 符合你的部署環境。", restartRequired: false },
   "plugins[].path": { label: "外掛路徑", description: "由 config 直接載入的外掛位置；一般操作建議使用外掛管理介面。", defaultValue: [], risk: "外掛是 trusted in-process code，只能安裝信任的來源。", restartRequired: true },
   "plugins[].config": { label: "外掛設定", description: "傳給該外掛 manifest schema 驗證的非秘密設定。", defaultValue: {}, risk: "設定仍受 manifest schema 與 secrets 分離規則限制。", restartRequired: true },
   "webUi.enabled": { label: "Web UI 啟用", description: "是否啟動本機管理介面。", defaultValue: false, risk: "啟用後需妥善保管獨立 Web UI token。", restartRequired: true },
@@ -97,7 +101,7 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export function validateControlConfig(value: unknown): Record<string, unknown> {
   assertConfigContainsNoSecrets(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("config must be an object");
-  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "skills", "discord", "authority", "subagent", "plugins", "webUi"]);
+  const config = value as Record<string, unknown>; const allowed = new Set(["model", "protocol", "modelCapabilities", "profiles", "contextMaxTokens", "pricing", "embedding", "skills", "discord", "authority", "subagent", "plugins", "webUi", "conversation"]);
   const unknown = Object.keys(config).find(key => !allowed.has(key)); if (unknown) throw new TypeError(`unsupported config field: ${unknown}`);
   if (typeof config.model !== "string" || !config.model.trim()) throw new TypeError("model must be a non-empty string");
   if (config.protocol !== undefined && config.protocol !== "openai_responses" && config.protocol !== "openai_chat_completions") throw new TypeError("protocol must be openai_responses or openai_chat_completions");
@@ -136,6 +140,22 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
     for (const key of ["maxConcurrentChildren", "maxParallelTools"] as const) if (subagent[key] !== undefined && (!Number.isSafeInteger(subagent[key]) || Number(subagent[key]) < 1 || Number(subagent[key]) > 2)) throw new TypeError(`subagent.${key} must be 1 or 2`);
   }
   if (config.plugins !== undefined && (!Array.isArray(config.plugins) || config.plugins.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof (item as { path?: unknown }).path !== "string"))) throw new TypeError("plugins must contain objects with a path");
+  if (config.conversation !== undefined) {
+    if (!config.conversation || typeof config.conversation !== "object" || Array.isArray(config.conversation)) throw new TypeError("conversation must be an object");
+    const conversation = config.conversation as Record<string, unknown>;
+    if (Object.keys(conversation).some(key => key !== "autoArchive")) throw new TypeError("conversation contains an unsupported field");
+    if (conversation.autoArchive !== undefined) {
+      if (!conversation.autoArchive || typeof conversation.autoArchive !== "object" || Array.isArray(conversation.autoArchive)) throw new TypeError("conversation.autoArchive must be an object");
+      const auto = conversation.autoArchive as Record<string, unknown>;
+      if (Object.keys(auto).some(key => !["enabled", "time", "timezone"].includes(key))) throw new TypeError("conversation.autoArchive contains an unsupported field");
+      if (auto.enabled !== undefined && typeof auto.enabled !== "boolean") throw new TypeError("conversation.autoArchive.enabled must be boolean");
+      if (auto.time !== undefined && (typeof auto.time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(auto.time))) throw new TypeError("conversation.autoArchive.time must use HH:mm");
+      if (auto.timezone !== undefined) {
+        if (typeof auto.timezone !== "string" || !auto.timezone.trim()) throw new TypeError("conversation.autoArchive.timezone must be an IANA timezone");
+        try { new Intl.DateTimeFormat("en-US", { timeZone: auto.timezone }).format(); } catch { throw new TypeError(`invalid IANA timezone: ${auto.timezone}`); }
+      }
+    }
+  }
   if (config.embedding !== undefined) {
     if (!config.embedding || typeof config.embedding !== "object" || Array.isArray(config.embedding)) throw new TypeError("embedding must be an object");
     const embedding = config.embedding as Record<string, unknown>;
@@ -151,7 +171,15 @@ export function validateControlConfig(value: unknown): Record<string, unknown> {
     if (ui.host !== undefined && ui.host !== "127.0.0.1" && ui.host !== "::1") throw new TypeError("webUi.host must be a loopback address");
     if (ui.port !== undefined && (!Number.isSafeInteger(ui.port) || Number(ui.port) < 1 || Number(ui.port) > 65535)) throw new TypeError("webUi.port must be between 1 and 65535");
   }
-  return structuredClone(config);
+  const normalized = structuredClone(config);
+  const normalizedConversation = normalized.conversation as Record<string, unknown> | undefined;
+  const normalizedAutoArchive = normalizedConversation?.autoArchive as Record<string, unknown> | undefined;
+  if (normalizedAutoArchive) {
+    normalizedAutoArchive.enabled ??= false;
+    normalizedAutoArchive.time ??= "00:00";
+    normalizedAutoArchive.timezone ??= Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  }
+  return normalized;
 }
 
 async function atomicWrite(path: string, content: string): Promise<void> { const temporary = join(dirname(path), `.${basename(path)}-${crypto.randomUUID()}.tmp`); try { await writeFile(temporary, content, { mode: 0o600 }); await rename(temporary, path); } catch (error) { await rm(temporary, { force: true }); throw error; } }
@@ -226,7 +254,18 @@ export class ControlPanelServer {
         return json(response, 200, await this.options.conversations.list({ ...(scope ? { scope } : {}), ...(stateRaw ? { state: stateRaw } : {}), limit: Number(limitRaw) }));
       }
       if (request.method === "GET" && url.pathname === "/api/workspace") return json(response, 200, [...this.editableFiles()]);
-      if (request.method === "PUT" && url.pathname === "/api/config") { const config = validateControlConfig(await body(request)); await atomicWrite(this.options.configFile, `${JSON.stringify(config, null, 2)}\n`); const application = this.options.applyConfig ? await this.options.applyConfig(config) : { applied: [], restartRequired: Object.keys(config) }; const restartRequired = application.restartRequired.length > 0; this.audit("control.config.saved", { fieldCount: Object.keys(config).length, restartRequired, appliedCount: application.applied.length }); return json(response, 200, { saved: true, applied: application.applied, restartRequired: application.restartRequired }); }
+      if (request.method === "PUT" && url.pathname === "/api/config") {
+        const config = validateControlConfig(await body(request));
+        const previous = await readFile(this.options.configFile, "utf8").catch(() => undefined);
+        await atomicWrite(this.options.configFile, `${JSON.stringify(config, null, 2)}\n`);
+        let application: ConfigApplyResult;
+        try { application = this.options.applyConfig ? await this.options.applyConfig(config) : { applied: [], restartRequired: Object.keys(config) }; }
+        catch (error) {
+          if (previous !== undefined) await atomicWrite(this.options.configFile, previous).catch(() => undefined);
+          throw error;
+        }
+        const restartRequired = application.restartRequired.length > 0; this.audit("control.config.saved", { fieldCount: Object.keys(config).length, restartRequired, appliedCount: application.applied.length }); return json(response, 200, { saved: true, applied: application.applied, restartRequired: application.restartRequired });
+      }
       if (request.method === "GET" && url.pathname === "/api/schedules") { if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); return json(response, 200, await this.options.schedules.list()); }
       if (request.method === "POST" && url.pathname === "/api/schedules/preview") { if (!this.options.schedules?.preview) return json(response, 503, { error: "schedule preview unavailable" }); const input = await body(request) as Record<string, unknown>; if ((input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone) throw new TypeError("kind and timezone are required"); if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required"); if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required"); return json(response, 200, { nextFireAt: await this.options.schedules.preview({ kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone }) }); }
       if (request.method === "POST" && url.pathname === "/api/schedules") {
