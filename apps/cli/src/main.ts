@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { access, chmod, cp, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
-import { openSync } from "node:fs";
+import { constants, openSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir, userInfo } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -32,6 +32,18 @@ function parseGitHubPluginSource(value: string): GitHubPluginSource | undefined 
 }
 
 async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
+async function executable(path: string): Promise<boolean> { try { await access(path, constants.X_OK); return true; } catch { return false; } }
+async function runPackageManager(manager: "npm" | "pnpm", args: readonly string[], cwd: string): Promise<void> {
+  const runtimeBin = dirname(process.execPath);
+  let command: string | undefined;
+  for (const directory of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    const candidate = join(directory, manager);
+    if (await executable(candidate)) { command = candidate; break; }
+  }
+  command ??= await executable(join(runtimeBin, manager)) ? join(runtimeBin, manager) : manager;
+  const path = [runtimeBin, process.env.PATH].filter((value): value is string => Boolean(value)).join(delimiter);
+  await exec(command, [...args], { cwd, env: { ...process.env, PATH: path } });
+}
 function systemTimezone(): string { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
 async function workspaceTemplates(): Promise<string> {
   const candidates = [
@@ -532,7 +544,7 @@ async function plugin(action: string, source?: string, workspaceName?: string, c
         await exec("git", cloneArgs);
         if (github?.subdirectory || selectedWorkspace) { const selected = github?.subdirectory ? join(checkout, github.subdirectory) : (await exists(join(checkout, selectedWorkspace!)) ? join(checkout, selectedWorkspace!) : join(checkout, "packages", selectedWorkspace!)); await access(join(selected, "package.json")); await cp(selected, candidate, { recursive: true }); }
         else await rename(checkout, candidate);
-        const manager = await exists(join(candidate, "pnpm-lock.yaml")) ? "pnpm" : "npm"; await exec(manager, manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], { cwd: candidate }); await exec(manager, ["run", "build"], { cwd: candidate });
+        const manager = await exists(join(candidate, "pnpm-lock.yaml")) ? "pnpm" : "npm"; await runPackageManager(manager, manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install", "--ignore-scripts"], candidate); await runPackageManager(manager, ["run", "build"], candidate);
         manifest = await validatePluginDirectory(candidate);
         nextConfig = resolvedPluginConfig(manifest, previousEntry?.config, configJson);
         const replacing = await exists(path); if (replacing) await rename(path, previous);
