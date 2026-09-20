@@ -122,6 +122,10 @@
     <input id="pluginSource" placeholder="外掛 GitHub HTTPS URL 或本機路徑">
     <input id="pluginWorkspace" placeholder="monorepo workspace（可留空）">
     <button id="installPlugin">安裝外掛</button>
+    <div id="pluginRestartNotice" class="plugin-restart-notice" hidden>
+      <span>外掛已變更，重新啟動後完整生效。</span>
+      <button id="restartPlugins" type="button">立即重啟</button>
+    </div>
     <div id="pluginsExternal" class="list-panel"></div>
 
     <button id="refreshPlugins">重新整理</button>

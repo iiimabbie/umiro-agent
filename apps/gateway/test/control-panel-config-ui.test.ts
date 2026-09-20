@@ -94,6 +94,11 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.doesNotMatch(pluginUi, /required\s*=\s*true/);
   assert.match(script, /\/api\/schedules\/preview/);
   assert.match(script, /\/api\/runtime\/restart/);
+  assert.match(html, /id="pluginRestartNotice"[^>]*hidden/);
+  assert.match(html, /id="restartPlugins"[^>]*>立即重啟<\/button>/);
+  assert.match(script, /function markPluginRestartRequired[\s\S]*?pluginRestartNotice[\s\S]*?hidden = false/);
+  assert.match(script, /restartPlugins'\)\.onclick = restartGateway/);
+  assert.match(script, /pluginRestartNotice'\)\.hidden = true/);
   assert.doesNotMatch(script, /\balert\(|\bprompt\(/);
   assert.match(script, /api\('\/api\/secrets', \{ method: 'PUT'/);
   assert.match(script, /await r\.text\(\)/);

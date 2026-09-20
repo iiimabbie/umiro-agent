@@ -320,6 +320,8 @@ pre:empty { display: none; }
 .plugin { align-items: center; gap: 8px; }
 .plugin > span:not(.badge) { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
 .plugin button:first-of-type { margin-left: auto; }
+.plugin-restart-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 8px; background: var(--warning-soft); }
+.plugin-restart-notice button { margin: 0; flex: 0 0 auto; font-weight: 600; }
 
 .badge {
   display: inline-block;

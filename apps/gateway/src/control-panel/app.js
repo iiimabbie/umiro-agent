@@ -795,6 +795,11 @@ async function pluginAction(action, source, workspace, config, removeSecrets = f
   await plugins();
 }
 
+function markPluginRestartRequired(message) {
+  $('pluginRestartNotice').hidden = false;
+  showToast(message, 'success');
+}
+
 function pluginConfigControl(name, property, value) {
   const label = document.createElement('label'); label.className = 'modal-field'; label.textContent = property.title || name;
   let control;
@@ -873,7 +878,7 @@ async function configurePlugin(x) {
       await api('/api/secrets', { method: 'PUT', body: JSON.stringify(secrets) });
       markPluginSecretsConfigured(body, new Set(Object.keys(secrets)));
     }
-    showToast('外掛設定已儲存，重啟後完整生效', 'success');
+    markPluginRestartRequired('外掛設定已儲存，重啟後完整生效');
   } catch (error) { reportError(error); }
 }
 
@@ -932,7 +937,7 @@ function renderPluginRow(x) {
   toggle.textContent = x.enabled ? '停用' : '啟用';
   toggle.disabled = requiredBuiltin;
   if (toggle.disabled) toggle.title = '必要內掛：ümiro 的基本 Agent 能力不可停用';
-  toggle.onclick = () => withBusy(toggle, async () => { await pluginAction(x.enabled ? 'disable' : 'enable', x.source, x.workspace); showToast(x.enabled ? '外掛已停用' : '外掛已啟用', 'success'); }).catch(reportError);
+  toggle.onclick = () => withBusy(toggle, async () => { await pluginAction(x.enabled ? 'disable' : 'enable', x.source, x.workspace); markPluginRestartRequired(x.enabled ? '外掛已停用，重啟後完整生效' : '外掛已啟用，重啟後完整生效'); }).catch(reportError);
 
   const configure = document.createElement('button');
   configure.textContent = '設定';
@@ -942,10 +947,10 @@ function renderPluginRow(x) {
   if (!builtin) {
     const update = document.createElement('button');
     update.textContent = '更新';
-    update.onclick = () => withBusy(update, async () => { await pluginAction('update', x.source, x.workspace); showToast('外掛已更新', 'success'); }, '更新中…').catch(reportError);
+    update.onclick = () => withBusy(update, async () => { await pluginAction('update', x.source, x.workspace); markPluginRestartRequired('外掛已更新，重啟後完整生效'); }, '更新中…').catch(reportError);
     const remove = document.createElement('button');
     remove.textContent = '移除';
-    remove.onclick = async () => { const removeSecrets = await confirmPluginRemoval(x); if (removeSecrets === undefined) return; await withBusy(remove, async () => { await pluginAction('remove', x.source, x.workspace, undefined, removeSecrets); showToast('外掛已移除', 'success'); }, '移除中…').catch(reportError); };
+    remove.onclick = async () => { const removeSecrets = await confirmPluginRemoval(x); if (removeSecrets === undefined) return; await withBusy(remove, async () => { await pluginAction('remove', x.source, x.workspace, undefined, removeSecrets); markPluginRestartRequired('外掛已移除，重啟後完整生效'); }, '移除中…').catch(reportError); };
     d.append(update, remove);
   }
   return d;
@@ -1079,13 +1084,23 @@ $('createSchedule').onclick = () => withBusy($('createSchedule'), async () => {
   } catch (error) { reportError(error); }
 }, '儲存中…');
 $('refreshPlugins').onclick = () => withBusy($('refreshPlugins'), plugins).catch(reportError);
-$('installPlugin').onclick = () => withBusy($('installPlugin'), async () => { try { await pluginAction('install', $('pluginSource').value, $('pluginWorkspace').value || undefined); $('pluginSource').value = ''; $('pluginWorkspace').value = ''; showToast('外掛已安裝，重啟後完整生效', 'success'); } catch (error) { reportError(error); } }, '安裝中…');
+$('installPlugin').onclick = () => withBusy($('installPlugin'), async () => { try { await pluginAction('install', $('pluginSource').value, $('pluginWorkspace').value || undefined); $('pluginSource').value = ''; $('pluginWorkspace').value = ''; markPluginRestartRequired('外掛已安裝，重啟後完整生效'); } catch (error) { reportError(error); } }, '安裝中…');
 $('refreshRuns').onclick = () => withBusy($('refreshRuns'), runs).catch(reportError);
 $('refreshUsage').onclick = () => withBusy($('refreshUsage'), usage).catch(reportError);
 $('refreshLogs').onclick = () => withBusy($('refreshLogs'), logs).catch(reportError);
 $('refreshChannels').onclick = () => withBusy($('refreshChannels'), channels).catch(reportError);
 $('refreshArchived').onclick = () => withBusy($('refreshArchived'), archived).catch(reportError);
-$('restartGateway').onclick = async () => { if (!await confirmAction('重新啟動 Gateway', '目前進行中的工作會先嘗試安全結束，確定立即重啟？', '立即重啟')) return; try { await api('/api/runtime/restart', { method: 'POST', body: '{}' }); showToast('Gateway 正在重新啟動', 'success'); $('restartGateway').hidden = true; } catch (error) { reportError(error); } };
+async function restartGateway() {
+  if (!await confirmAction('重新啟動 Gateway', '目前進行中的工作會先嘗試安全結束，確定立即重啟？', '立即重啟')) return;
+  try {
+    await api('/api/runtime/restart', { method: 'POST', body: '{}' });
+    showToast('Gateway 正在重新啟動', 'success');
+    $('restartGateway').hidden = true;
+    $('pluginRestartNotice').hidden = true;
+  } catch (error) { reportError(error); }
+}
+$('restartGateway').onclick = restartGateway;
+$('restartPlugins').onclick = restartGateway;
 $('token').value = localStorage.umiroToken || '';
 const selectedTheme = ['light', 'dark'].includes(localStorage.umiroTheme) ? localStorage.umiroTheme : 'system';
 document.querySelector(`input[name="theme"][value="${selectedTheme}"]`).checked = true;
