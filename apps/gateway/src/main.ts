@@ -91,6 +91,7 @@ for (const manifest of disabledManifests) for (const jobId of manifest.contribut
 for (const module of modules) for (const jobId of module.manifest.contributes.jobs ?? []) { pluginJobStates.set(jobId, "enabled"); pluginJobOwners.set(jobId, module.manifest.id); }
 const hostedWebSearch = allModelCapabilities.includes("hosted_web_search");
 const hostedImageGeneration = allModelCapabilities.includes("hosted_image_generation");
+const hostedImageGenerationTimeoutMs = 10 * 60_000;
 const granted = capabilities("tool.catalog", ...(hostedWebSearch ? ["model.hosted_web_search"] : []), ...(hostedImageGeneration ? ["model.hosted_image_generation"] : []), ...modules.flatMap(module => module.manifest.permissions.capabilities));
 const { ownerAuthority, memberAuthority } = resolveRuntimeAuthorities(config.authority, granted, [...(discordPolicy.allowedChannels ?? []), ...(discordPolicy.ambientChannels ?? [])]);
 const tools = new ToolRegistry();
@@ -191,12 +192,12 @@ if (hostedImageGeneration) tools.register({
   name: "image_gen",
   description: "Generate a PNG image through the active model's hosted image generation capability and attach it to the reply.",
   inputSchema: { type: "object", additionalProperties: false, required: ["prompt"], properties: { prompt: { type: "string", minLength: 2, maxLength: 4_000 }, filename: { type: "string", minLength: 1, maxLength: 120 } } },
-  policy: { capability: "model.hosted_image_generation", tier: "common", interactionRequirement: "not_required", sideEffect: "non_idempotent", timeoutMs: 120_000 },
+  policy: { capability: "model.hosted_image_generation", tier: "common", interactionRequirement: "not_required", sideEffect: "non_idempotent", timeoutMs: hostedImageGenerationTimeoutMs },
   async execute(input, context) {
     const profile = context.execution.modelProfile ?? defaultModelProfile;
     if (!profile.capabilities.includes("hosted_image_generation")) return { ok: false, effectStatus: "unknown", error: { code: "model_capability_unavailable", message: `model profile ${profile.id} does not provide hosted image generation`, retryable: false } };
     try {
-      const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}) }, model: profile.model, prompt: String(input.prompt), signal: context.signal });
+      const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: hostedImageGenerationTimeoutMs }, model: profile.model, prompt: String(input.prompt), signal: context.signal });
       const filename = typeof input.filename === "string" ? input.filename : "generated-image.png";
       const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename, mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId }, workspaceRelativePath: `attachments/generated/${context.operationId}/${filename}` });
       return { ok: true, output: { artifactId: artifact.id, filename: artifact.filename ?? "generated-image.png" }, artifactIds: [artifact.id], effectStatus: "confirmed" };
