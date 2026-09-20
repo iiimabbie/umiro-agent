@@ -38,6 +38,7 @@ import { completePendingRestart, savePendingRestart } from "./restart-notificati
 import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
 import { ConversationAutoArchiveCoordinator, parseConversationAutoArchiveConfig, syncConversationAutoArchiveSchedule, CONVERSATION_AUTO_ARCHIVE_JOB_REF } from "./conversation-auto-archive.js";
 import { ConversationScopeLifecycleCoordinator } from "./conversation-scope-lifecycle.js";
+import { assertUserManagedSchedule, toControlPanelScheduleView } from "./control-panel-schedules.js";
 
 const paths = umiroPaths();
 const pendingRestartFile = `${paths.state}/pending-restart.json`;
@@ -404,12 +405,19 @@ let connectDiscordFromSecrets: () => Promise<boolean> = async () => false;
 let discordStartAttempted = false;
 let shutdown: ((exitCode?: number, restart?: boolean) => Promise<void>) | undefined;
 let restartRequested = false;
+const userSchedule = async (id: string, action: "toggle" | "edit" | "delete") => {
+  const trigger = (await scheduler.list()).find(item => item.id === id);
+  if (!trigger) throw new Error(`scheduled trigger not found: ${id}`);
+  const view = toControlPanelScheduleView(trigger, pluginJobOwners);
+  assertUserManagedSchedule(view, action);
+  return trigger;
+};
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
-  list: () => scheduler.list(),
+  list: async () => (await scheduler.list()).map(trigger => toControlPanelScheduleView(trigger, pluginJobOwners)),
   create: input => scheduler.create({ name: input.name, enabled: true, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, jobRef: "agent.prompt", input: { prompt: input.prompt }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: ownerAuthority, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
-  setEnabled: (id, enabled) => scheduler.setEnabled(id, enabled),
-  update: (id, input) => scheduler.update(id, { name: input.name, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, input: { prompt: input.prompt }, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
-  remove: id => scheduler.remove(id),
+  setEnabled: async (id, enabled) => scheduler.setEnabled((await userSchedule(id, "toggle")).id, enabled),
+  update: async (id, input) => scheduler.update((await userSchedule(id, "edit")).id, { name: input.name, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, input: { prompt: input.prompt }, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
+  remove: async id => scheduler.remove((await userSchedule(id, "delete")).id),
   preview: input => previewNextFire(input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, input.timezone),
 }, plugins: {
   list: async () => {

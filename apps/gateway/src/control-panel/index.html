@@ -108,7 +108,20 @@
     <textarea id="schedulePrompt" placeholder="Agent prompt"></textarea>
     <button id="createSchedule">建立</button>
     <button id="refreshSchedules">重新整理</button>
-    <div id="schedules" class="list-panel"></div>
+    <section class="schedule-group" aria-labelledby="userSchedulesTitle">
+      <h3 id="userSchedulesTitle">我的排程</h3>
+      <div id="userSchedules" class="list-panel"></div>
+    </section>
+    <section class="schedule-group" aria-labelledby="pluginSchedulesTitle">
+      <h3 id="pluginSchedulesTitle">外掛排程</h3>
+      <p class="schedule-group-help">由外掛設定管理；請從外掛設定調整時間、模型或啟用狀態。</p>
+      <div id="pluginSchedules" class="list-panel"></div>
+    </section>
+    <section class="schedule-group" aria-labelledby="systemSchedulesTitle">
+      <h3 id="systemSchedulesTitle">系統排程</h3>
+      <p class="schedule-group-help">由 Umiro 系統設定管理。</p>
+      <div id="systemSchedules" class="list-panel"></div>
+    </section>
   </section>
 
   <section id="page-plugins" class="page">

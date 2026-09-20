@@ -7,6 +7,7 @@ import { parseDiscordTriggerPolicy } from "@umiro/adapter-discord";
 import { validateAuthorityConfig } from "./authority-config.js";
 import { validateEmbeddingConfig } from "./embedding-config.js";
 import { assertConfigContainsNoSecrets } from "@umiro/core/config";
+import { assertUserManagedSchedule, type ControlPanelScheduleView } from "./control-panel-schedules.js";
 
 const HTML = readFileSync(new URL("./control-panel/index.html", import.meta.url), "utf8");
 const JS = readFileSync(new URL("./control-panel/app.js", import.meta.url), "utf8");
@@ -19,7 +20,7 @@ const KNOWN_EDITABLE_FILES = new Set([...BASE_EDITABLE_FILES, "PEOPLE.md"]);
 const MAX_BODY = 1024 * 1024;
 
 export interface ControlPanelSchedules {
-  list(): Promise<unknown>;
+  list(): Promise<readonly ControlPanelScheduleView[]>;
   create(input: { readonly name: string; readonly kind: "cron" | "once"; readonly expression?: string; readonly at?: string; readonly timezone: string; readonly prompt: string; readonly channelId?: string }): Promise<unknown>;
   setEnabled(id: string, enabled: boolean): Promise<unknown>;
   update(id: string, input: { readonly name: string; readonly kind: "cron" | "once"; readonly expression?: string; readonly at?: string; readonly timezone: string; readonly prompt: string; readonly channelId?: string }): Promise<unknown>;
@@ -289,9 +290,41 @@ export class ControlPanelServer {
         if (input.channelId !== undefined && (typeof input.channelId !== "string" || !/^[0-9]{2,32}$/.test(input.channelId))) throw new TypeError("channelId must be a Discord snowflake");
         const created = await this.options.schedules.create({ name: input.name.trim(), kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone, prompt: input.prompt, ...(typeof input.channelId === "string" ? { channelId: input.channelId } : {}) }); this.audit("control.schedule.created", { kind: input.kind }); return json(response, 201, created);
       }
-      const scheduleMatch = /^\/api\/schedules\/([A-Za-z0-9._:-]{1,160})$/.exec(url.pathname); const scheduleId = scheduleMatch?.[1];
-      if (scheduleId && request.method === "PATCH") { if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); const input = await body(request) as Record<string, unknown>; if (typeof input.enabled === "boolean" && Object.keys(input).length === 1) { const changed = await this.options.schedules.setEnabled(scheduleId, input.enabled); this.audit("control.schedule.toggled", { scheduleId, enabled: input.enabled }); return json(response, 200, changed); } if (typeof input.name !== "string" || !input.name.trim() || (input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone || typeof input.prompt !== "string" || !input.prompt.trim()) throw new TypeError("name, kind, timezone and prompt are required"); if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required"); if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required"); if (input.channelId !== undefined && (typeof input.channelId !== "string" || !/^[0-9]{2,32}$/.test(input.channelId))) throw new TypeError("channelId must be a Discord snowflake"); const changed = await this.options.schedules.update(scheduleId, { name: input.name.trim(), kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone, prompt: input.prompt, ...(typeof input.channelId === "string" ? { channelId: input.channelId } : {}) }); this.audit("control.schedule.updated", { scheduleId, kind: input.kind }); return json(response, 200, changed); }
-      if (scheduleId && request.method === "DELETE") { if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); const removed = await this.options.schedules.remove(scheduleId); this.audit("control.schedule.removed", { scheduleId, removed }); return json(response, 200, { removed }); }
+      const scheduleMatch = /^\/api\/schedules\/([^/]+)$/.exec(url.pathname);
+      let scheduleId: string | undefined;
+      if (scheduleMatch) {
+        try { scheduleId = decodeURIComponent(scheduleMatch[1]!); } catch { throw new TypeError("schedule ID is invalid"); }
+        if (!/^[A-Za-z0-9._:-]{1,160}$/.test(scheduleId)) throw new TypeError("schedule ID is invalid");
+      }
+      if (scheduleId && request.method === "PATCH") {
+        if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" });
+        const target = (await this.options.schedules.list()).find(item => item.id === scheduleId);
+        if (!target) return json(response, 404, { error: "schedule not found" });
+        const input = await body(request) as Record<string, unknown>;
+        if (typeof input.enabled === "boolean" && Object.keys(input).length === 1) {
+          assertUserManagedSchedule(target, "toggle");
+          const changed = await this.options.schedules.setEnabled(scheduleId, input.enabled);
+          this.audit("control.schedule.toggled", { scheduleId, enabled: input.enabled });
+          return json(response, 200, changed);
+        }
+        if (typeof input.name !== "string" || !input.name.trim() || (input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone || typeof input.prompt !== "string" || !input.prompt.trim()) throw new TypeError("name, kind, timezone and prompt are required");
+        if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required");
+        if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required");
+        if (input.channelId !== undefined && (typeof input.channelId !== "string" || !/^[0-9]{2,32}$/.test(input.channelId))) throw new TypeError("channelId must be a Discord snowflake");
+        assertUserManagedSchedule(target, "edit");
+        const changed = await this.options.schedules.update(scheduleId, { name: input.name.trim(), kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone, prompt: input.prompt, ...(typeof input.channelId === "string" ? { channelId: input.channelId } : {}) });
+        this.audit("control.schedule.updated", { scheduleId, kind: input.kind });
+        return json(response, 200, changed);
+      }
+      if (scheduleId && request.method === "DELETE") {
+        if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" });
+        const target = (await this.options.schedules.list()).find(item => item.id === scheduleId);
+        if (!target) return json(response, 404, { error: "schedule not found" });
+        assertUserManagedSchedule(target, "delete");
+        const removed = await this.options.schedules.remove(scheduleId);
+        this.audit("control.schedule.removed", { scheduleId, removed });
+        return json(response, 200, { removed });
+      }
       if (request.method === "GET" && url.pathname === "/api/plugins") { if (!this.options.plugins) return json(response, 503, { error: "plugin manager unavailable" }); return json(response, 200, await this.options.plugins.list()); }
       if (request.method === "POST" && url.pathname === "/api/plugins/action") {
         if (!this.options.plugins) return json(response, 503, { error: "plugin manager unavailable" }); const input = await body(request) as Record<string, unknown>;

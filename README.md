@@ -178,7 +178,7 @@ umo web token     # print the access token
 umo web status
 ```
 
-The panel binds to loopback only (`http://127.0.0.1:3210` by default). It shows each channel's current conversation and archived ones as a chat log, plus plugins, schedules, workspace files, configuration, usage and logs.
+The panel binds to loopback only (`http://127.0.0.1:3210` by default). It shows each channel's current conversation and archived ones as a chat log, plus plugins, schedules, workspace files, configuration, usage and logs. The schedule page separates user-owned schedules from plugin-managed and Core system schedules; managed schedules are changed through their owning plugin or system settings.
 
 To keep the next day from inheriting the previous day's recent context, open the Web UI configuration and enable **Conversation auto archive**. Set a daily `HH:mm` time and an IANA timezone such as `Asia/Taipei`; the setting is hot-reloaded and is disabled by default. At that time active Discord channel, thread/forum-post, and DM conversations are archived (history is retained and searchable, and model/reasoning/queue preferences are preserved). A Run already in progress finishes before its scope is archived. Disabling the option stops future runs; it does not unarchive existing conversations. `/new` remains available for an immediate manual rollover. In Docker, set the timezone explicitly rather than relying on the container's UTC default.
 

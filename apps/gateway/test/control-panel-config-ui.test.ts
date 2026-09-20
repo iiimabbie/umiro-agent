@@ -43,6 +43,17 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /path: 'conversation\.autoArchive\.time', type: 'time'/);
   assert.match(script, /path: 'conversation\.autoArchive\.timezone', type: 'text'/);
   assert.match(script, /subgroup: 'conversation-auto-archive'/);
+  assert.match(html, /id="userSchedules"/);
+  assert.match(html, /id="pluginSchedules"/);
+  assert.match(html, /id="systemSchedules"/);
+  assert.match(html, /我的排程/);
+  assert.match(html, /外掛排程/);
+  assert.match(html, /系統排程/);
+  assert.match(script, /owner\?\.kind === 'user'/);
+  assert.match(script, /function renderManagedSchedule/);
+  assert.match(script, /外掛設定/);
+  assert.match(script, /openConversationAutoArchiveSettings/);
+  assert.doesNotMatch(script.slice(script.indexOf('function renderManagedSchedule'), script.indexOf('function renderManagedSchedule') + 2500), /method: 'PATCH'|method: 'DELETE'/);
   assert.match(script, /preserveWhenHidden: true/);
   assert.match(script, /每天指定時間後會封存各 Discord 頻道/);
   assert.match(script, /停止追蹤/);

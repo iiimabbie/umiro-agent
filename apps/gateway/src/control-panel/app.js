@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 let file;
 let editingSchedule;
 let channelCatalog = new Map();
+let pluginCatalog = new Map();
 let channelRefreshTimer;
 let selectedChannelId;
 let loadedConfig;
@@ -780,41 +781,79 @@ function updateScheduleControls() {
   }, 250);
 }
 
+function scheduleLabel(x) {
+  const when = x.schedule.kind === 'once' ? new Date(x.schedule.at).toLocaleString() : x.schedule.expression;
+  const destination = x.destination?.channelId ? ' — ' + channelName(x.destination.channelId) : '';
+  const next = x.nextFireAt ? ' — 下次 ' + new Date(x.nextFireAt).toLocaleString() : '';
+  return x.name + ' — ' + when + ' — ' + x.timezone + destination + next + ' — ' + (x.enabled ? '啟用' : '停用');
+}
+
+function renderUserSchedule(x) {
+  const d = document.createElement('div'); d.className = 'schedule';
+  const label = document.createElement('span'); label.textContent = scheduleLabel(x);
+  const toggle = document.createElement('button'); toggle.type = 'button'; toggle.textContent = x.enabled ? '停用' : '啟用'; toggle.setAttribute('aria-label', (x.enabled ? '停用' : '啟用') + '排程 ' + x.name);
+  toggle.onclick = () => withBusy(toggle, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'PATCH', body: JSON.stringify({ enabled: !x.enabled }) }); await schedules(); showToast(x.enabled ? '排程已停用' : '排程已啟用', 'success'); }).catch(reportError);
+  const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = '編輯'; edit.onclick = () => {
+    editingSchedule = x.id;
+    $('scheduleName').value = x.name;
+    $('scheduleKind').value = x.schedule.kind;
+    $('scheduleWhen').value = x.schedule.kind === 'cron' ? x.schedule.expression : new Date(x.schedule.at).toISOString().slice(0, 16);
+    $('scheduleFrequency').value = 'custom';
+    $('scheduleTimezone').value = x.timezone;
+    $('schedulePrompt').value = x.prompt || '';
+    const destinationChannelId = x.destination?.channelId || '';
+    $('scheduleChannel').value = channelCatalog.has(destinationChannelId) ? destinationChannelId : '';
+    $('scheduleChannelId').value = channelCatalog.has(destinationChannelId) ? '' : destinationChannelId;
+    $('createSchedule').textContent = '儲存修改';
+    updateScheduleControls();
+  };
+  const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '刪除';
+  remove.onclick = async () => { if (!await confirmAction('刪除排程', '確定刪除「' + x.name + '」？這個操作無法復原。', '刪除')) return; await withBusy(remove, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'DELETE' }); await schedules(); showToast('排程已刪除', 'success'); }, '刪除中…').catch(reportError); };
+  d.append(label, toggle, edit, remove); return d;
+}
+
+function renderManagedSchedule(x, plugin) {
+  const d = document.createElement('div'); d.className = 'schedule managed-schedule';
+  const label = document.createElement('span'); label.textContent = scheduleLabel(x) + (x.owner.kind === 'plugin' ? ' — ' + x.owner.pluginId : '');
+  const action = document.createElement('button'); action.type = 'button';
+  if (x.owner.kind === 'plugin') {
+    action.textContent = '外掛設定'; action.setAttribute('aria-label', '設定外掛排程 ' + x.name);
+    action.disabled = !plugin;
+    action.title = plugin ? '在外掛設定中調整排程' : '找不到已安裝的外掛設定';
+    action.onclick = () => { if (plugin) configurePlugin(plugin); };
+  } else {
+    action.textContent = '前往設定'; action.setAttribute('aria-label', '前往系統設定 ' + x.name);
+    action.disabled = x.actions.settingsTarget !== 'conversation'; action.title = action.disabled ? '此系統排程沒有可用的設定入口' : '在對話設定中調整自動封存';
+    action.onclick = () => openConversationAutoArchiveSettings();
+  }
+  d.append(label, action); return d;
+}
+
+function renderScheduleGroup(container, items, emptyTitle, emptyDetail, emptyAction) {
+  container.replaceChildren(...items.map(renderUserSchedule));
+  if (items.length === 0) container.append(emptyState(emptyTitle, emptyDetail, emptyAction ? emptyAction.label : undefined, emptyAction ? emptyAction.action : undefined));
+}
+
+function openConversationAutoArchiveSettings() {
+  location.hash = '#config';
+  setTimeout(() => {
+    const field = document.querySelector('[data-config-path="conversation.autoArchive.enabled"]');
+    field?.scrollIntoView({ block: 'center' });
+    field?.querySelector('input')?.focus();
+  }, 0);
+}
+
 async function schedules() {
   const items = await api('/api/schedules');
-  $('schedules').replaceChildren(...items.map(x => {
-    const d = document.createElement('div');
-    d.className = 'schedule';
-    const destination = x.destination?.channelId ? ' — ' + channelName(x.destination.channelId) : '';
-    const label = document.createElement('span');
-    const next = x.nextFireAt ? ' — 下次 ' + new Date(x.nextFireAt).toLocaleString() : '';
-    label.textContent = x.name + ' — ' + (x.schedule.kind === 'once' ? new Date(x.schedule.at).toLocaleString() : x.schedule.expression) + destination + next + ' — ' + (x.enabled ? '啟用' : '停用');
-    const toggle = document.createElement('button');
-    toggle.textContent = x.enabled ? '停用' : '啟用';
-    toggle.onclick = () => withBusy(toggle, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'PATCH', body: JSON.stringify({ enabled: !x.enabled }) }); await schedules(); showToast(x.enabled ? '排程已停用' : '排程已啟用', 'success'); }).catch(reportError);
-    const edit = document.createElement('button');
-    edit.textContent = '編輯';
-    edit.onclick = () => {
-      editingSchedule = x.id;
-      $('scheduleName').value = x.name;
-      $('scheduleKind').value = x.schedule.kind;
-      $('scheduleWhen').value = x.schedule.kind === 'cron' ? x.schedule.expression : new Date(x.schedule.at).toISOString().slice(0, 16);
-      $('scheduleFrequency').value = 'custom';
-      $('scheduleTimezone').value = x.timezone;
-      $('schedulePrompt').value = x.input?.prompt || '';
-      const destinationChannelId = x.destination?.channelId || '';
-      $('scheduleChannel').value = channelCatalog.has(destinationChannelId) ? destinationChannelId : '';
-      $('scheduleChannelId').value = channelCatalog.has(destinationChannelId) ? '' : destinationChannelId;
-      $('createSchedule').textContent = '儲存修改';
-      updateScheduleControls();
-    };
-    const remove = document.createElement('button');
-    remove.textContent = '刪除';
-    remove.onclick = async () => { if (!await confirmAction('刪除排程', '確定刪除「' + x.name + '」？這個操作無法復原。', '刪除')) return; await withBusy(remove, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'DELETE' }); await schedules(); showToast('排程已刪除', 'success'); }, '刪除中…').catch(reportError); };
-    d.append(label, toggle, edit, remove);
-    return d;
-  }));
-  if (items.length === 0) $('schedules').append(emptyState('尚無排程', '使用上方表單建立第一個 Cron 或 Reminder。', '建立第一個排程', () => $('scheduleName').focus()));
+  const user = items.filter(x => x.owner?.kind === 'user');
+  const plugin = items.filter(x => x.owner?.kind === 'plugin');
+  const system = items.filter(x => x.owner?.kind === 'system');
+  if (plugin.length > 0 && pluginCatalog.size === 0) await loadPluginCatalog();
+  renderScheduleGroup($('userSchedules'), user, '尚無我的排程', '使用上方表單建立第一個 Cron 或 Reminder。', { label: '建立第一個排程', action: () => $('scheduleName').focus() });
+  $('pluginSchedules').replaceChildren(...plugin.map(x => renderManagedSchedule(x, pluginCatalog.get(x.owner.pluginId))));
+  if (plugin.length === 0) $('pluginSchedules').append(emptyState('尚無外掛排程', '已安裝外掛沒有註冊可顯示的排程。'));
+  $('systemSchedules').replaceChildren(...system.map(x => renderManagedSchedule(x)));
+  if (system.length === 0) $('systemSchedules').append(emptyState('尚無系統排程', '目前沒有由 Umiro 核心管理的排程。'));
 }
 
 async function pluginAction(action, source, workspace, config, removeSecrets = false) {
@@ -995,9 +1034,15 @@ function renderPluginGroup(container, items) {
 }
 
 async function plugins() {
-  const items = await api('/api/plugins');
+  const items = await loadPluginCatalog();
   renderPluginGroup($('pluginsBuiltin'), items.filter(x => x.source.startsWith('builtin:')));
   renderPluginGroup($('pluginsExternal'), items.filter(x => !x.source.startsWith('builtin:')));
+}
+
+async function loadPluginCatalog() {
+  const items = await api('/api/plugins');
+  pluginCatalog = new Map(items.filter(x => typeof x.manifest?.id === 'string').map(x => [x.manifest.id, x]));
+  return items;
 }
 
 async function runs() {

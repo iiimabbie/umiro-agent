@@ -313,10 +313,14 @@ pre:empty { display: none; }
 }
 .schedule:first-child, .plugin:first-child, .run:first-child, .channel:first-child { border-top: 0; }
 .schedule:hover, .plugin:hover, .run:hover, .channel:hover { background: var(--surface-hover); }
+.schedule-group { margin-top: 24px; }
+.schedule-group h3 { margin-bottom: 6px; }
+.schedule-group-help { margin: 0 0 8px; color: var(--muted); }
 .schedule > span, .run > span, .channel-info { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
 .channel-info { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; }
 .schedule button, .plugin button, .run button { margin: 0; padding: 5px 10px; font-size: 13px; }
 .channel-untrack { margin: 0; padding: 5px 10px; font-size: 13px; color: var(--danger); border-color: var(--danger); }
+.managed-schedule button:disabled { cursor: not-allowed; opacity: .6; }
 .run > button { font-family: var(--mono); }
 
 .plugin { align-items: center; gap: 8px; }

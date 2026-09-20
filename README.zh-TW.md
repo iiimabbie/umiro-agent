@@ -178,7 +178,7 @@ umo web token     # 印出存取 token
 umo web status
 ```
 
-控制台只綁 loopback（預設 `http://127.0.0.1:3210`）。可以看每個頻道目前的對話與封存的對話（聊天紀錄形式），以及外掛、排程、workspace 檔案、設定、用量與 log。
+控制台只綁 loopback（預設 `http://127.0.0.1:3210`）。可以看每個頻道目前的對話與封存的對話（聊天紀錄形式），以及外掛、排程、workspace 檔案、設定、用量與 log。排程頁會分成「我的排程」、「外掛排程」與「系統排程」；受管理排程要回到所屬外掛或系統設定調整，不提供一般排程的編輯、停用或刪除操作。
 
 若要避免隔天繼續帶入前一天的近期上下文，請在控制台的「對話」設定勾選「對話自動封存」，再設定每日 `HH:mm` 封存時間與 IANA 時區（例如 `Asia/Taipei`）。功能預設關閉，設定可 hot reload。到點時會封存 Discord 頻道、Thread／Forum post 與私訊的 active conversation；歷史不會刪除，仍可瀏覽與 semantic recall，model、reasoning、queue 等 scope 偏好也會保留。已在執行的 Run 會完成後補封存。取消勾選只停止未來排程，不會還原已封存對話；`/new` 仍可手動立即切換。Docker 請明確設定時區，避免容器預設 UTC 造成時間誤解。
 
