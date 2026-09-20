@@ -2,6 +2,8 @@ import type { InputEvent } from "@umiro/core/input";
 import type { Authority } from "@umiro/core/authorization";
 import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, TransportIdentity } from "@umiro/core/identity";
 import type { ExecutionStore } from "@umiro/core/ports";
+import type { JsonObject } from "@umiro/core/ports";
+import type { DeliveryIntent } from "@umiro/core/run";
 import type { ArtifactStore } from "@umiro/core";
 export * from "./client.js";
 export * from "./emoji.js";
@@ -184,6 +186,7 @@ export class DiscordDeliveryWorker {
     private readonly transport: DiscordTextTransport,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly artifacts?: Pick<ArtifactStore, "getArtifact">,
+    private readonly suppressDuplicate?: (intent: DeliveryIntent) => Promise<JsonObject | undefined>,
   ) {}
 
   async drain(signal?: AbortSignal): Promise<{ delivered: number; skipped: number }> {
@@ -198,6 +201,12 @@ export class DiscordDeliveryWorker {
       try {
         const text = intent.payload.text;
         if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
+        const duplicateEvidence = await this.suppressDuplicate?.(intent);
+        if (duplicateEvidence) {
+          await this.store.markDeliveryDelivered(intent.id, this.now(), duplicateEvidence);
+          delivered++;
+          continue;
+        }
         const preparedText = this.transport.prepareText?.(text) ?? text;
         const artifactIds = intent.payload.artifactIds;
         if (!preparedText.trim() && !(Array.isArray(artifactIds) && artifactIds.length)) {

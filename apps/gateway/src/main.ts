@@ -35,6 +35,7 @@ import { describeImageArtifacts } from "./image-description.js";
 import { analyzeDiscordIngress, buildDiscordAnalysisText } from "./ingress-analysis.js";
 import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
+import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
 
 const paths = umiroPaths();
 const pendingRestartFile = `${paths.state}/pending-restart.json`;
@@ -319,7 +320,7 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
 });
 const runtimeSecrets = () => [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env[EMBEDDING_BASE_URL_SECRET], process.env[EMBEDDING_API_KEY_SECRET], process.env.GOOGLE_CLIENT_SECRET];
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
-const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store);
+const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store, intent => duplicateDiscordSendEvidence(store, intent));
 const replies = { async send(runId: string, text: string, signal?: AbortSignal) {
   const checkpoint = await store.getCheckpoint(runId);
   const data = checkpoint?.data;

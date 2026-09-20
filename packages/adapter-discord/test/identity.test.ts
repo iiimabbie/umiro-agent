@@ -60,6 +60,20 @@ test("delivers pending Discord output and records confirmation", async () => {
   assert.deepEqual(marked, ["d"]);
 });
 
+test("marks a confirmed duplicate delivered without sending it again", async () => {
+  let evidence: Record<string, unknown> | undefined;
+  let sends = 0;
+  const intent = { id: "duplicate", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "hello" }, state: "pending" as const, createdAt: "now" };
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [intent]; },
+    async markDeliveryDelivered(_id, _at, value) { evidence = value; },
+    async markDeliveryFailed() {},
+  }, { async sendText() { sends++; return { messageId: "unexpected" }; } }, () => "later", undefined, async () => ({ transport: "discord", channelId: "c", messageId: "existing", skipped: "duplicate_tool_delivery" }));
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.equal(sends, 0);
+  assert.deepEqual(evidence, { transport: "discord", channelId: "c", messageId: "existing", skipped: "duplicate_tool_delivery" });
+});
+
 test("chunks long Discord output and records every delivered message", async () => {
   const sent: string[] = [];
   let evidence: Record<string, unknown> | undefined;
