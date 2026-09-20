@@ -351,7 +351,8 @@ const namedConversationScopes = async (locations: readonly ConversationLocation[
     }];
   }));
 };
-const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "UMIRO_WEB_UI_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_BASE_URL_SECRET, EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => [...(module.manifest.requiredSecrets ?? []), ...(module.manifest.optionalSecrets ?? [])]), ...disabledManifests.flatMap(manifest => [...(manifest.requiredSecrets ?? []), ...(manifest.optionalSecrets ?? [])])]);
+const editableSecretNames = new Set(["DISCORD_TOKEN", "UMIRO_OWNER_DISCORD_ID", "LLM_BASE_URL", "LLM_API_KEY", EMBEDDING_BASE_URL_SECRET, EMBEDDING_API_KEY_SECRET, ...modules.flatMap(module => [...(module.manifest.requiredSecrets ?? []), ...(module.manifest.optionalSecrets ?? [])]), ...disabledManifests.flatMap(manifest => [...(manifest.requiredSecrets ?? []), ...(manifest.optionalSecrets ?? [])])]);
+editableSecretNames.delete("UMIRO_WEB_UI_TOKEN");
 const persistSecrets = async (values: Readonly<Record<string, string>>): Promise<void> => {
   const source = await readFile(paths.secrets, "utf8").catch(() => "");
   const lines = source.split(/\r?\n/);

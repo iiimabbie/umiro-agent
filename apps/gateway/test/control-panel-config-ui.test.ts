@@ -7,12 +7,13 @@ const htmlUrl = new URL("../src/control-panel/index.html", import.meta.url);
 const scriptUrl = new URL("../src/control-panel/app.js", import.meta.url);
 const themeScriptUrl = new URL("../src/control-panel/theme.js", import.meta.url);
 const cssUrl = new URL("../src/control-panel/app.css", import.meta.url);
+const mainUrl = new URL("../../src/main.ts", import.meta.url);
 
 test("control-panel settings use typed controls instead of one raw config textarea", async () => {
-  const [html, script, themeScript, css] = await Promise.all([readFile(htmlUrl, "utf8"), readFile(scriptUrl, "utf8"), readFile(themeScriptUrl, "utf8"), readFile(cssUrl, "utf8")]);
+  const [html, script, themeScript, css, main] = await Promise.all([readFile(htmlUrl, "utf8"), readFile(scriptUrl, "utf8"), readFile(themeScriptUrl, "utf8"), readFile(cssUrl, "utf8"), readFile(mainUrl, "utf8")]);
 
   assert.match(html, /id="configForm"/);
-  assert.match(html, /id="secretForm"/);
+  assert.doesNotMatch(html, /id="config-secrets"|id="secretForm"|id="saveSecrets"/);
   assert.doesNotMatch(html, /<textarea id="config"/);
   assert.doesNotMatch(html, /查看 API 可用模型/);
   assert.doesNotThrow(() => new Script(script));
@@ -27,9 +28,14 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /input\.type = 'radio'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'secret'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'secret', inputType: 'url'/);
-  assert.match(script, /LLM_BASE_URL: \{ label: 'LLM Base URL'/);
-  assert.match(script, /name === 'UMIRO_OWNER_DISCORD_ID' \|\| name === 'LLM_BASE_URL' \? 'text' : 'password'/);
+  assert.match(script, /title: '模型與 Context'[\s\S]*?secretName: 'LLM_BASE_URL'[\s\S]*?secretName: 'LLM_API_KEY'/);
+  assert.match(script, /title: 'Discord'[\s\S]*?secretName: 'DISCORD_TOKEN'[\s\S]*?secretName: 'UMIRO_OWNER_DISCORD_ID'/);
+  assert.doesNotMatch(script, /UMIRO_WEB_UI_TOKEN/);
+  const editableSecrets = main.slice(main.indexOf("const editableSecretNames"), main.indexOf("const persistSecrets"));
+  assert.match(editableSecrets, /editableSecretNames\.delete\("UMIRO_WEB_UI_TOKEN"\)/);
   assert.doesNotMatch(script, /\$\('config-embedding-baseUrl'\)\.value = ''/);
+  assert.match(script, /const secretFields = configFields\(\)\.filter\(field => field\.type === 'secret'\)/);
+  assert.match(script, /if \(!field\.publicValue\) control\.value = ''/);
   assert.match(script, /field\.type === 'model' && models\.length === 0/);
   assert.match(script, /document\.createElement\('select'\)/);
   assert.match(script, /className = 'config-tooltip'/);
@@ -45,6 +51,16 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(html, /id="scheduleTime" type="time"/);
   assert.doesNotMatch(html, /id="scheduleHour"|id="scheduleMinute"/);
   assert.match(script, /Number\(minute\) \+ ' ' \+ Number\(hour\)/);
+  assert.match(script, /if \(button\.textContent === busyText\) button\.textContent = original/);
+  const scheduleReset = script.slice(script.indexOf("function resetScheduleForm"), script.indexOf("let previewTimer"));
+  for (const id of ["scheduleName", "scheduleWhen", "schedulePrompt", "scheduleChannel", "scheduleChannelId"]) assert.match(scheduleReset, new RegExp(`\\$\\('${id}'\\)\\.value = ''`));
+  assert.match(scheduleReset, /editingSchedule = undefined/);
+  assert.match(scheduleReset, /\$\('scheduleKind'\)\.value = 'cron'/);
+  assert.match(scheduleReset, /\$\('scheduleFrequency'\)\.value = 'daily'/);
+  assert.match(scheduleReset, /\$\('scheduleTime'\)\.value = '09:00'/);
+  assert.match(scheduleReset, /updateScheduleControls\(\)/);
+  assert.match(script, /resetScheduleForm\(\);\s*await schedules\(\)/);
+  assert.match(script, /await pluginAction\('install',[\s\S]*?\$\('pluginSource'\)\.value = ''; \$\('pluginWorkspace'\)\.value = '';/);
   assert.match(script, /configSchema/);
   assert.match(script, /requiredSecrets/);
   assert.match(script, /optionalSecrets/);

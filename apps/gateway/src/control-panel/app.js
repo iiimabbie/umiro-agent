@@ -5,7 +5,6 @@ let channelCatalog = new Map();
 let channelRefreshTimer;
 let selectedChannelId;
 let loadedConfig;
-let secretNames = [];
 let configSchema;
 let configDirty = false;
 let workspaceDirty = false;
@@ -26,7 +25,7 @@ async function withBusy(button, work, busyText = '處理中…') {
   if (!button || button.disabled) return;
   const original = button.textContent;
   button.disabled = true; button.textContent = busyText;
-  try { return await work(); } finally { button.disabled = false; button.textContent = original; }
+  try { return await work(); } finally { button.disabled = false; if (button.textContent === busyText) button.textContent = original; }
 }
 
 function confirmAction(title, message, confirmText = '確認') {
@@ -64,6 +63,8 @@ function markWorkspaceDirty() {
 
 const CONFIG_GROUPS = [
   { title: '模型與 Context', fields: [
+    { path: 'LLM_BASE_URL', type: 'secret', secretName: 'LLM_BASE_URL', inputType: 'url', publicValue: true, wide: true, label: 'LLM Base URL', description: 'OpenAI-compatible API 的端點，例如 https://api.openai.com/v1。', defaultValue: null, risk: '模型請求會傳送到此 endpoint；只能使用信任的服務。', restartRequired: false },
+    { path: 'LLM_API_KEY', type: 'secret', secretName: 'LLM_API_KEY', wide: true, label: 'LLM API Key', description: '主要模型 provider 的密鑰；只寫入 secrets.env，不會回傳已設定值。', defaultValue: null, risk: '這是 provider 憑證，只應填入信任的服務。', restartRequired: false },
     { path: 'protocol', type: 'select', options: [['openai_responses', 'OpenAI Responses'], ['openai_chat_completions', 'Chat Completions']] },
     { path: 'model', type: 'model', required: true },
     { path: 'modelCapabilities', type: 'checks', wide: true, options: [['vision', '圖片理解'], ['function_tools', '工具呼叫'], ['hosted_web_search', 'Hosted Web Search'], ['hosted_image_generation', 'Hosted Image Generation'], ['hosted_code_execution', 'Hosted Code Execution']] },
@@ -75,13 +76,15 @@ const CONFIG_GROUPS = [
   { title: 'Embedding 與跨對話記憶', fields: [
     { path: 'embedding.provider', type: 'select', options: [['disabled', '停用（只使用 FTS）'], ['gemini', 'Gemini'], ['openai-compatible', 'OpenAI-compatible']] },
     { path: 'embedding.model', type: 'text', placeholder: '例如 voyage-3.5-lite' },
-    { path: 'embedding.baseUrl', type: 'secret', inputType: 'url', secretName: 'UMIRO_EMBEDDING_BASE_URL', wide: true, placeholder: 'https://api.example.com/v1' },
+    { path: 'embedding.baseUrl', type: 'secret', inputType: 'url', secretName: 'UMIRO_EMBEDDING_BASE_URL', publicValue: true, wide: true, placeholder: 'https://api.example.com/v1' },
     { path: 'embedding.apiKey', type: 'secret', secretName: 'UMIRO_EMBEDDING_API_KEY', wide: true },
     { path: 'embedding.requestsPerMinute', type: 'number', min: 1, max: 600, step: 1 },
     { path: 'embedding.recallLimit', type: 'number', min: 1, max: 20, step: 1 },
     { path: 'embedding.minSimilarity', type: 'number', min: 0, max: 1, step: 0.01 },
   ] },
   { title: 'Discord', fields: [
+    { path: 'DISCORD_TOKEN', type: 'secret', secretName: 'DISCORD_TOKEN', wide: true, label: 'Discord Bot Token', description: 'Discord bot 的登入憑證；只寫入 secrets.env，不會回傳已設定值。', defaultValue: null, risk: '任何取得此 token 的人都可能控制 bot，請勿分享。', restartRequired: true },
+    { path: 'UMIRO_OWNER_DISCORD_ID', type: 'secret', secretName: 'UMIRO_OWNER_DISCORD_ID', inputType: 'text', wide: true, label: 'Owner Discord ID', description: '唯一具有 Owner 身分的 Discord 使用者 ID。', defaultValue: null, risk: '填錯會把最高權限指派給錯誤帳號，或讓真正 Owner 失去權限。', restartRequired: false },
     { path: 'discord.allowedGuilds', type: 'list', placeholder: '每行一個 guild ID' },
     { path: 'discord.allowedChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
     { path: 'discord.ignoredChannels', type: 'list', placeholder: '每行一個 channel 或 thread ID' },
@@ -107,11 +110,6 @@ const CONFIG_GROUPS = [
 
 const configFields = () => CONFIG_GROUPS.flatMap(group => group.fields);
 const fieldId = path => 'config-' + path.replace(/[^A-Za-z0-9_-]/g, '-');
-const SECRET_PRESENTATION = {
-  LLM_BASE_URL: { label: 'LLM Base URL', description: 'OpenAI-compatible API 的端點，例如 https://api.openai.com/v1。重新啟動 Gateway 後套用。' },
-  UMIRO_EMBEDDING_API_KEY: { label: 'Embedding API Key', description: '供目前選擇的 Embedding provider 使用，密鑰只寫入 secrets.env。' },
-};
-const SECRET_ORDER = ['LLM_BASE_URL', 'LLM_API_KEY', 'UMIRO_EMBEDDING_API_KEY', 'DISCORD_TOKEN', 'UMIRO_OWNER_DISCORD_ID', 'UMIRO_WEB_UI_TOKEN'];
 let secretStatus = {};
 
 function configHeaderOffset() {
@@ -255,11 +253,6 @@ function renderConfigForm(schema, config, models) {
     button.onclick = () => jumpToConfig($('config-group-' + index));
     return button;
   }));
-  const secretsButton = document.createElement('button');
-  secretsButton.type = 'button';
-  secretsButton.textContent = 'Secrets';
-  secretsButton.onclick = () => jumpToConfig($('config-secrets'));
-  nav.prepend(secretsButton);
   const groups = CONFIG_GROUPS.map((group, groupIndex) => {
     const section = document.createElement('section');
     section.className = 'config-group'; section.id = 'config-group-' + groupIndex; section.dataset.configGroup = group.title;
@@ -268,11 +261,11 @@ function renderConfigForm(schema, config, models) {
     const grid = document.createElement('div');
     grid.className = 'config-grid';
     for (const field of group.fields) {
-      const explanation = schema[field.path];
+      const explanation = field.type === 'secret' && field.label ? field : schema[field.path];
       if (!explanation) continue;
       const wrapper = document.createElement('div');
       wrapper.className = 'config-field' + (field.wide ? ' config-wide' : '');
-      wrapper.dataset.configPath = field.path; wrapper.dataset.configLabel = explanation.label;
+      wrapper.dataset.configPath = field.secretName || field.path; wrapper.dataset.configLabel = explanation.label;
       const label = document.createElement('label');
       label.className = 'config-label' + (explanation.restartRequired ? ' config-restart-required' : '');
       label.tabIndex = 0;
@@ -285,7 +278,7 @@ function renderConfigForm(schema, config, models) {
       label.append(labelText, tooltip);
       const path = document.createElement('div');
       path.className = 'config-path';
-      path.textContent = field.path;
+      path.textContent = field.secretName || field.path;
       const value = getPath(config, field.path);
       const controlValue = value === undefined && field.type !== 'json' ? explanation.defaultValue : value;
       wrapper.append(label, path, configControl(field, controlValue, models));
@@ -639,6 +632,21 @@ function scheduleInput() {
   return { kind, ...(kind === 'cron' ? { expression: scheduleExpression() } : { at: new Date($('scheduleWhen').value).toISOString() }), timezone: $('scheduleTimezone').value };
 }
 
+function resetScheduleForm() {
+  editingSchedule = undefined;
+  $('scheduleName').value = '';
+  $('scheduleKind').value = 'cron';
+  $('scheduleFrequency').value = 'daily';
+  $('scheduleTime').value = '09:00';
+  $('scheduleWeekday').value = '1';
+  $('scheduleWhen').value = '';
+  $('schedulePrompt').value = '';
+  $('scheduleChannel').value = '';
+  $('scheduleChannelId').value = '';
+  $('createSchedule').textContent = '建立';
+  updateScheduleControls();
+}
+
 let previewTimer;
 function updateScheduleControls() {
   const once = $('scheduleKind').value === 'once';
@@ -905,24 +913,6 @@ async function connect() {
   secretStatus = secrets;
   renderConfigForm(schema, config, models);
   renderRuntime(runtime);
-  secretNames = SECRET_ORDER.filter(name => !name.startsWith('UMIRO_EMBEDDING_') && Object.hasOwn(secrets, name));
-  $('secretForm').replaceChildren(...secretNames.map(name => {
-    const presentation = SECRET_PRESENTATION[name];
-    const label = document.createElement('label');
-    label.className = 'secret-field';
-    label.textContent = presentation?.label ?? name;
-    if (presentation?.description) label.title = presentation.description;
-    const input = document.createElement('input');
-    input.id = 'secret-' + name;
-    input.type = name === 'UMIRO_OWNER_DISCORD_ID' || name === 'LLM_BASE_URL' ? 'text' : 'password';
-    input.autocomplete = 'off';
-    if (typeof secrets[name] === 'string') input.value = secrets[name];
-    input.placeholder = secrets[name] ? '已設定；留空不變' : '尚未設定';
-    const status = document.createElement('small');
-    status.textContent = secrets[name] ? '已設定' : '未設定';
-    label.append(input, status);
-    return label;
-  }));
   $('files').replaceChildren(...names.map(n => {
     const b = document.createElement('button');
     b.textContent = n;
@@ -963,15 +953,17 @@ $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
   try {
     const next = readConfigForm();
     const result = await api('/api/config', { method: 'PUT', body: JSON.stringify(next) });
-    const embeddingSecrets = Object.fromEntries([
-      ['UMIRO_EMBEDDING_BASE_URL', $('config-embedding-baseUrl')?.value.trim()],
-      ['UMIRO_EMBEDDING_API_KEY', $('config-embedding-apiKey')?.value.trim()],
-    ].filter(([, value]) => value));
+    const secretFields = configFields().filter(field => field.type === 'secret');
+    const secretValues = Object.fromEntries(secretFields.map(field => [field.secretName, $(fieldId(field.path))?.value.trim()]).filter(([, value]) => value));
     let secretResult = { restartRequired: [] };
-    if (Object.keys(embeddingSecrets).length) {
-      secretResult = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(embeddingSecrets) });
-      for (const name of Object.keys(embeddingSecrets)) secretStatus[name] = true;
-      $('config-embedding-apiKey').value = '';
+    if (Object.keys(secretValues).length) {
+      secretResult = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(secretValues) });
+      for (const field of secretFields.filter(candidate => Object.hasOwn(secretValues, candidate.secretName))) {
+        secretStatus[field.secretName] = field.publicValue ? secretValues[field.secretName] : true;
+        const control = $(fieldId(field.path));
+        if (!field.publicValue) control.value = '';
+        control.placeholder = '已設定；留空不變';
+      }
     }
     loadedConfig = next; markConfigSaved();
     const restartRequired = [...new Set([...(result.restartRequired ?? []), ...(secretResult.restartRequired ?? [])])];
@@ -979,11 +971,6 @@ $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
     const messages = [...(result.applied?.length ? ['即時套用：' + result.applied.join('、')] : []), ...(restartRequired.length ? ['需重啟：' + restartRequired.join('、')] : [])];
     showToast('設定已儲存' + (messages.length ? '；' + messages.join('；') : ''), 'success');
   } catch (error) { reportError(error); }
-}, '儲存中…');
-$('saveSecrets').onclick = () => withBusy($('saveSecrets'), async () => {
-  const values = Object.fromEntries(secretNames.map(name => [name, $('secret-' + name).value]).filter(([, value]) => value.trim()));
-  if (!Object.keys(values).length) return showToast('請填入至少一個要更新的欄位', 'error');
-  try { const result = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(values) }); for (const name of Object.keys(values)) $('secret-' + name).value = ''; $('restartGateway').hidden = !(result.restartRequired?.length); showToast('Secrets 已儲存', 'success'); await connect(); } catch (error) { reportError(error); }
 }, '儲存中…');
 $('saveDocument').onclick = () => withBusy($('saveDocument'), async () => { if (!file) return showToast('請先選擇文件', 'error'); try { await api('/api/workspace/' + encodeURIComponent(file), { method: 'PUT', body: JSON.stringify({ content: $('document').value }) }); workspaceDirty = false; workspaceSavedAt = new Date(); $('workspaceSaveState').textContent = '最後儲存：' + workspaceSavedAt.toLocaleTimeString(); $('workspaceSaveState').className = 'save-state saved'; showToast(file + ' 已儲存', 'success'); } catch (error) { reportError(error); } }, '儲存中…');
 $('refreshSchedules').onclick = () => withBusy($('refreshSchedules'), schedules).catch(reportError);
@@ -1004,13 +991,12 @@ $('createSchedule').onclick = () => withBusy($('createSchedule'), async () => {
   };
   const path = editingSchedule ? '/api/schedules/' + encodeURIComponent(editingSchedule) : '/api/schedules';
   try { await api(path, { method: editingSchedule ? 'PATCH' : 'POST', body: JSON.stringify(body) });
-    editingSchedule = undefined;
-    $('createSchedule').textContent = '建立';
+    resetScheduleForm();
     await schedules(); showToast('排程已儲存', 'success');
   } catch (error) { reportError(error); }
 }, '儲存中…');
 $('refreshPlugins').onclick = () => withBusy($('refreshPlugins'), plugins).catch(reportError);
-$('installPlugin').onclick = () => withBusy($('installPlugin'), async () => { try { await pluginAction('install', $('pluginSource').value, $('pluginWorkspace').value || undefined); showToast('外掛已安裝，重啟後完整生效', 'success'); } catch (error) { reportError(error); } }, '安裝中…');
+$('installPlugin').onclick = () => withBusy($('installPlugin'), async () => { try { await pluginAction('install', $('pluginSource').value, $('pluginWorkspace').value || undefined); $('pluginSource').value = ''; $('pluginWorkspace').value = ''; showToast('外掛已安裝，重啟後完整生效', 'success'); } catch (error) { reportError(error); } }, '安裝中…');
 $('refreshRuns').onclick = () => withBusy($('refreshRuns'), runs).catch(reportError);
 $('refreshUsage').onclick = () => withBusy($('refreshUsage'), usage).catch(reportError);
 $('refreshLogs').onclick = () => withBusy($('refreshLogs'), logs).catch(reportError);
