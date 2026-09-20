@@ -161,6 +161,7 @@ External plugins add capabilities and are installed separately. The official col
 | `tool-activity` | A live "what the agent is doing" message in Discord while a run uses tools |
 | `daily-report` | Scheduled daily summary |
 | `diary` | Reconstructs the agent's first-person daily journal from canonical conversation history |
+| `intent-analyzer` | Optional reply-intent and model-visible-tool analysis |
 
 ```bash
 umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
@@ -175,6 +176,12 @@ Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin
 Disabling a plugin unregisters its tools, policies, hooks, jobs, commands, skills, and search projections, and lifecycle-disables its schedules until the plugin is enabled again. Removing a plugin also deletes its owned schedules and search projections. User data produced by the plugin, such as journals and reports, is preserved.
 
 Disabling a plugin always retains its declared secrets, and removing one retains them by default. The control panel's remove modal can explicitly request secret cleanup. The CLI equivalent is `umo plugin remove <source> [--workspace <name>] --remove-secrets`; it removes only secrets declared by the target plugin that are exclusive to it. Core secrets and secrets still declared by any other installed plugin are retained.
+
+### Optional intent analyzer
+
+The official `intent-analyzer` plugin can make one advisory decision per text turn: whether to reply and which registered tools should be visible to the model. Hard Discord ignores are decided first and never call the analyzer. A negative reply decision records an observed message without creating a Run, typing indicator, attachment import or model call; failures and timeouts fall back to the normal trigger policy. Tool visibility is only a model-facing subset: authorization and execution remain in Core, and hidden or hallucinated tools are rejected by the runtime.
+
+The plugin is inert until configured through WebUI or CLI. It supports an OpenAI Chat Completions backend and the Jev TypeSafe backend. Only the current turn's text and model-facing tool definitions are sent; history, memory, secrets, tool results and runtime authorization are not. Jev uses `POST https://api.typesafe.ai/v1/systemone` and the optional `TYPESAFE_API_KEY` secret. See the external plugin repository for configuration details.
 
 ## CLI
 

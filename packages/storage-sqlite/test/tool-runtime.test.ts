@@ -92,9 +92,13 @@ test("registry validates schemas, names, duplicates, and model definitions", () 
   const registry = new ToolRegistry();
   const tool = echoTool(async input => ({ ok: true, output: input, effectStatus: "not_applicable" }));
   registry.register(tool);
+  registry.register({ ...tool, name: "test.other", description: "Other tool" });
   assert.deepEqual(registry.validateInput(tool.name, { text: "hello" }), { valid: true, errors: [] });
   assert.equal(registry.validateInput(tool.name, { text: 1 }).valid, false);
-  assert.deepEqual(registry.modelDefinitions(), [{ name: tool.name, description: tool.description, parameters: tool.inputSchema }]);
+  assert.deepEqual(registry.modelDefinitions().map(item => item.name), ["test.echo", "test.other"]);
+  assert.deepEqual(registry.modelDefinitions([]), []);
+  assert.deepEqual(registry.modelDefinitions([tool.name, "missing"]).map(item => item.name), [tool.name]);
+  assert.deepEqual(registry.analysisCandidates().map(item => item.name), ["test.echo", "test.other"]);
   assert.throws(() => registry.register(tool), /duplicate tool registration/);
   assert.throws(() => registry.register({ ...tool, name: "BAD NAME" }), /invalid tool name/);
 });

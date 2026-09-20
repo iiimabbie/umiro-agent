@@ -15,17 +15,6 @@ test("Discord thread context exposes its parent Forum as trusted transport metad
   assert.equal(blocks[0]!.retention, "essential");
 });
 
-test("Discord output policy defines an explicit no-text response", async () => {
-  const blocks = await discordOutputPolicyProvider.load({
-    runId: "run",
-    execution: { actor: { id: "member", kind: "human", roles: ["member"] }, authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "scoped" }, origin: { kind: "interactive", transport: "discord", conversationId: "conversation" } },
-    prompt: "hi",
-    inputEvent: { id: "discord:message", occurredAt: "now", identity: { transport: "discord", externalId: "member", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" }, content: [{ type: "text", text: "hi" }] },
-  });
-  assert.match(blocks[0]?.content ?? "", /exactly NO_REPLY/);
-  assert.equal(blocks[0]?.instructionAuthority, "scoped");
-});
-
 test("current time context is available to every Run with an explicit timezone", async () => {
   const provider = createCurrentTimeContextProvider(() => new Date("2026-09-12T01:02:03.000Z"), "Europe/London");
   const blocks = await provider.load({ runId: "scheduled", execution: {} as never, prompt: "today?" });
@@ -41,4 +30,13 @@ test("Discord Application Emoji names are injected only for Discord Runs", async
   assert.doesNotMatch(blocks[0]?.content ?? "", /bad-name/);
   assert.equal(blocks[0]?.instructionAuthority, "none");
   assert.deepEqual(await provider.load({ ...request, inputEvent: { ...request.inputEvent, identity: { ...request.inputEvent.identity, transport: "test" } } }), []);
+});
+
+test("an accepted Discord Run requires final text without a silence sentinel", async () => {
+  const request = { runId: "run", execution: {} as never, prompt: "hi", inputEvent: { id: "discord:message", occurredAt: "now", identity: { transport: "discord", externalId: "owner", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: "hi" }] } };
+  const blocks = await discordOutputPolicyProvider.load(request);
+  assert.equal(blocks.length, 1);
+  assert.match(blocks[0]?.content ?? "", /non-empty final text response/);
+  assert.equal(blocks[0]?.instructionAuthority, "scoped");
+  assert.deepEqual(await discordOutputPolicyProvider.load({ ...request, inputEvent: { ...request.inputEvent, identity: { ...request.inputEvent.identity, transport: "test" } } }), []);
 });

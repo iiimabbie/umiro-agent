@@ -207,10 +207,11 @@ test("startup coordinator resumes a model cursor from its durable checkpoint", a
         runId: run.id,
         version: 1,
         data: {
-          version: 1,
+          version: 2,
           model: "fake-model",
           messages: [{ role: "user", content: "resume me" }],
           usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+          visibleToolNames: ["test.visible"],
         },
         updatedAt: at,
       },
@@ -223,6 +224,7 @@ test("startup coordinator resumes a model cursor from its durable checkpoint", a
       const model: ModelPort = {
         async generate(request) {
           requests.push(structuredClone(request));
+          assert.deepEqual(request.tools?.map(tool => tool.name), ["test.visible"]);
           return {
             text: "resumed",
             toolCalls: [],
@@ -233,7 +235,11 @@ test("startup coordinator resumes a model cursor from its durable checkpoint", a
         },
       };
       let nextId = 0;
-      const engine = new HeadlessRunEngine(model, new ToolRegistry(), afterRestart, {
+      const registry = new ToolRegistry();
+      const tool = (name: string): ToolDefinition => ({ name, description: name, inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.recover", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true, output: null, effectStatus: "not_applicable" }; } });
+      registry.register(tool("test.visible"));
+      registry.register(tool("test.hidden"));
+      const engine = new HeadlessRunEngine(model, registry, afterRestart, {
         now: () => recoveredAt,
         createId: kind => `${kind}-resume-${++nextId}`,
       });

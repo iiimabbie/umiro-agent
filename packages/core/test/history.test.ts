@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildInitialMessages, conversationHistoryToMessages, estimateModelMessageTokens, partitionContextTokenBudget } from "../src/index.js";
+import { buildInitialMessages, compactModelMessages, conversationHistoryToMessages, estimateModelMessageTokens, estimateModelRequestTokens, partitionContextTokenBudget, ModelContextBudgetError } from "../src/index.js";
 
 test("conversation history projection preserves identity, ordering, attachments, and replies", () => {
   const messages = conversationHistoryToMessages([
@@ -35,4 +35,27 @@ test("binary media payload size does not consume the text context budget", () =>
   const shortImage = estimateModelMessageTokens({ role: "user", content: [{ type: "image", url: "data:image/png;base64,short" }] });
   const longImage = estimateModelMessageTokens({ role: "user", content: [{ type: "image", url: `data:image/png;base64,${"A".repeat(5_000_000)}` }] });
   assert.equal(longImage, shortImage);
+});
+
+test("large tool projections are bounded and retain a valid latest pairing", () => {
+  const messages = [
+    { role: "system" as const, content: "system" },
+    { role: "user" as const, content: "current" },
+    { role: "assistant" as const, content: "", toolCalls: [{ id: "old", name: "lookup", input: {} }] },
+    { role: "tool" as const, toolCallId: "old", content: "old result".repeat(2_000) },
+    { role: "assistant" as const, content: "", toolCalls: [{ id: "new", name: "lookup", input: {} }] },
+    { role: "tool" as const, toolCallId: "new", content: "new result".repeat(20_000) },
+  ];
+  const tools = [{ name: "lookup", description: "lookup", parameters: { type: "object" } }];
+  const compacted = compactModelMessages(messages, tools, 500);
+  assert.ok(estimateModelRequestTokens(compacted, tools) <= 500);
+  const assistantIds = compacted.flatMap(message => message.role === "assistant" ? (message.toolCalls ?? []).map(call => call.id) : []);
+  const toolIds = compacted.filter(message => message.role === "tool").map(message => message.toolCallId);
+  assert.deepEqual(toolIds, assistantIds);
+  assert.equal(compacted.some(message => message.role === "assistant" && message.toolCalls?.some(call => call.id === "old")), false);
+  assert.equal(compacted.some(message => message.role === "tool" && message.toolCallId === "new"), true);
+});
+
+test("necessary content that cannot be compacted fails locally", () => {
+  assert.throws(() => compactModelMessages([{ role: "user", content: "x".repeat(20_000) }], [], 10), ModelContextBudgetError);
 });

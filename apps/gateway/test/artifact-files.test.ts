@@ -59,6 +59,7 @@ test("Discord imports accept CDN-transformed sizes and use the returned media ty
     const artifact = await service.importDiscord({ url: "https://cdn.discordapp.com/converted", filename: "photo.png", size: 1, mediaType: "image/png" }, "owner", "message");
     assert.equal(artifact.size, 3);
     assert.equal(artifact.mediaType, "image/webp");
+    assert.deepEqual([...await readFile(artifact.location)], [1, 2, 3]);
   } finally { globalThis.fetch = previousFetch; await rm(root, { recursive: true, force: true }); }
 });
 

@@ -28,8 +28,31 @@ export interface DiscordMessageEnvelope {
   readonly replyAuthorId?: string;
   readonly replyToContent?: string;
   readonly replyToCreatedAt?: string;
-  readonly replyToAttachments?: readonly { readonly id: string; readonly url: string; readonly filename: string; readonly size: number; readonly mediaType?: string }[];
-  readonly attachments?: readonly { readonly id: string; readonly url: string; readonly filename: string; readonly size: number; readonly mediaType?: string }[];
+  readonly replyToAttachments?: readonly DiscordAttachmentEnvelope[];
+  readonly attachments?: readonly DiscordAttachmentEnvelope[];
+}
+
+export interface DiscordAttachmentEnvelope {
+  readonly id: string;
+  readonly url: string;
+  readonly filename: string;
+  readonly size: number;
+  readonly mediaType?: string;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+/** Normalize discord.js attachment fields without carrying nulls downstream. */
+export function toDiscordAttachmentEnvelope(attachment: { readonly id: string; readonly url: string; readonly name: string; readonly size: number; readonly contentType?: string | null; readonly width?: number | null; readonly height?: number | null }): DiscordAttachmentEnvelope {
+  return {
+    id: attachment.id,
+    url: attachment.url,
+    filename: attachment.name,
+    size: attachment.size,
+    ...(attachment.contentType ? { mediaType: attachment.contentType } : {}),
+    ...(typeof attachment.width === "number" && Number.isFinite(attachment.width) ? { width: attachment.width } : {}),
+    ...(typeof attachment.height === "number" && Number.isFinite(attachment.height) ? { height: attachment.height } : {}),
+  };
 }
 
 export function normalizeDiscordMentions(content: string, users: ReadonlyMap<string, string>): string {
@@ -177,8 +200,8 @@ export class DiscordDeliveryWorker {
         if (typeof text !== "string") throw new TypeError(`Discord delivery ${intent.id} has no text payload`);
         const preparedText = this.transport.prepareText?.(text) ?? text;
         const artifactIds = intent.payload.artifactIds;
-        if ((!preparedText.trim() || preparedText.trim() === "NO_REPLY") && !(Array.isArray(artifactIds) && artifactIds.length)) {
-          await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", channelId: intent.destination.channelId, skipped: "no_reply" });
+        if (!preparedText.trim() && !(Array.isArray(artifactIds) && artifactIds.length)) {
+          await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", channelId: intent.destination.channelId, skipped: "empty_text" });
           delivered++;
           continue;
         }

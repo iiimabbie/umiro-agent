@@ -33,6 +33,13 @@ export class ContextEngine {
 
     const visible: ContextBlock[] = [];
     const seenBlockIds = new Set<string>();
+    for (const block of request.precomputedBlocks ?? []) {
+      validateBlock(block, block.providerId);
+      if (block.influence !== "information" || block.instructionAuthority !== "none") throw new TypeError(`precomputed context block ${block.id} must be information-only`);
+      if (seenBlockIds.has(block.id)) throw new Error(`duplicate context block id: ${block.id}`);
+      seenBlockIds.add(block.id);
+      visible.push(block);
+    }
     for (const provider of this.providers.list()) {
       if (provider.requiredCapability
         && !request.execution.authority.capabilities.includes(provider.requiredCapability)) {

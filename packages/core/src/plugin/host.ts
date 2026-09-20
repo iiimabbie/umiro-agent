@@ -2,7 +2,7 @@ import { isInstructionAuthorityAtMost, type Authority } from "../authorization/a
 import { ContextProviderRegistry } from "../context/registry.js";
 import type { ContextProvider } from "../context/contract.js";
 import { ToolRegistry } from "../tool/registry.js";
-import type { DiscordPluginService, LoadedPlugin, PluginEnableOptions, PluginHealth, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger } from "./contract.js";
+import type { DiscordPluginService, LoadedPlugin, PluginEnableOptions, PluginHealth, PluginHostServices, PluginInstance, PluginManifestV0, PluginModule, PluginLogger, TurnAnalysis, TurnAnalyzer, TurnAnalyzerInput } from "./contract.js";
 import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 import { validatePluginConfig, validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
@@ -63,6 +63,25 @@ function skillInstructionProvider(manifest: PluginManifestV0, skill: import("./c
   return { id, role: "skill-instructions", priority: 360, async load() { return [{ id: `${id}:instructions`, providerId: id, role: "skill-instructions", content: `[Skill instructions: ${skill.id}]\n${skill.instructions.trim()}`, source: { kind: "plugin-skill-instructions", ref: `${manifest.id}@${manifest.version}` }, influence: "instruction", instructionAuthority: "scoped", retention: "normal" }]; } };
 }
 
+function turnAnalyzerWithinCeiling(analyzer: TurnAnalyzer): TurnAnalyzer {
+  return {
+    id: analyzer.id,
+    async analyze(input) {
+      const result = await analyzer.analyze(input);
+      if (result === undefined) return undefined;
+      if (typeof result.shouldReply !== "boolean" || !Array.isArray(result.selectedToolNames) || result.selectedToolNames.some(name => typeof name !== "string") || new Set(result.selectedToolNames).size !== result.selectedToolNames.length || !Array.isArray(result.contextBlocks)) {
+        throw new TypeError(`turn analyzer ${analyzer.id} returned an invalid result`);
+      }
+      const blocks = result.contextBlocks.map(block => {
+        if (!block || block.influence !== "information" || block.instructionAuthority !== "none") throw new TypeError(`turn analyzer ${analyzer.id} returned a non-advisory context block`);
+        if (block.providerId !== analyzer.id) throw new TypeError(`turn analyzer ${analyzer.id} returned a context block for another provider`);
+        return { ...block, influence: "information" as const, instructionAuthority: "none" as const };
+      });
+      return { shouldReply: result.shouldReply, selectedToolNames: result.selectedToolNames, contextBlocks: blocks };
+    },
+  };
+}
+
 function redact(value: import("../ports/json.js").JsonValue, secrets: readonly string[], key?: string): import("../ports/json.js").JsonValue {
   if (key && /(secret|token|password|authorization|api.?key)/i.test(key)) return "[REDACTED]";
   if (typeof value === "string") return secrets.reduce((result, secret) => secret ? result.split(secret).join("[REDACTED]") : result, value);
@@ -103,6 +122,7 @@ function discordWithinCeiling(service: DiscordPluginService, manifest: PluginMan
 
 export class PluginHost {
   private readonly plugins = new Map<string, ActivePlugin>();
+  private turnAnalyzer: { readonly pluginId: string; readonly analyzer: TurnAnalyzer } | undefined;
 
   constructor(
     private readonly tools: ToolRegistry,
@@ -159,12 +179,14 @@ export class PluginHost {
 
     const toolNames = active.instance.contributions.tools?.map(tool => tool.name) ?? [];
     const providerIds = active.instance.contributions.contextProviders?.map(provider => provider.id) ?? [];
+    const turnAnalyzerIds = active.instance.contributions.turnAnalyzers?.map(analyzer => analyzer.id) ?? [];
     const hookIds = active.instance.contributions.hooks?.map(hook => hook.id) ?? [];
     const jobIds = active.instance.contributions.jobs?.map(job => job.id) ?? [];
     const commandIds = active.instance.contributions.commands?.map(command => command.name) ?? [];
     const skillIds = active.instance.contributions.skills?.map(skill => skill.id) ?? [];
     const registeredTools: string[] = [];
     const registeredProviders: string[] = [];
+    let registeredTurnAnalyzer = false;
     const registeredHooks: string[] = [];
     const registeredJobs: string[] = [];
     const registeredCommands: string[] = [];
@@ -175,6 +197,9 @@ export class PluginHost {
     try {
       exactContributionSet(toolNames, manifest.contributes.tools, `plugin ${manifest.id} tools`);
       exactContributionSet(providerIds, manifest.contributes.contextProviders, `plugin ${manifest.id} context providers`);
+      exactContributionSet(turnAnalyzerIds, manifest.contributes.turnAnalyzers, `plugin ${manifest.id} turn analyzers`);
+      if (turnAnalyzerIds.length > 1) throw new TypeError(`plugin ${manifest.id} may contribute at most one turn analyzer`);
+      if (turnAnalyzerIds.length && this.turnAnalyzer) throw new Error(`duplicate turn analyzer: ${turnAnalyzerIds[0]}`);
       exactContributionSet(hookIds, manifest.contributes.hooks, `plugin ${manifest.id} hooks`);
       exactContributionSet(jobIds, manifest.contributes.jobs, `plugin ${manifest.id} jobs`);
       exactContributionSet(commandIds, manifest.contributes.commands, `plugin ${manifest.id} commands`);
@@ -192,6 +217,11 @@ export class PluginHost {
       for (const provider of active.instance.contributions.contextProviders ?? []) {
         this.contextProviders.register(providerWithinCeiling(provider, manifest));
         registeredProviders.push(provider.id);
+      }
+      if (active.instance.contributions.turnAnalyzers?.length) {
+        const analyzer = active.instance.contributions.turnAnalyzers[0]!;
+        this.turnAnalyzer = { pluginId: manifest.id, analyzer: turnAnalyzerWithinCeiling(analyzer) };
+        registeredTurnAnalyzer = true;
       }
       if (policyProvider) { this.contextProviders.register(policyProvider); registeredProviders.push(policyProvider.id); }
       for (const skill of active.instance.contributions.skills ?? []) {
@@ -217,6 +247,7 @@ export class PluginHost {
       active.state = "enabled";
     } catch (error) {
       for (const providerId of registeredProviders.reverse()) this.contextProviders.unregister(providerId);
+      if (registeredTurnAnalyzer && this.turnAnalyzer?.pluginId === manifest.id) this.turnAnalyzer = undefined;
       for (const providerId of registeredSkillProviders.reverse()) this.contextProviders.unregister(providerId);
       for (const hookId of registeredHooks.reverse()) this.hooks.unregister(hookId);
       for (const jobId of registeredJobs.reverse()) this.jobs.unregister(jobId);
@@ -249,6 +280,7 @@ export class PluginHost {
     for (const provider of active.instance.contributions.contextProviders ?? []) {
       this.contextProviders.unregister(provider.id);
     }
+    if (this.turnAnalyzer?.pluginId === pluginId) this.turnAnalyzer = undefined;
     if (active.manifest.contributes.policy?.length) this.contextProviders.unregister(`${active.manifest.id}.policy`);
     for (const skill of active.instance.contributions.skills ?? []) this.contextProviders.unregister(`${active.manifest.id}.skill.${skill.id}`);
     for (const hook of active.instance.contributions.hooks ?? []) this.hooks.unregister(hook.id);
@@ -300,6 +332,23 @@ export class PluginHost {
   getSkill(id: string) { return this.skills.get(id); }
   listSubagentProfiles() { return this.subagentProfiles.list(); }
   getSubagentProfile(id: string) { return this.subagentProfiles.get(id); }
+
+  /** Run the single enabled turn analyzer against the current event and all registered model-facing tools. */
+  async analyzeTurn(input: Omit<TurnAnalyzerInput, "tools">): Promise<TurnAnalysis | undefined> {
+    const analyzer = this.turnAnalyzer?.analyzer;
+    if (!analyzer) return undefined;
+    const tools = this.tools.analysisCandidates();
+    try {
+      const result = await analyzer.analyze({ ...input, tools });
+      if (!result) return undefined;
+      const knownTools = new Set(tools.map(tool => tool.name));
+      return { ...result, selectedToolNames: result.selectedToolNames.filter(name => knownTools.has(name)) };
+    }
+    catch (error) {
+      if (input.signal?.aborted) throw error;
+      return undefined;
+    }
+  }
 
   async health(): Promise<readonly PluginHealth[]> {
     const results: PluginHealth[] = [];

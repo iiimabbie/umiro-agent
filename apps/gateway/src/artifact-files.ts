@@ -4,7 +4,14 @@ import { basename, join, relative, resolve } from "node:path";
 import type { Artifact, ArtifactStore, PrincipalId } from "@umiro/core";
 import { extractArtifactTextAsync } from "./artifact-text.js";
 
-export interface IncomingAttachment { readonly url: string; readonly filename: string; readonly size: number; readonly mediaType?: string }
+export interface IncomingAttachment {
+  readonly url: string;
+  readonly filename: string;
+  readonly size: number;
+  readonly mediaType?: string;
+  readonly width?: number;
+  readonly height?: number;
+}
 
 export class ArtifactFileService {
   constructor(private readonly root: string, private readonly store: ArtifactStore, private readonly maxBytes = 25 * 1024 * 1024, private readonly now = () => new Date().toISOString()) {}

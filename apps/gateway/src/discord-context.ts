@@ -48,8 +48,7 @@ export const discordRuntimeContextProvider: ContextProvider = {
   },
 };
 
-/** Host-owned Discord response contract. Tool calls such as discord_react may
- * still be used before selecting the no-text outcome. */
+/** A Discord Run exists only after the pre-Run reply gate accepted the turn. */
 export const discordOutputPolicyProvider: ContextProvider = {
   id: "discord.output-policy",
   role: "runtime-policy",
@@ -60,7 +59,7 @@ export const discordOutputPolicyProvider: ContextProvider = {
       id: `discord.output-policy:${request.runId}`,
       providerId: "discord.output-policy",
       role: "runtime-policy",
-      content: "Choose the appropriate Discord interaction: reply with text, use a reaction tool and then reply with text, use only a reaction tool, or do nothing. When no text should be sent, your final response must be exactly NO_REPLY.",
+      content: "This Discord turn has already passed the reply gate. Return a non-empty final text response, including after using reaction or other tools.",
       source: { kind: "host-policy", ref: "discord-output" },
       influence: "instruction",
       instructionAuthority: "scoped",

@@ -27,6 +27,20 @@ test("one plugin entry composes hooks, jobs and commands and removes them on dis
   assert.deepEqual(host.listCommands(), []);
 });
 
+test("turn analyzer is a singleton, receives model-facing tools, and is removed on disable", async () => {
+  const tools = new ToolRegistry();
+  tools.register({ name: "search", description: "Search documents", inputSchema: { type: "object", properties: { query: { type: "string" } } }, policy: { capability: "search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true, output: {}, effectStatus: "not_applicable" }; } });
+  const manifest = (id: string) => ({ schemaVersion: 0 as const, id, version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: id, permissions: authority, contributes: { turnAnalyzers: ["intent.analysis"] } });
+  const seen: string[] = [];
+  const analyzer = { id: "intent.analysis", async analyze(input: import("../src/plugin/contract.js").TurnAnalyzerInput) { seen.push(input.tools.map(tool => tool.name).join(",")); return { shouldReply: true, selectedToolNames: ["search", "unknown"], contextBlocks: [{ id: "intent", providerId: "intent.analysis", role: "intent", content: "advisory", source: { kind: "test", ref: "intent" }, influence: "information" as const, instructionAuthority: "none" as const }] }; } };
+  const host = new PluginHost(tools, new ContextProviderRegistry(), authority);
+  await host.enable({ manifest: manifest("analyzer-one"), create: () => ({ contributions: { turnAnalyzers: [analyzer] } }) });
+  const result = await host.analyzeTurn({ event: { id: "event", occurredAt: "now", identity: { transport: "test", externalId: "user", principalId: null }, conversation: { transport: "test", externalId: "conversation", kind: "direct" }, content: [{ type: "text", text: "search" }] }, text: "search", defaultShouldReply: false });
+  assert.deepEqual(seen, ["search"]); assert.equal(result?.shouldReply, true); assert.deepEqual(result?.selectedToolNames, ["search"]);
+  await assert.rejects(host.enable({ manifest: manifest("analyzer-two"), create: () => ({ contributions: { turnAnalyzers: [analyzer] } }) }), /duplicate turn analyzer/);
+  await host.disable("analyzer-one"); assert.equal(await host.analyzeTurn({ event: { id: "event", occurredAt: "now", identity: { transport: "test", externalId: "user", principalId: null }, conversation: { transport: "test", externalId: "conversation", kind: "direct" }, content: [] }, text: "search", defaultShouldReply: false }), undefined);
+});
+
 test("plugin command autocomplete is validated and dispatched through the host", async () => {
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
   const manifest = { schemaVersion: 0 as const, id: "complete", version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: "complete", permissions: authority, contributes: { commands: ["complete"] } };

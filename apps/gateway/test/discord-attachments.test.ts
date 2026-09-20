@@ -21,3 +21,8 @@ test("Discord attachment failures are isolated and represented in model context"
   assert.deepEqual(failures, ["bad.png: Discord download failed"]);
   assert.match(result.promptSuffix, /bad\.png: Discord download failed/);
 });
+
+test("successful Discord imports expose an ephemeral bounded rendition mapping", async () => {
+  const result = await importDiscordAttachments({ async importDiscord() { return artifact("photo"); } }, [{ url: "https://cdn.discordapp.com/attachments/1/2/photo.jpg?ex=sig", filename: "photo.jpg", size: 1, mediaType: "image/jpeg", width: 2160, height: 2880 }], "owner", "message", () => {});
+  assert.deepEqual(result.modelRenditions, [{ artifactId: "photo", url: "https://media.discordapp.net/attachments/1/2/photo.jpg?ex=sig&width=576&height=768" }]);
+});

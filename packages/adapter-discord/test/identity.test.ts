@@ -95,15 +95,15 @@ test("prepares Application Emoji markup before enforcing Discord chunk limits", 
   assert.equal(sent.join(""), expected);
 });
 
-test("marks an explicit no-reply outcome delivered without sending text", async () => {
+test("marks an empty text outcome delivered without sending text", async () => {
   let evidence: Record<string, unknown> | undefined;
   const worker = new DiscordDeliveryWorker({
-    async listPendingDeliveries() { return [{ id: "silent", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "NO_REPLY" }, state: "pending", createdAt: "now" }]; },
+    async listPendingDeliveries() { return [{ id: "silent", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "" }, state: "pending", createdAt: "now" }]; },
     async markDeliveryDelivered(_id, _at, value) { evidence = value; },
     async markDeliveryFailed() {},
-  }, { async sendText() { throw new Error("no-reply must not send a message"); } });
+  }, { async sendText() { throw new Error("empty text must not send a message"); } });
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
-  assert.deepEqual(evidence, { transport: "discord", channelId: "c", skipped: "no_reply" });
+  assert.deepEqual(evidence, { transport: "discord", channelId: "c", skipped: "empty_text" });
 });
 
 test("delivers durable artifacts before marking the intent delivered", async () => {

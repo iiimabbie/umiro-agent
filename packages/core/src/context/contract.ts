@@ -55,6 +55,8 @@ export interface ContextProvider {
 }
 
 export interface ContextAssemblyRequest extends ContextRequest {
+  /** Blocks computed by a turn analyzer; they share the same budget/validation path as providers. */
+  readonly precomputedBlocks?: readonly ContextBlock[];
   /** Character ceiling for the first deterministic implementation. */
   readonly maxCharacters: number;
   /** Optional rendered-context token ceiling. A model-specific estimator may

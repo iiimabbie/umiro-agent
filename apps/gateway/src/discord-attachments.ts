@@ -1,5 +1,7 @@
 import type { Artifact, PrincipalId } from "@umiro/core";
 import type { IncomingAttachment } from "./artifact-files.js";
+import type { ArtifactModelRendition } from "./artifact-input.js";
+import { boundedDiscordImageUrl } from "./discord-image.js";
 
 export interface DiscordAttachmentImporter {
   importDiscord(attachment: IncomingAttachment, ownerPrincipalId: PrincipalId, sourceMessageId: string): Promise<Artifact>;
@@ -18,12 +20,15 @@ export async function importDiscordAttachments(
   ownerPrincipalId: PrincipalId,
   sourceMessageId: string,
   onFailure: (failure: DiscordAttachmentImportFailure) => void,
-): Promise<{ readonly artifacts: readonly Artifact[]; readonly promptSuffix: string }> {
+): Promise<{ readonly artifacts: readonly Artifact[]; readonly modelRenditions: readonly ArtifactModelRendition[]; readonly promptSuffix: string }> {
   const artifacts: Artifact[] = [];
+  const modelRenditions: ArtifactModelRendition[] = [];
   const unavailable: string[] = [];
   for (const attachment of attachments) {
     try {
-      artifacts.push(await importer.importDiscord(attachment, ownerPrincipalId, sourceMessageId));
+      const artifact = await importer.importDiscord(attachment, ownerPrincipalId, sourceMessageId);
+      artifacts.push(artifact);
+      modelRenditions.push({ artifactId: artifact.id, url: boundedDiscordImageUrl(attachment.url, attachment.width, attachment.height) });
     } catch (error) {
       const filename = attachment.filename || "unnamed attachment";
       const reason = attachmentFailureReason(error);
@@ -33,10 +38,29 @@ export async function importDiscordAttachments(
   }
   return {
     artifacts,
+    modelRenditions,
     promptSuffix: unavailable.length > 0
       ? `\n[Attachments unavailable; continue with the message text]\n${unavailable.map(item => `- ${item}`).join("\n")}`
       : "",
   };
+}
+
+/** Rebuild an ephemeral rendition map when a reply's original artifact is already stored. */
+export function mapDiscordAttachmentRenditions(
+  attachments: readonly IncomingAttachment[],
+  artifacts: readonly Artifact[],
+): readonly ArtifactModelRendition[] {
+  const unused = new Set(attachments.keys());
+  const result: ArtifactModelRendition[] = [];
+  for (const artifact of artifacts) {
+    const index = [...unused].find(candidate => attachments[candidate]?.filename === artifact.filename)
+      ?? [...unused][0];
+    if (index === undefined) continue;
+    unused.delete(index);
+    const attachment = attachments[index];
+    if (attachment) result.push({ artifactId: artifact.id, url: boundedDiscordImageUrl(attachment.url, attachment.width, attachment.height) });
+  }
+  return result;
 }
 
 function attachmentFailureReason(error: unknown): string {

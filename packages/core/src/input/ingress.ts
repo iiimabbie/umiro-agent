@@ -9,6 +9,7 @@ import { inputText, type InputEvent } from "./event.js";
 import type { ModelCapability, ModelContent, ReasoningEffort } from "../model/contract.js";
 import { conversationHistoryToMessages } from "../conversation/history.js";
 import { partitionContextTokenBudget } from "./budget.js";
+import type { ContextBlock } from "../context/contract.js";
 
 export interface InteractiveIngressRequest {
   readonly event: InputEvent;
@@ -25,6 +26,8 @@ export interface InteractiveIngressRequest {
   readonly onContextOmission?: (details: { readonly omittedHistoryMessages: number; readonly retainedHistoryMessages: number; readonly truncatedHistoryMessages: number }) => void;
   readonly steerControl?: { readonly flush: () => Promise<void>; readonly seal: () => Promise<void> };
   readonly initialTurns?: readonly ConversationSeedTurn[];
+  readonly precomputedBlocks?: readonly ContextBlock[];
+  readonly visibleToolNames?: readonly string[];
 }
 
 export type InteractiveIngressResult =
@@ -128,6 +131,7 @@ export class InteractiveIngress {
       recentHistory,
       ...(replyTarget ? { replyTarget } : {}),
       ...(conversationCompaction ? { conversationCompaction } : {}),
+      ...(request.precomputedBlocks ? { precomputedBlocks: request.precomputedBlocks } : {}),
       maxCharacters: request.maxContextCharacters,
       ...(contextBudget ? { maxTokens: contextBudget.contextMaxTokens } : {}),
       ...(request.signal ? { signal: request.signal } : {}),
@@ -146,6 +150,7 @@ export class InteractiveIngress {
       ...(request.maxContextTokens !== undefined ? { maxContextTokens: request.maxContextTokens } : {}),
       ...(request.onContextOmission ? { onContextOmission: request.onContextOmission } : {}),
       assembledContext,
+      ...(request.visibleToolNames !== undefined ? { visibleToolNames: request.visibleToolNames } : {}),
       deliveryDestination: request.deliveryDestination,
       ...(request.signal ? { signal: request.signal } : {}),
       ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),

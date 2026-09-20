@@ -161,6 +161,7 @@ umo web status
 | `tool-activity` | Run 使用工具時，在 Discord 即時顯示她正在做什麼 |
 | `daily-report` | 排程的每日摘要 |
 | `diary` | 從 canonical conversation history 重建 agent 自己第一人稱的每日日記 |
+| `intent-analyzer` | 可選的回應意圖與模型可見工具分析 |
 
 ```bash
 umo plugin install https://github.com/iiimabbie/umiro-plugins.git --workspace people
@@ -175,6 +176,12 @@ umo plugin configure <source> --config '{"key":"value"}'
 停用外掛時，它註冊的工具、policy、hook、job、command、skill 與搜尋 projection 會從 runtime 撤下，所屬排程會標記為生命週期停用；再次啟用時才恢復。移除外掛時，所屬排程與搜尋 projection 會一併刪除。外掛執行後產生的日記、報告等使用者資料會保留。
 
 停用外掛永遠保留它宣告的 Secret；移除外掛預設也保留。控制台的移除 modal 可以明確勾選同時清理 Secret。CLI 用 `umo plugin remove <source> [--workspace <name>] --remove-secrets`；只會刪除目標外掛宣告、且只由它獨占的 Secret。ümiro 核心 Secret，以及其他仍安裝外掛宣告的共用 Secret，都會保留。
+
+### 可選的 intent analyzer
+
+官方的 `intent-analyzer` 外掛可以在每個有文字的 turn 做一次 advisory 判斷：是否回覆，以及哪些已註冊工具對模型可見。Discord 的 hard ignore 會先決定，因此不會呼叫 analyzer。若判斷不回覆，訊息只會以 observe 記錄，不會建立 Run、顯示 typing、匯入附件或呼叫模型；失敗與逾時會回到一般 trigger policy。工具可見性只限制模型看到的子集合，Core 仍負責授權與執行，隱藏或幻覺出的工具也會由 runtime 拒絕。
+
+外掛必須透過 WebUI 或 CLI 設定後才會啟用分析，未設定時可安全安裝且保持 inert。它支援 OpenAI Chat Completions 與 Jev TypeSafe backend；只會送出本輪文字與模型可見工具定義，不會送歷史、記憶、Secret、工具結果或 runtime 授權。Jev 使用 `POST https://api.typesafe.ai/v1/systemone` 與可選的 `TYPESAFE_API_KEY` Secret。設定細節請見外掛 repository。
 
 ## CLI
 

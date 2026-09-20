@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   capabilities,
+  estimateModelRequestTokens,
   HeadlessRunEngine,
   ToolRegistry,
   type ExecutionContext,
@@ -136,6 +137,97 @@ test("runs model to tool to model and persists the final output", async () => {
   }
 });
 
+test("keeps analyzer-selected tools visible across model turns and rejects hidden hallucinations", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let hiddenExecutions = 0;
+  let modelCalls = 0;
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["test.visible"]);
+    if (modelCalls === 1) {
+      const toolCall = { id: "hidden-call", name: "test.hidden", input: {} };
+      return response({ toolCalls: [toolCall], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [toolCall] } });
+    }
+    assert.match(String(request.messages.at(-1)?.content), /tool_not_found/);
+    return response({ text: "hidden tool was rejected", assistantMessage: { role: "assistant", content: "hidden tool was rejected" } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "test.visible", description: "test.visible", inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.visible", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true as const, output: null, effectStatus: "not_applicable" as const }; } });
+  registry.register({ name: "test.hidden", description: "test.hidden", inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.hidden", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { hiddenExecutions += 1; return { ok: true as const, output: null, effectStatus: "not_applicable" as const }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() }).run({ context: ownerContext("test.visible", "test.hidden"), model: "fake-model", prompt: "select one", visibleToolNames: ["test.visible"] });
+    assert.equal(result.status, "succeeded");
+    assert.equal(hiddenExecutions, 0);
+    assert.equal(modelCalls, 2);
+    assert.deepEqual((await store.getCheckpoint("run-1")), undefined);
+  } finally { store.close(); }
+});
+
+test("bounds every model request while keeping the full tool result durable", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const requests: Parameters<ModelPort["generate"]>[0][] = [];
+  const model: ModelPort = { async generate(request) {
+    requests.push(request);
+    assert.ok(estimateModelRequestTokens(request.messages, request.tools) <= 800);
+    if (requests.length === 1) {
+      const toolCall = { id: "large-call", name: "test.large", input: {} };
+      return response({ toolCalls: [toolCall], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [toolCall] } });
+    }
+    const projected = request.messages.find(message => message.role === "tool" && message.toolCallId === "large-call");
+    assert.equal(projected?.role, "tool");
+    if (projected?.role === "tool") assert.ok(projected.content.includes("[tool output truncated]"));
+    return response({ text: "done", assistantMessage: { role: "assistant", content: "done" } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "test.large", description: "Return a deliberately large diagnostic result", inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    policy: { capability: "test.large", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+    async execute() { return { ok: true, output: { text: `HEAD-${"x".repeat(100_000)}-TAIL` }, effectStatus: "not_applicable" }; },
+  });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() })
+      .run({ context: ownerContext("test.large"), model: "fake-model", prompt: "inspect", maxContextTokens: 800 });
+    assert.equal(result.status, "succeeded");
+    assert.equal(requests.length, 2);
+    const durable = await store.getOperationResult("operation-1");
+    assert.equal(JSON.stringify(durable?.output).includes("-TAIL"), true);
+    assert.ok(JSON.stringify(durable?.output).length > 100_000);
+  } finally { store.close(); }
+});
+
+test("classifies provider failures without exposing them in the Discord delivery", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const providerError = Object.assign(new Error("provider rejected request"), { name: "OpenAIRequestError", category: "upstream", status: 413, retryable: false });
+  const model: ModelPort = { async generate() { throw providerError; } };
+  try {
+    const result = await new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() })
+      .run({ context: ownerContext(), model: "fake-model", prompt: "fail" });
+    assert.equal(result.status, "failed");
+    if (result.status === "failed") assert.deepEqual(result.failure, { category: "model_provider", errorName: "OpenAIRequestError", status: 413, retryable: false });
+    assert.equal((await store.listPendingDeliveries())[0]?.payload.text, "這次處理失敗，請稍後再試。");
+  } finally { store.close(); }
+});
+
+test("sends image data to the provider but omits base64 from model-call audit", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const model: ModelPort = { async generate(request) {
+    const user = request.messages.find(message => message.role === "user");
+    assert.equal(typeof user?.content === "string" ? undefined : user?.content.find(part => part.type === "image")?.url, "data:image/png;base64,AQID");
+    return response({ text: "seen", assistantMessage: { role: "assistant", content: "seen" } });
+  } };
+  try {
+    const result = await new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() }).run({
+      context: ownerContext(), model: "vision-model", prompt: "inspect",
+      userContent: [{ type: "text", text: "inspect" }, { type: "image", url: "data:image/png;base64,AQID", detail: "auto" }],
+      maxContextTokens: 1_000,
+    });
+    assert.equal(result.status, "succeeded");
+    const recorded = (await store.listModelCalls("run-1"))[0]?.messages.find(message => message.role === "user");
+    assert.equal(typeof recorded?.content === "string" ? undefined : recorded?.content.find(part => part.type === "image")?.url, "[image data omitted from audit]");
+    assert.doesNotMatch(JSON.stringify(recorded), /AQID/);
+  } finally { store.close(); }
+});
+
 test("defaults the main Run to 25 model turns", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   let modelCalls = 0;
@@ -192,8 +284,10 @@ test("persists an intermediate delivery without completing the active Run", asyn
   const model: ModelPort = { async generate() { started(); await held; return response({ text: "final", assistantMessage: { role: "assistant", content: "final" } }); } };
   try {
     const engine = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() });
-    const running = engine.run({ context: ownerContext(), model: "fake", prompt: "work", deliveryDestination: { kind: "discord", channelId: "123" } });
+    const running = engine.run({ context: ownerContext(), model: "fake", prompt: "work", maxContextTokens: 1_000, deliveryDestination: { kind: "discord", channelId: "123" } });
     await modelStarted;
+    const checkpoint = await store.getCheckpoint("run-1");
+    assert.equal((checkpoint?.data as Record<string, unknown>).maxContextTokens, 1_000);
     await store.createDeliveryIntent({ id: "delivery-middle", runId: "run-1", destination: { kind: "discord", channelId: "123" }, payload: { text: "still working" }, state: "pending", createdAt: at });
     assert.equal((await store.getRun("run-1"))?.state, "running");
     assert.equal((await store.getDeliveryIntent("delivery-middle"))?.payload.text, "still working");

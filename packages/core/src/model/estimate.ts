@@ -1,5 +1,5 @@
 import { HEURISTIC_CONTEXT_TOKEN_ESTIMATOR } from "../context/tokens.js";
-import type { ModelContent, ModelMessage } from "./contract.js";
+import type { ModelContent, ModelFunctionTool, ModelMessage } from "./contract.js";
 
 /** Fixed planning costs for binary media. Raw URLs/base64 are transport
  * payloads, not prompt text, and must never make a context budget collapse. */
@@ -28,4 +28,11 @@ export function estimateModelMessageTokens(message: ModelMessage): number {
   if (message.role === "assistant" && message.content === null) return HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify(message));
   const normalized = normalizedContent(message.content);
   return HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify({ ...message, content: normalized.value })) + normalized.mediaTokens;
+}
+
+/** Estimates the complete request without counting raw binary URL/data payloads. */
+export function estimateModelRequestTokens(messages: readonly ModelMessage[], tools: readonly ModelFunctionTool[] = []): number {
+  const messageCost = messages.reduce((total, message) => total + estimateModelMessageTokens(message), 0);
+  const toolCost = tools.length ? HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify(tools)) : 0;
+  return messageCost + toolCost;
 }

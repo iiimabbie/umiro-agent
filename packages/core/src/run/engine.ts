@@ -1,4 +1,4 @@
-import type { ModelContent, ModelMessage, ModelPort, ModelToolCall, ModelUsage, ReasoningEffort } from "../model/contract.js";
+import type { ModelContent, ModelFunctionTool, ModelMessage, ModelPort, ModelToolCall, ModelUsage, ReasoningEffort } from "../model/contract.js";
 import type { OperationResult } from "../operation/result.js";
 import { ExecutionStoreConflictError, type ExecutionStore } from "../ports/execution-store.js";
 import type { JsonObject, JsonValue } from "../ports/json.js";
@@ -8,7 +8,7 @@ import { intersectAuthority } from "../authorization/authority.js";
 import { renderContextAssembly, type ContextAssembly } from "../context/index.js";
 import type { Run, Step } from "./entities.js";
 import { RunNotRecoverableError, type RecoveryClaim } from "./recovery.js";
-import { estimateModelMessageTokens } from "../model/estimate.js";
+import { estimateModelMessageTokens, estimateModelRequestTokens } from "../model/estimate.js";
 
 export interface HeadlessRunRequest {
   readonly context: ExecutionContext;
@@ -37,6 +37,8 @@ export interface HeadlessRunRequest {
   readonly conversationId?: string;
   readonly turnId?: string;
   readonly assembledContext?: ContextAssembly;
+  /** Analyzer-selected model-visible tools; undefined preserves all tools for old callers. */
+  readonly visibleToolNames?: readonly string[];
   /** Used by durable ingress to reserve a stable Run ID before execution starts. */
   readonly runId?: string;
 }
@@ -51,7 +53,15 @@ export interface HeadlessResumeRequest {
 export type HeadlessRunResult =
   | { readonly status: "succeeded"; readonly runId: string; readonly deliveryId: string; readonly text: string; readonly usage: ModelUsage }
   | { readonly status: "waiting"; readonly runId: string; readonly reason: "outcome_unknown" }
-  | { readonly status: "failed" | "cancelled"; readonly runId: string; readonly error: string };
+  | { readonly status: "failed" | "cancelled"; readonly runId: string; readonly error: string; readonly failure?: RunFailureMetadata };
+
+export type RunFailureCategory = "context_budget" | "model_provider" | "run_cancelled" | "limit" | "processing";
+export interface RunFailureMetadata {
+  readonly category: RunFailureCategory;
+  readonly errorName: string;
+  readonly status?: number;
+  readonly retryable?: boolean;
+}
 
 export interface HeadlessRunEngineOptions {
   readonly now?: () => string;
@@ -61,8 +71,96 @@ export interface HeadlessRunEngineOptions {
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 
+export class ModelContextBudgetError extends Error {
+  override readonly name = "ModelContextBudgetError";
+  constructor(readonly maxContextTokens: number) { super(`model context budget exceeded: ${maxContextTokens}`); }
+}
+
 function messageTokens(message: ModelMessage): number {
   return estimateModelMessageTokens(message);
+}
+
+export function compactModelMessages(messages: readonly ModelMessage[], tools: readonly ModelFunctionTool[], maxContextTokens: number): ModelMessage[] {
+  if (!Number.isSafeInteger(maxContextTokens) || maxContextTokens <= 0) throw new TypeError("maxContextTokens must be a positive safe integer");
+  let working = messages.map(message => structuredClone(message));
+  const cost = () => estimateModelRequestTokens(working, tools);
+  if (cost() <= maxContextTokens) return working;
+
+  // Remove the oldest completed assistant/tool cycle as a unit before
+  // truncating recent evidence. This cannot create an orphan tool message or
+  // split a multi-call assistant response.
+  while (cost() > maxContextTokens) {
+    let removed = false;
+    const cycles: Array<{ readonly index: number; readonly matching: readonly number[] }> = [];
+    for (let index = 0; index < working.length; index += 1) {
+      const assistant = working[index];
+      if (assistant?.role !== "assistant" || !assistant.toolCalls?.length) continue;
+      const ids = assistant.toolCalls.map(call => call.id);
+      const matching = working.map((message, messageIndex) => message.role === "tool" && ids.includes(message.toolCallId) ? messageIndex : -1).filter(messageIndex => messageIndex >= 0);
+      if (matching.length !== ids.length) continue;
+      cycles.push({ index, matching });
+    }
+    // Keep the newest complete cycle: it is the latest necessary pairing for
+    // the next call. If it alone cannot fit, fail locally instead of sending
+    // an invalid orphaned tool transcript.
+    for (const { index, matching } of cycles.slice(0, -1)) {
+      const remove = new Set([index, ...matching]);
+      working = working.filter((_message, messageIndex) => !remove.has(messageIndex));
+      removed = true;
+      break;
+    }
+    if (!removed) break;
+  }
+  if (cost() <= maxContextTokens) return working;
+
+  // Full tool results remain durable in OperationResult. Preserve the newest
+  // evidence for as long as possible, shortening older/larger projections
+  // only after removable completed cycles have been discarded.
+  const toolIndexes = working.map((message, index) => ({ message, index })).filter(item => item.message.role === "tool")
+    .sort((left, right) => left.index - right.index || (right.message.role === "tool" ? right.message.content.length : 0) - (left.message.role === "tool" ? left.message.content.length : 0));
+  for (const { index } of toolIndexes) {
+    const message = working[index];
+    if (!message || message.role !== "tool" || cost() <= maxContextTokens) break;
+    const marker = "\n[tool output truncated]";
+    let low = 0;
+    let high = message.content.length;
+    let best = "";
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const head = Math.ceil(middle * 0.7);
+      const tail = middle - head;
+      const candidate = `${message.content.slice(0, head)}${middle < message.content.length ? marker : ""}${tail ? message.content.slice(-tail) : ""}`;
+      const next = [...working];
+      next[index] = { ...message, content: candidate };
+      if (estimateModelRequestTokens(next, tools) <= maxContextTokens) { best = candidate; low = middle + 1; } else high = middle - 1;
+    }
+    working[index] = { ...message, content: best || marker };
+  }
+  if (cost() > maxContextTokens) throw new ModelContextBudgetError(maxContextTokens);
+  return working;
+}
+
+function replaceMessages(target: ModelMessage[], next: readonly ModelMessage[]): void {
+  target.splice(0, target.length, ...next);
+}
+
+function messageBudget(maxContextTokens: number | undefined, tools: readonly ModelFunctionTool[]): number | undefined {
+  if (maxContextTokens === undefined) return undefined;
+  return Math.max(1, maxContextTokens - estimateModelRequestTokens([], tools));
+}
+
+function projectModelMessagesForAudit(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.map(message => {
+    if (message.role !== "user" || typeof message.content === "string") return structuredClone(message);
+    return {
+      ...message,
+      content: message.content.map(part => part.type === "image"
+        ? { ...part, url: "[image data omitted from audit]" }
+        : part.type === "file"
+          ? { ...part, data: "[file data omitted from audit]" }
+          : part),
+    };
+  });
 }
 
 function truncateHistoricalMessage(message: ModelMessage, availableTokens: number): ModelMessage | undefined {
@@ -136,6 +234,7 @@ function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
 
 function validateRunLimits(request: HeadlessRunRequest): void {
   for (const [name, value] of Object.entries({
+    maxContextTokens: request.maxContextTokens,
     maxModelTurns: request.maxModelTurns,
     maxToolCalls: request.maxToolCalls,
     maxInputTokens: request.maxInputTokens,
@@ -148,11 +247,11 @@ function validateRunLimits(request: HeadlessRunRequest): void {
   }
 }
 
-function checkpointData(model: string, messages: readonly ModelMessage[], usage: ModelUsage, deliveryDestination: JsonObject, reasoningEffort?: ReasoningEffort): JsonValue {
-  return JSON.parse(JSON.stringify({ version: 1, model, ...(reasoningEffort ? { reasoningEffort } : {}), messages, usage, deliveryDestination })) as JsonValue;
+function checkpointData(model: string, messages: readonly ModelMessage[], usage: ModelUsage, deliveryDestination: JsonObject, reasoningEffort?: ReasoningEffort, maxContextTokens?: number, visibleToolNames?: readonly string[]): JsonValue {
+  return JSON.parse(JSON.stringify({ version: 2, model, ...(reasoningEffort ? { reasoningEffort } : {}), ...(maxContextTokens !== undefined ? { maxContextTokens } : {}), ...(visibleToolNames !== undefined ? { visibleToolNames: [...visibleToolNames] } : {}), messages, usage, deliveryDestination })) as JsonValue;
 }
 
-function restoredCheckpoint(claim: RecoveryClaim): { model: string; reasoningEffort?: ReasoningEffort; messages: ModelMessage[]; usage: ModelUsage; deliveryDestination: JsonObject } {
+function restoredCheckpoint(claim: RecoveryClaim): { model: string; reasoningEffort?: ReasoningEffort; maxContextTokens?: number; visibleToolNames?: string[]; messages: ModelMessage[]; usage: ModelUsage; deliveryDestination: JsonObject } {
   const data = claim.checkpoint.data;
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new RunNotRecoverableError(claim.run.id, "checkpoint payload is invalid");
@@ -161,22 +260,28 @@ function restoredCheckpoint(claim: RecoveryClaim): { model: string; reasoningEff
   const model = payload.model;
   const messages = payload.messages;
   const reasoningEffort = payload.reasoningEffort;
+  const maxContextTokens = payload.maxContextTokens;
+  const visibleToolNames = payload.visibleToolNames;
   const usage = payload.usage;
   const deliveryDestination = payload.deliveryDestination;
   const usageRecord = usage && typeof usage === "object" && !Array.isArray(usage)
     ? usage as Record<string, JsonValue>
     : undefined;
-  if (payload.version !== 1 || typeof model !== "string" || !Array.isArray(messages)
+  if ((payload.version !== 1 && payload.version !== 2) || typeof model !== "string" || !Array.isArray(messages)
     || (reasoningEffort !== undefined && !["default", "low", "medium", "high", "xhigh"].includes(String(reasoningEffort)))
+    || (maxContextTokens !== undefined && (typeof maxContextTokens !== "number" || !Number.isSafeInteger(maxContextTokens) || maxContextTokens <= 0))
     || !usageRecord || (deliveryDestination !== undefined
       && (!deliveryDestination || typeof deliveryDestination !== "object" || Array.isArray(deliveryDestination)))
     || typeof usageRecord.inputTokens !== "number" || typeof usageRecord.outputTokens !== "number"
-    || typeof usageRecord.reasoningTokens !== "number") {
+    || typeof usageRecord.reasoningTokens !== "number"
+    || (visibleToolNames !== undefined && (!Array.isArray(visibleToolNames) || visibleToolNames.some(name => typeof name !== "string" || !/^[a-z][a-z0-9_.-]{0,127}$/.test(name)) || new Set(visibleToolNames).size !== visibleToolNames.length))) {
     throw new RunNotRecoverableError(claim.run.id, "checkpoint payload has an unsupported shape");
   }
   return {
     model,
     ...(reasoningEffort !== undefined ? { reasoningEffort: reasoningEffort as ReasoningEffort } : {}),
+    ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
+    ...(Array.isArray(visibleToolNames) ? { visibleToolNames: [...visibleToolNames] } : {}),
     messages: structuredClone(messages) as ModelMessage[],
     usage: {
       inputTokens: usageRecord.inputTokens,
@@ -198,6 +303,8 @@ interface RestoredExecution {
   readonly messages: ModelMessage[];
   readonly modelStep: Step;
   readonly deliveryDestination: JsonObject;
+  readonly maxContextTokens?: number;
+  readonly visibleToolNames?: readonly string[];
 }
 
 export class HeadlessRunEngine {
@@ -250,7 +357,8 @@ export class HeadlessRunEngine {
       throw new ExecutionStoreConflictError(`prepared Run ${runId} does not have one pending model Step`);
     }
     const deliveryDestination = request.deliveryDestination ?? { kind: "caller" };
-    const messages = buildInitialMessages(request);
+    const initialMessageBudget = messageBudget(request.maxContextTokens, this.tools.modelDefinitions(request.visibleToolNames));
+    const messages = buildInitialMessages({ ...request, ...(initialMessageBudget !== undefined ? { maxContextTokens: initialMessageBudget } : {}) });
     await this.store.updateExecutionProgress({
       runId,
       expectedRunRevision: 0,
@@ -262,7 +370,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId,
         version: 1,
-        data: checkpointData(request.model, messages, ZERO_USAGE, deliveryDestination, request.reasoningEffort),
+        data: checkpointData(request.model, messages, ZERO_USAGE, deliveryDestination, request.reasoningEffort, request.maxContextTokens, request.visibleToolNames),
         updatedAt: this.now(),
       },
     });
@@ -279,6 +387,8 @@ export class HeadlessRunEngine {
       messages,
       modelStep: { ...modelStep, revision: 1, state: "running" },
       deliveryDestination,
+      ...(request.maxContextTokens !== undefined ? { maxContextTokens: request.maxContextTokens } : {}),
+      ...(request.visibleToolNames !== undefined ? { visibleToolNames: request.visibleToolNames } : {}),
     });
   }
 
@@ -320,6 +430,8 @@ export class HeadlessRunEngine {
       messages: checkpoint.messages,
       modelStep,
       deliveryDestination: checkpoint.deliveryDestination,
+      ...(checkpoint.maxContextTokens !== undefined ? { maxContextTokens: checkpoint.maxContextTokens } : {}),
+      ...(checkpoint.visibleToolNames !== undefined ? { visibleToolNames: checkpoint.visibleToolNames } : {}),
     });
   }
 
@@ -340,7 +452,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 1,
-        data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
         updatedAt: this.now(),
       },
     });
@@ -369,6 +481,8 @@ export class HeadlessRunEngine {
           messages: checkpoint.messages,
           modelStep: running,
           deliveryDestination: checkpoint.deliveryDestination,
+          ...(checkpoint.maxContextTokens !== undefined ? { maxContextTokens: checkpoint.maxContextTokens } : {}),
+          ...(checkpoint.visibleToolNames !== undefined ? { visibleToolNames: checkpoint.visibleToolNames } : {}),
         });
   }
 
@@ -464,7 +578,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 1,
-        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
         updatedAt: progressedAt,
       },
     });
@@ -504,7 +618,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 2,
-        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
         updatedAt: this.now(),
       },
     });
@@ -514,7 +628,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 2,
-        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, messages, usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
         updatedAt: this.now(),
       },
       steps: [...claim.steps, { ...operationStep, revision: 1, state: "running" }],
@@ -540,11 +654,13 @@ export class HeadlessRunEngine {
     const persisted = existing ? await this.store.getOperationResult(existing.id) : undefined;
     const retryInterruptedPure = existing?.sideEffect === "none"
       && persisted?.error?.code === "process_interrupted";
-    const toolResult = persisted && !retryInterruptedPure && persisted.outcome !== "outcome_unknown"
+    const toolResult = !this.isVisibleTool(call.name, checkpoint.visibleToolNames)
+      ? this.hiddenToolResult(call.name)
+      : persisted && !retryInterruptedPure && persisted.outcome !== "outcome_unknown"
       ? this.projectOperationResult(persisted)
       : existing?.state === "authorized"
         ? await this.toolRuntime.resume(existing.id, { toolName: call.name, input: call.input, stepId: operationStep.id, context: claim.run.context, runId: claim.run.id, ...(request.signal ? { signal: request.signal } : {}) })
-        : await this.invokeTool(call, claim.run.id, operationStep.id, claim.run.context, request.signal);
+        : await this.invokeTool(call, claim.run.id, operationStep.id, claim.run.context, request.signal, checkpoint.visibleToolNames);
 
     if (toolResult.status === "outcome_unknown") {
       await this.store.updateExecutionProgress({
@@ -565,7 +681,7 @@ export class HeadlessRunEngine {
         checkpoint: {
           runId: claim.run.id,
           version: claim.checkpoint.version + 1,
-          data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+          data: checkpointData(checkpoint.model, checkpoint.messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
           updatedAt: this.now(),
         },
       });
@@ -613,14 +729,14 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 1,
-        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
         updatedAt: progressedAt,
       },
     });
     const remainingCall = assistant?.toolCalls?.find(candidate => !completedCallIds.has(candidate.id) && candidate.id !== call.id);
     const existingNextStep = claim.steps.find(step => step.sequence > operationStep.sequence && (step.state === "pending" || step.state === "running"));
     if (existingNextStep) {
-      const advanced = { ...claim, run: { ...claim.run, revision: claim.run.revision + 1 }, checkpoint: { ...claim.checkpoint, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort), updatedAt: progressedAt } };
+      const advanced = { ...claim, run: { ...claim.run, revision: claim.run.revision + 1 }, checkpoint: { ...claim.checkpoint, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames), updatedAt: progressedAt } };
       return existingNextStep.state === "pending"
         ? this.resumePendingCursor(advanced, { ...checkpoint, messages }, request, existingNextStep)
         : this.resumeOperationCursor(advanced, { ...checkpoint, messages }, request, existingNextStep);
@@ -638,7 +754,7 @@ export class HeadlessRunEngine {
       checkpoint: {
         runId: claim.run.id,
         version: claim.checkpoint.version + 2,
-        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
         updatedAt: this.now(),
       },
     });
@@ -649,7 +765,7 @@ export class HeadlessRunEngine {
         checkpoint: {
           runId: claim.run.id,
           version: claim.checkpoint.version + 2,
-          data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort),
+        data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames),
           updatedAt: this.now(),
         },
         steps: [...claim.steps, { ...nextStep, revision: 1, state: "running" }],
@@ -672,6 +788,8 @@ export class HeadlessRunEngine {
       messages,
       modelStep: nextStep,
       deliveryDestination: checkpoint.deliveryDestination,
+      ...(checkpoint.maxContextTokens !== undefined ? { maxContextTokens: checkpoint.maxContextTokens } : {}),
+      ...(checkpoint.visibleToolNames !== undefined ? { visibleToolNames: checkpoint.visibleToolNames } : {}),
     });
   }
 
@@ -687,7 +805,19 @@ export class HeadlessRunEngine {
     };
   }
 
-  private invokeTool(call: ModelToolCall, runId: string, stepId: string, context: ExecutionContext, signal?: AbortSignal) {
+  private isVisibleTool(name: string, visibleToolNames?: readonly string[]): boolean {
+    return visibleToolNames === undefined || visibleToolNames.includes(name);
+  }
+
+  private hiddenToolResult(name: string) {
+    return {
+      status: "tool_not_found" as const,
+      error: { code: "tool_not_found", message: `unknown tool: ${name}`, retryable: false },
+    };
+  }
+
+  private invokeTool(call: ModelToolCall, runId: string, stepId: string, context: ExecutionContext, signal?: AbortSignal, visibleToolNames?: readonly string[]) {
+    if (!this.isVisibleTool(call.name, visibleToolNames)) return Promise.resolve(this.hiddenToolResult(call.name));
     if (call.argumentError) {
       return Promise.resolve({
         status: "invalid_input" as const,
@@ -715,7 +845,15 @@ export class HeadlessRunEngine {
     let checkpointVersion = restored?.checkpointVersion ?? 0;
     let usage = restored?.usage ?? ZERO_USAGE;
     const deliveryDestination = restored?.deliveryDestination ?? request.deliveryDestination ?? { kind: "caller" };
-    const messages: ModelMessage[] = restored?.messages ?? buildInitialMessages(request);
+    const visibleToolNames = restored?.visibleToolNames ?? request.visibleToolNames;
+    const toolDefinitions = this.tools.modelDefinitions(visibleToolNames);
+    const maxContextTokens = restored?.maxContextTokens ?? request.maxContextTokens;
+    const initialMessageBudget = messageBudget(maxContextTokens, toolDefinitions);
+    const messages: ModelMessage[] = restored?.messages ?? buildInitialMessages({ ...request, ...(initialMessageBudget !== undefined ? { maxContextTokens: initialMessageBudget } : {}) });
+    const compactWorkingMessages = (): void => {
+      if (maxContextTokens === undefined) return;
+      replaceMessages(messages, compactModelMessages(messages, toolDefinitions, maxContextTokens));
+    };
     let executionContext = request.context;
     let modelStep = restored?.modelStep ?? this.newStep(runId, sequence++, "model_call");
     if (!restored) {
@@ -740,7 +878,7 @@ export class HeadlessRunEngine {
         resumeEligibility: "eligible",
         runUpdatedAt: this.now(),
         step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() },
       });
       runRevision += 1;
       checkpointVersion += 1;
@@ -787,7 +925,7 @@ export class HeadlessRunEngine {
         runUpdatedAt: progressedAt,
         runContext: executionContext,
         step: { id: modelStep.id, expectedRevision: modelStep.revision, expectedState: "running", state: completeCurrentStep ? "succeeded" : "running", updatedAt: progressedAt },
-        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: progressedAt },
+        checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: progressedAt },
         consumedSteeredInputIds: pending.map(input => input.id),
       });
       runRevision += 1;
@@ -799,11 +937,12 @@ export class HeadlessRunEngine {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
         await appendPendingSteer(false, false);
         assertBudget(true);
+        compactWorkingMessages();
         const response = await this.modelPort.generate({
           model: request.model,
           ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
           messages,
-          tools: this.tools.modelDefinitions(),
+          tools: toolDefinitions,
           ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: Math.max(1, request.maxOutputTokens - usage.outputTokens) } : {}),
           ...(runSignal ? { signal: runSignal } : {}),
           ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),
@@ -811,7 +950,7 @@ export class HeadlessRunEngine {
         usage = addUsage(usage, response.usage);
         await this.store.recordModelCall({
           id: this.createId("model_call"), runId, stepId: modelStep.id, model: request.model,
-          messages: structuredClone(messages), response, createdAt: this.now(),
+          messages: projectModelMessagesForAudit(messages), response, createdAt: this.now(),
         });
         const steered = await appendPendingSteer(response.toolCalls.length === 0, true);
         if (steered > 0) {
@@ -825,7 +964,7 @@ export class HeadlessRunEngine {
             resumeEligibility: "eligible",
             runUpdatedAt: this.now(),
             step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+            checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() },
           });
           runRevision += 1;
           checkpointVersion += 1;
@@ -841,7 +980,7 @@ export class HeadlessRunEngine {
           resumeEligibility: "eligible",
           runUpdatedAt: this.now(),
           step: { id: modelStep.id, expectedRevision: 1, expectedState: "running", state: "succeeded", updatedAt: this.now() },
-          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() },
         });
         runRevision += 1;
         checkpointVersion += 1;
@@ -891,7 +1030,7 @@ export class HeadlessRunEngine {
               resumeEligibility: "eligible",
               runUpdatedAt: this.now(),
               step: { id: step.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() },
             });
             runRevision += 1;
             checkpointVersion += 1;
@@ -902,13 +1041,7 @@ export class HeadlessRunEngine {
             step,
             result: call.argumentError
               ? { status: "invalid_input" as const, error: { code: "malformed_tool_arguments", message: call.argumentError, retryable: false } }
-              : await this.toolRuntime.execute({
-                  toolName: call.name, input: call.input, stepId: step.id, context: executionContext,
-                  ...(this.tools.get(call.name)?.policy.sideEffect === "idempotent"
-                    ? { idempotencyKey: `${runId}:${call.id}` }
-                    : {}),
-                  ...(runSignal ? { signal: runSignal } : {}),
-                }),
+              : await this.invokeTool(call, runId, step.id, executionContext, runSignal, visibleToolNames),
           })));
           if (durationController?.signal.aborted) throw durationError;
 
@@ -921,6 +1054,7 @@ export class HeadlessRunEngine {
               : { ok: false, error: toolResult.error };
             if (toolResult.status !== "outcome_unknown" && toolResult.status !== "cancelled") {
               messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(payload) });
+              compactWorkingMessages();
             }
             if (toolResult.status === "outcome_unknown") outcomeUnknown = true;
             if (toolResult.status === "cancelled") cancellationError ??= toolResult.error.message;
@@ -932,13 +1066,13 @@ export class HeadlessRunEngine {
               resumeEligibility: "eligible",
               runUpdatedAt: this.now(),
               step: { id: step.id, expectedRevision: 1, expectedState: "running", state: stepState, updatedAt: this.now() },
-              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+              checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() },
             });
             runRevision += 1;
             checkpointVersion += 1;
           }
           if (outcomeUnknown) {
-            await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting", waitingReason: "operation_outcome_unknown", resumeEligibility: "manual_review", runUpdatedAt: this.now(), checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() } });
+            await this.store.updateExecutionProgress({ runId, expectedRunRevision: runRevision, expectedRunState: "running", runState: "waiting", waitingReason: "operation_outcome_unknown", resumeEligibility: "manual_review", runUpdatedAt: this.now(), checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() } });
             return { status: "waiting", runId, reason: "outcome_unknown" };
           }
           if (cancellationError) {
@@ -957,7 +1091,7 @@ export class HeadlessRunEngine {
           resumeEligibility: "eligible",
           runUpdatedAt: this.now(),
           step: { id: modelStep.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: this.now() },
-          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort), updatedAt: this.now() },
+          checkpoint: { runId, version: checkpointVersion + 1, data: checkpointData(request.model, messages, usage, deliveryDestination, request.reasoningEffort, maxContextTokens, visibleToolNames), updatedAt: this.now() },
         });
         runRevision += 1;
         checkpointVersion += 1;
@@ -969,13 +1103,21 @@ export class HeadlessRunEngine {
       if (caught instanceof ExecutionStoreConflictError) throw caught;
       const message = caught instanceof Error ? caught.message : String(caught);
       const cancelled = request.signal?.aborted === true;
-      const category = message.includes("model turn limit exceeded")
-        ? "model turn limit reached"
-        : message.includes("tool call budget exceeded")
-          ? "tool call limit reached"
-          : message.includes("token budget exceeded")
-            ? "token budget exceeded"
-            : cancelled ? "run cancelled" : "processing error";
+      const category: RunFailureCategory = caught instanceof ModelContextBudgetError
+        ? "context_budget"
+        : cancelled
+          ? "run_cancelled"
+          : message.includes("limit exceeded") || message.includes("budget exceeded")
+            ? "limit"
+            : (caught && typeof caught === "object" && ("status" in caught || "category" in caught || (caught instanceof Error && caught.name === "OpenAIRequestError")))
+              ? "model_provider"
+              : "processing";
+      const failure: RunFailureMetadata = {
+        category,
+        errorName: caught instanceof Error ? caught.name : "NonErrorThrown",
+        ...((caught && typeof caught === "object" && typeof (caught as { status?: unknown }).status === "number") ? { status: (caught as { status: number }).status } : {}),
+        ...((caught && typeof caught === "object" && typeof (caught as { retryable?: unknown }).retryable === "boolean") ? { retryable: (caught as { retryable: boolean }).retryable } : {}),
+      };
       await this.store.updateExecutionProgress({
         runId,
         expectedRunRevision: runRevision,
@@ -993,7 +1135,7 @@ export class HeadlessRunEngine {
           createdAt: this.now(),
         },
       });
-      return { status: cancelled ? "cancelled" : "failed", runId, error: message };
+      return { status: cancelled ? "cancelled" : "failed", runId, error: message, failure };
     } finally {
       if (durationTimer) clearTimeout(durationTimer);
     }

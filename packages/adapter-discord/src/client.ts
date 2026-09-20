@@ -1,5 +1,5 @@
 import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, ComponentType, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
-import { normalizeDiscordMentions, type DiscordMessageEnvelope, type DiscordTextTransport } from "./index.js";
+import { normalizeDiscordMentions, toDiscordAttachmentEnvelope, type DiscordMessageEnvelope, type DiscordTextTransport } from "./index.js";
 import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 import { ApplicationEmojiCatalog, type ApplicationEmoji } from "./emoji.js";
@@ -327,7 +327,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
         replyAuthorId = reference.author.id;
         replyToContent = extractDiscordMessageText(reference);
         replyToCreatedAt = reference.createdAt.toISOString();
-        replyToAttachments = [...reference.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) }));
+        replyToAttachments = [...reference.attachments.values()].map(toDiscordAttachmentEnvelope);
       } catch { /* deleted or inaccessible reference */ }
     }
     const thread = message.channel.isThread() ? message.channel : undefined;
@@ -349,7 +349,7 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
       ...(replyToContent !== undefined ? { replyToContent } : {}),
       ...(replyToCreatedAt ? { replyToCreatedAt } : {}),
       ...(replyToAttachments?.length ? { replyToAttachments } : {}),
-      attachments: [...message.attachments.values()].map(attachment => ({ id: attachment.id, url: attachment.url, filename: attachment.name, size: attachment.size, ...(attachment.contentType ? { mediaType: attachment.contentType } : {}) })),
+      attachments: [...message.attachments.values()].map(toDiscordAttachmentEnvelope),
     };
   }
 

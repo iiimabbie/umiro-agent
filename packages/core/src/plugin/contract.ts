@@ -1,5 +1,6 @@
 import type { Authority, AuthorityScopeRequest } from "../authorization/authority.js";
-import type { ContextProvider } from "../context/contract.js";
+import type { ContextBlock, ContextProvider } from "../context/contract.js";
+import type { InputEvent } from "../input/event.js";
 import type { JsonObject } from "../ports/json.js";
 import type { ToolDefinition } from "../tool/contract.js";
 import type { PluginStateStore } from "./state.js";
@@ -65,7 +66,8 @@ export interface PluginManifestV0 {
   readonly optionalSecrets?: readonly string[];
   readonly contributes: {
     readonly tools?: readonly string[];
-      readonly contextProviders?: readonly string[];
+    readonly contextProviders?: readonly string[];
+    readonly turnAnalyzers?: readonly string[];
     readonly hooks?: readonly string[];
     readonly jobs?: readonly string[];
     readonly commands?: readonly string[];
@@ -158,11 +160,37 @@ export interface PluginEnableOptions {
 
 export interface PluginContributions {
   readonly tools?: readonly ToolDefinition[];
-    readonly contextProviders?: readonly ContextProvider[];
-    readonly hooks?: readonly PluginHookDefinition[];
-    readonly jobs?: readonly PluginJobDefinition[];
+  readonly contextProviders?: readonly ContextProvider[];
+  readonly turnAnalyzers?: readonly TurnAnalyzer[];
+  readonly hooks?: readonly PluginHookDefinition[];
+  readonly jobs?: readonly PluginJobDefinition[];
   readonly commands?: readonly PluginCommandDefinition[];
   readonly skills?: readonly SkillDefinition[];
+}
+
+export interface TurnToolCandidate {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+}
+
+export interface TurnAnalyzerInput {
+  readonly event: InputEvent;
+  readonly text: string;
+  readonly defaultShouldReply: boolean;
+  readonly tools: readonly TurnToolCandidate[];
+  readonly signal?: AbortSignal;
+}
+
+export interface TurnAnalysis {
+  readonly shouldReply: boolean;
+  readonly selectedToolNames: readonly string[];
+  readonly contextBlocks: readonly ContextBlock[];
+}
+
+export interface TurnAnalyzer {
+  readonly id: string;
+  analyze(input: TurnAnalyzerInput): Promise<TurnAnalysis | undefined>;
 }
 
 /** A declarative orchestration guide. Skills can only reference registered tools/models. */

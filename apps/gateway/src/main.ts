@@ -22,15 +22,17 @@ import { ActiveWorkTracker } from "./active-work.js";
 import { SteerGate } from "./steer-gate.js";
 import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
 import { observeExecutionStore, type CoreExecutionEventName } from "./execution-events.js";
-import { modelProtocolMap, OpenAIProtocolRouter, parseOpenAIProtocol, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
+import { modelProtocolMap, OpenAIProtocolRouter, resolveDelegatedModel, type OpenAIProtocol } from "./model-routing.js";
+import { compileModelProfiles, resolveModelProfile, type ConfigModelProfile } from "./model-profiles.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 import { PluginConversationHistory } from "./plugin-conversation-history.js";
 import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
-import { importDiscordAttachments } from "./discord-attachments.js";
+import { importDiscordAttachments, mapDiscordAttachmentRenditions } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
 import { configurationRequirements, modelEndpoint } from "./setup-mode.js";
 import { describeImageArtifacts } from "./image-description.js";
+import { analyzeDiscordIngress } from "./ingress-analysis.js";
 import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 
@@ -45,23 +47,12 @@ const readiness: { storage: boolean; plugins: boolean; discord: boolean; schedul
 const exec = promisify(execFile);
 const releaseSingletonLock = await acquireSingletonLock(`${paths.state}/gateway.lock`);
 try { process.loadEnvFile(paths.secrets); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-type ConfigModelProfile = { readonly model: string; readonly protocol?: OpenAIProtocol; readonly capabilities?: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
-type RuntimeModelProfile = { readonly id: string; readonly model: string; readonly protocol: OpenAIProtocol; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
 type GatewayConfig = { model: string; protocol?: OpenAIProtocol; modelCapabilities?: readonly ModelCapability[]; profiles?: Record<string, ConfigModelProfile>; contextMaxTokens?: number; pricing?: Record<string, ModelPricing>; embedding?: EmbeddingConfig; skills?: readonly string[]; discord?: DiscordTriggerPolicyConfig; authority?: RuntimeAuthorityConfig; subagent?: { maxConcurrentChildren?: number; maxParallelTools?: number }; webUi?: { enabled?: boolean; host?: string; port?: number }; plugins?: Array<{ path: string; config?: JsonObject }> };
 const config = validateControlConfig(JSON.parse(await readFile(paths.configFile, "utf8"))) as unknown as GatewayConfig;
-const compileModelProfiles = (value: GatewayConfig): { defaultProtocol: OpenAIProtocol; defaultProfile: RuntimeModelProfile; profiles: Record<string, RuntimeModelProfile> } => {
-  const protocol = parseOpenAIProtocol(value.protocol);
-  const profiles = Object.fromEntries(Object.entries(value.profiles ?? {}).map(([id, profile]) => [id, { id, model: profile.model, protocol: parseOpenAIProtocol(profile.protocol ?? protocol, `profile ${id}.protocol`), capabilities: [...(profile.capabilities ?? [])], ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}) }])) as Record<string, RuntimeModelProfile>;
-  return { defaultProtocol: protocol, defaultProfile: { id: "default", model: value.model, protocol, capabilities: [...(value.modelCapabilities ?? [])] }, profiles };
-};
 const initialModels = compileModelProfiles(config);
 let defaultProtocol = initialModels.defaultProtocol;
 let configuredProfiles = initialModels.profiles;
 let defaultModelProfile = initialModels.defaultProfile;
-function resolveModelProfile(selection?: string): RuntimeModelProfile {
-  if (!selection || selection === "default") return defaultModelProfile;
-  return configuredProfiles[selection] ?? { id: selection, model: selection, protocol: defaultProtocol, capabilities: [] };
-}
 const allModelCapabilities = [...new Set([...(config.modelCapabilities ?? []), ...Object.values(configuredProfiles).flatMap(profile => profile.capabilities)])] as ModelCapability[];
 const startupHostedCapabilities = new Set(allModelCapabilities.filter(capability => capability.startsWith("hosted_")));
 let contextMaxTokens = config.contextMaxTokens ?? 24_000;
@@ -106,6 +97,10 @@ providers.register(discordRuntimeContextProvider);
 providers.register(discordOutputPolicyProvider);
 providers.register(createDiscordApplicationEmojiContextProvider(() => discord.applicationEmojis()));
 const logger = new JsonLineLogger();
+
+const reportImageRenditionFailure = (artifact: { readonly id: string }, error: unknown): void => {
+  logger.write({ level: "warn", event: "discord.model_image.rendition_failed", message: "Bounded Discord image rendition could not be loaded; the original image was not sent to the model", occurredAt: new Date().toISOString(), data: { artifactId: artifact.id, errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
+};
 const pluginHooks = new PluginHookRegistry(logger);
 let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObject): Promise<void> => undefined;
 const store = observeExecutionStore(new SQLiteExecutionStore(paths.sqlite), { emit: (event, payload) => emitPluginEvent(event, payload) });
@@ -217,7 +212,7 @@ const identities = new DiscordIdentityResolver(store, { ownerDiscordId, ownerAut
 const ingress = new InteractiveIngress(identities, store, store, contextEngine, engine);
 const sessionProfile = async (channelId: string) => {
   const preferences = await store.getConversationPreferences("discord", channelId);
-  const selected = resolveModelProfile(preferences?.model);
+  const selected = resolveModelProfile(preferences?.model, defaultModelProfile, configuredProfiles);
   return { ...selected, reasoningEffort: preferences?.reasoningEffort ?? selected.reasoningEffort ?? "default" as ReasoningEffort, queueMode: preferences?.queueMode ?? discordPolicy.queueMode ?? "queue" as const, preferences };
 };
 const updateSessionPreferences = async (channelId: string, change: (current: ConversationPreferences | undefined) => Pick<ConversationPreferences, "model" | "reasoningEffort" | "queueMode">) => {
@@ -699,15 +694,21 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     botMentioned: message.botMentioned === true,
     replyToBot: message.replyToBot === true,
   }, { ...discordPolicy, respondToBots: discord.respondsToBots() }, ownerDiscordId);
-  if (decision.disposition === "ignore") {
+  const route = await analyzeDiscordIngress({
+    decision,
+    text: message.content,
+    analyze: () => host.analyzeTurn({ event: toInputEvent(message), text: message.content, defaultShouldReply: decision.disposition === "trigger" }),
+  });
+  if (route.kind === "ignore") {
     logger.write({ level: "debug", event: "discord.ingress.ignored", message: "Discord event ignored by trigger policy", occurredAt: new Date().toISOString(), data: { reason: decision.reason, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
     return;
   }
-  if (decision.disposition === "observe") {
+  if (route.kind === "observe") {
     const observed = await ingress.observe(toInputEvent(message));
     logger.write({ level: "debug", event: "discord.ingress.observed", message: "Discord event evaluated without a Run", occurredAt: new Date().toISOString(), data: { reason: decision.reason, recorded: observed !== undefined, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
     return;
   }
+  const analysis = route.analysis;
   const stopTyping = discord.startTyping(message.channelId);
   try {
   const profile = await sessionProfile(message.channelId);
@@ -726,16 +727,19 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     ? await importDiscordAttachments(artifacts, message.replyToAttachments ?? [], replyResolved.principal.id, message.replyToMessageId, failure => {
       logger.write({ level: "warn", event: "discord.reply_attachment.import_failed", message: "Discord reply attachment could not be imported; continuing with the reply text", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, replyToMessageId: message.replyToMessageId!, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
     })
-    : { artifacts: [], promptSuffix: "" };
+    : { artifacts: [], modelRenditions: [], promptSuffix: "" };
   const replyArtifacts = storedReplyArtifacts.length ? storedReplyArtifacts : replyImported.artifacts;
+  const replyModelRenditions = storedReplyArtifacts.length
+    ? mapDiscordAttachmentRenditions(message.replyToAttachments ?? [], replyArtifacts)
+    : replyImported.modelRenditions;
   const artifactIds = importedArtifacts.map(artifact => artifact.id);
   const controller = new AbortController();
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
   const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}${message.authorBot ? "; bot" : ""}): ${message.content}${imported.promptSuffix}`;
-  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol);
+  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol, imported.modelRenditions, reportImageRenditionFailure);
   const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
-    ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol)
+    ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure)
     : [];
   const modelContent = [...userContent, ...replyContent];
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
@@ -759,14 +763,26 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   }
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
-  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
+  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: analysis.selectedToolNames } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally { activeRuns.delete(runKey); activeRuns.delete(event.id); if (activeSessions.get(event.conversation.externalId)?.runId === runKey) activeSessions.delete(event.conversation.externalId); }
+  if (result.status === "executed" && (result.result.status === "failed" || result.result.status === "cancelled")) {
+    logger.write({ level: "error", event: "run.failed", message: "Interactive Run failed", occurredAt: new Date().toISOString(), runId: result.result.runId, data: {
+      channelId: message.channelId,
+      model: profile.model,
+      runStatus: result.result.status,
+      category: result.result.failure?.category ?? (result.result.status === "cancelled" ? "run_cancelled" : "processing"),
+      errorName: result.result.failure?.errorName ?? "UnknownError",
+      ...(result.result.failure?.status !== undefined ? { httpStatus: result.result.failure.status } : {}),
+      ...(result.result.failure?.retryable !== undefined ? { retryable: result.result.failure.retryable } : {}),
+      errorMessage: safeErrorMessage(result.result.error, runtimeSecrets()),
+    } });
+  }
   stopTyping();
   await delivery.drain();
   if (profile.capabilities.includes("vision") && importedArtifacts.some(artifact => artifact.mediaType.toLowerCase().startsWith("image/")) && store.updateArtifactExtractedText) {
-    void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort).then(async descriptions => {
+    void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort, imported.modelRenditions, reportImageRenditionFailure).then(async descriptions => {
       for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description!, new Date().toISOString());
       if (descriptions.length) await store.rebuildSearchProjection();
     }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
@@ -797,13 +813,16 @@ discord.onSteer(async message => {
       ? await importDiscordAttachments(artifacts, message.replyToAttachments ?? [], replyResolved.principal.id, message.replyToMessageId, failure => {
         logger.write({ level: "warn", event: "discord.reply_attachment.import_failed", message: "Discord reply attachment could not be imported; continuing with the steer text", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, replyToMessageId: message.replyToMessageId!, channelId: message.channelId, filename: failure.filename, reason: failure.reason, errorName: failure.error instanceof Error ? failure.error.name : "NonErrorThrown" } });
       })
-      : { artifacts: [], promptSuffix: "" };
+      : { artifacts: [], modelRenditions: [], promptSuffix: "" };
     const replyArtifacts = storedReplyArtifacts.length ? storedReplyArtifacts : replyImported.artifacts;
+    const replyModelRenditions = storedReplyArtifacts.length
+      ? mapDiscordAttachmentRenditions(message.replyToAttachments ?? [], replyArtifacts)
+      : replyImported.modelRenditions;
     const artifactIds = imported.map(artifact => artifact.id);
     const event = toInputEvent(message, artifactIds);
-    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"), profile.protocol);
+    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"), profile.protocol, importedResult.modelRenditions, reportImageRenditionFailure);
     const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
-      ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol)
+      ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure)
       : [];
     await ingress.steer({ event, runId: activeSession.runId, userContent: [...modelContent, ...replyContent] });
   });

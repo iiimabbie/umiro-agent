@@ -64,6 +64,7 @@ const validateShape = new Ajv({ allErrors: true, strict: true }).compile<PluginM
       properties: {
         tools: { type: "array", items: { type: "string" }, uniqueItems: true },
         contextProviders: { type: "array", items: { type: "string" }, uniqueItems: true },
+        turnAnalyzers: { type: "array", items: { type: "string" }, uniqueItems: true },
         hooks: { type: "array", items: { type: "string" }, uniqueItems: true },
         jobs: { type: "array", items: { type: "string" }, uniqueItems: true },
         commands: { type: "array", items: { type: "string" }, uniqueItems: true },
@@ -127,6 +128,7 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
   if (!ID.test(manifest.namespace)) throw new TypeError(`invalid plugin namespace: ${manifest.namespace}`);
   unique(manifest.contributes.tools, "contributes.tools");
   unique(manifest.contributes.contextProviders, "contributes.contextProviders");
+  unique(manifest.contributes.turnAnalyzers, "contributes.turnAnalyzers");
   unique(manifest.contributes.skills, "contributes.skills");
   unique(manifest.contributes.subagentProfiles?.map(profile => profile.id), "contributes.subagentProfiles");
   if (manifest.contributes.policy?.some(item => !item.trim())) throw new TypeError("plugin manifest contributes.policy contains an empty policy");

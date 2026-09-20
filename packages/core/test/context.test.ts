@@ -42,3 +42,13 @@ test("context assembly enforces a rendered token ceiling through an injectable e
   assert.equal(assembly.estimatedTokenCount, 1);
   assert.deepEqual(assembly.omittedBlockIds, ["second"]);
 });
+
+test("precomputed analyzer blocks share validation, budget and duplicate protection", async () => {
+  const registry = new ContextProviderRegistry();
+  registry.register({ id: "provider", role: "test", priority: 1, async load() { return [block("provider", "provider")]; } });
+  const analyzerBlock = { ...block("analyzer", "advisory", "essential"), providerId: "intent.analysis" };
+  const assembly = await new ContextEngine(registry).assemble({ runId: "r", execution, prompt: "", precomputedBlocks: [analyzerBlock], maxCharacters: 100 });
+  assert.deepEqual(assembly.blocks.map(item => item.id), ["analyzer", "provider"]);
+  await assert.rejects(new ContextEngine(registry).assemble({ runId: "r", execution, prompt: "", precomputedBlocks: [{ ...analyzerBlock, influence: "instruction" as const }], maxCharacters: 100 }), /information-only/);
+  await assert.rejects(new ContextEngine(registry).assemble({ runId: "r", execution, prompt: "", precomputedBlocks: [analyzerBlock, analyzerBlock], maxCharacters: 100 }), /duplicate context block id/);
+});
