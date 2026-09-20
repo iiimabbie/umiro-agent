@@ -16,14 +16,11 @@ export async function describeImageArtifacts(
   artifacts: readonly Artifact[],
   signal?: AbortSignal,
   reasoningEffort?: import("@umiro/core").ReasoningEffort,
-  modelRenditions?: ReadonlyMap<string, string> | readonly ArtifactModelRendition[],
+  modelRenditions: readonly ArtifactModelRendition[] = [],
   onImageRenditionFailure?: (artifact: Artifact, error: unknown) => void,
 ): Promise<readonly ImageDescriptionResult[]> {
   const results: ImageDescriptionResult[] = [];
-  let renditionMap: ReadonlyMap<string, string>;
-  if (modelRenditions === undefined) renditionMap = new Map();
-  else if (Array.isArray(modelRenditions)) renditionMap = new Map(modelRenditions.map((item: ArtifactModelRendition) => [item.artifactId, item.url]));
-  else renditionMap = modelRenditions as ReadonlyMap<string, string>;
+  const renditionMap = new Map(modelRenditions.map(item => [item.artifactId, item.url]));
   for (const artifact of artifacts) {
     if (!artifact.mediaType.toLowerCase().split(";", 1)[0]!.startsWith("image/")) continue;
     if (signal?.aborted) throw signal.reason;

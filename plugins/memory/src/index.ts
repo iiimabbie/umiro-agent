@@ -156,14 +156,12 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       if (workspace.isSymbolicLink() || !workspace.isDirectory()) throw new Error(`memory workspace must be a regular directory: ${config.workspacePath}`);
       root = await realpath(config.workspacePath);
       memoryRoot = join(root, "memory");
-      let newDirectory = false;
       try {
         const stat = await lstat(memoryRoot);
         if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`memory directory must be a regular non-symlink directory: ${memoryRoot}`);
       } catch (error) {
         if (!isMissing(error)) throw error;
         await mkdir(memoryRoot, { mode: 0o700 });
-        newDirectory = true;
       }
       await chmod(memoryRoot, 0o700);
       for (const file of Object.keys(MEMORY_FILES) as MemoryFile[]) {
@@ -177,24 +175,6 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
         }
         await chmod(path(file), 0o600);
       }
-      const legacyPath = join(root, "MEMORY.md");
-      if (newDirectory) {
-        try {
-          const legacyStat = await lstat(legacyPath);
-          if (legacyStat.isSymbolicLink() || !legacyStat.isFile()) throw new Error(`legacy memory must be a regular non-symlink file: ${legacyPath}`);
-          const legacy = await readFile(legacyPath, "utf8");
-          const migratedPath = join(root, "MEMORY.md.migrated");
-          try { await lstat(migratedPath); throw new Error(`legacy migration target already exists: ${migratedPath}`); } catch (error) { if (!isMissing(error)) throw error; }
-          const ongoing = await read("ONGOING");
-          const quotedLegacy = legacy.replace(/^/gm, "    ");
-          const migrated = `${renderDocument(ongoing.document).trimEnd()}\n\n## 改版前的 MEMORY.md\n請逐條拆到對應檔案後刪除本條\n\n${quotedLegacy}\n`;
-          const temporary = join(memoryRoot, `.ONGOING.md.${process.pid}.${crypto.randomUUID()}.tmp`);
-          try { await writeFile(temporary, migrated, { mode: 0o600 }); await rename(temporary, path("ONGOING")); } finally { await rm(temporary, { force: true }); }
-          await rename(legacyPath, migratedPath);
-          await chmod(migratedPath, 0o600);
-        } catch (error) { if (!isMissing(error)) throw error; }
-      }
-      await setup.services?.searchDocuments?.removeSource("MEMORY.md");
       await Promise.all((Object.keys(MEMORY_FILES) as MemoryFile[]).map(file => publish(file)));
     },
   };

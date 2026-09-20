@@ -51,7 +51,7 @@ await store.updateExecutionProgress({
     runId: run.id,
     version: 1,
     data: {
-      version: 1,
+      version: 2,
       model: "fake-model",
       messages: modelBoundary
         ? [{ role: "user", content: "crash" }]

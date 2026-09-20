@@ -37,7 +37,7 @@ export interface HeadlessRunRequest {
   readonly conversationId?: string;
   readonly turnId?: string;
   readonly assembledContext?: ContextAssembly;
-  /** Analyzer-selected model-visible tools; undefined preserves all tools for old callers. */
+  /** Analyzer-selected model-visible tools; undefined makes every registered tool visible. */
   readonly visibleToolNames?: readonly string[];
   /** Used by durable ingress to reserve a stable Run ID before execution starts. */
   readonly runId?: string;
@@ -267,7 +267,7 @@ function restoredCheckpoint(claim: RecoveryClaim): { model: string; reasoningEff
   const usageRecord = usage && typeof usage === "object" && !Array.isArray(usage)
     ? usage as Record<string, JsonValue>
     : undefined;
-  if ((payload.version !== 1 && payload.version !== 2) || typeof model !== "string" || !Array.isArray(messages)
+  if (payload.version !== 2 || typeof model !== "string" || !Array.isArray(messages)
     || (reasoningEffort !== undefined && !["default", "low", "medium", "high", "xhigh"].includes(String(reasoningEffort)))
     || (maxContextTokens !== undefined && (typeof maxContextTokens !== "number" || !Number.isSafeInteger(maxContextTokens) || maxContextTokens <= 0))
     || !usageRecord || (deliveryDestination !== undefined

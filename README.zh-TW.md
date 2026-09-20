@@ -71,9 +71,6 @@ umo start
 
 第一次接觸時，agent 會帶 Owner 走一段簡短的設定：名字、語氣、怎麼稱呼你。`SOUL.md` 與 `OWNER.md` 填好後，設定流程會自行移除。
 
-> [!IMPORTANT]
-> 不要讓本專案與前一代 ümiro 同時使用同一個 Discord token，兩個程序會搶同一條事件流。
-
 ## 設定
 
 所有東西都在同一個安裝根目錄，預設 `~/.umiro/`（可用 `UMIRO_HOME` 覆寫）。
@@ -224,7 +221,3 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
-
-## 從前一代遷移
-
-前一代 ümiro（[umiro-agent-v1](https://github.com/iiimabbie/umiro-agent-v1)）以 JSON 檔存 session，已停止維護。沒有自動遷移：在自己的 `UMIRO_HOME` 下並行安裝本版，把 `SOUL.md`、`OWNER.md` 與要保留的 skills 複製到新 workspace，舊的記憶內容拆進五份 `memory/*.md`。確認沒問題後再把 Discord token 切過來。

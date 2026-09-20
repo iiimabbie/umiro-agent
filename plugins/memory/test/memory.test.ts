@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,14 +11,13 @@ const toolContext = { execution, operationId: "op", idempotencyKey: "key", signa
 test("memory entries are created, replaced, read, removed, and projected independently", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-memory-"));
   const projections = new Map<string, readonly { sourceId: string; text: string }[]>();
-  const removedSources: string[] = [];
   const observedSearch: unknown[] = [];
   try {
     const plugin = createPlugin({
       pluginId: "memory", namespace: "memory", config: { workspacePath: root },
       permissionCeiling: { capabilities: ["memory.search", "memory.write", "memory.remove"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined,
       services: {
-        searchDocuments: { async replaceSource(sourceId, documents) { projections.set(sourceId, documents); }, async removeSource(sourceId) { removedSources.push(sourceId); } },
+        searchDocuments: { async replaceSource(sourceId, documents) { projections.set(sourceId, documents); }, async removeSource() {} },
         conversationSearch: { async search(query, limit, visibility) { observedSearch.push({ query, limit, visibility }); return [{ turnId: "document:memory:entry", conversationId: "source:workspace_file:memory/LESSONS.md#Verify", actorPrincipalId: "namespace:memory", text: "Verify\nCheck the result", rank: 0, documentId: "entry", sourceType: "workspace_file", sourceId: "memory/LESSONS.md#Verify" }]; }, async rebuildSearchProjection() {} },
       },
     });
@@ -26,7 +25,6 @@ test("memory entries are created, replaced, read, removed, and projected indepen
     const tools = new Map(plugin.contributions.tools?.map(tool => [tool.name, tool]));
     assert.deepEqual([...tools.keys()], ["memory_search", "memory_read", "memory_write", "memory_remove"]);
     assert.equal(tools.get("memory_remove")?.policy.tier, "privileged");
-    assert.deepEqual(removedSources, ["MEMORY.md"]);
 
     const created = await tools.get("memory_write")!.execute({ file: "LESSONS", heading: "Verify", content: "Check the result" }, toolContext);
     assert.equal(created.ok, true);
@@ -81,19 +79,12 @@ test("memory writes enforce fixed files, entry and file limits without temporary
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("first start migrates the complete legacy MEMORY.md into ONGOING and rejects symlinked memory directories", async () => {
-  const root = await mkdtemp(join(tmpdir(), "umiro-memory-migrate-"));
-  const legacy = `# MEMORY\n\n## Rules\n${"legacy detail ".repeat(140)}`;
+test("first start creates the current memory files and rejects symlinked memory directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-memory-start-"));
   try {
-    await writeFile(join(root, "MEMORY.md"), legacy);
     const plugin = createPlugin({ pluginId: "memory", namespace: "memory", config: { workspacePath: root }, permissionCeiling: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined });
     await plugin.start?.();
-    await assert.rejects(access(join(root, "MEMORY.md")));
-    assert.equal(await readFile(join(root, "MEMORY.md.migrated"), "utf8"), legacy);
-    const ongoing = await readFile(join(root, "memory", "ONGOING.md"), "utf8");
-    assert.match(ongoing, /## 改版前的 MEMORY\.md[\s\S]*請逐條拆到對應檔案後刪除本條/);
-    assert.match(ongoing, /    # MEMORY[\s\S]*    ## Rules[\s\S]*legacy detail/);
-    assert.equal(ongoing.match(/^## /gm)?.length, 1);
+    assert.match(await readFile(join(root, "memory", "ONGOING.md"), "utf8"), /^# ONGOING\n/);
     for (const file of ["PREFERENCES", "LESSONS", "WORKFLOWS", "ONGOING", "FACTS"]) {
       assert.equal((await lstat(join(root, "memory", `${file}.md`))).mode & 0o777, 0o600);
     }

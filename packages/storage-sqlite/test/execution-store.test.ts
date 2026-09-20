@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import Database from "better-sqlite3";
 import {
   authorize,
   capabilities,
@@ -17,7 +16,6 @@ import {
   type Step,
 } from "@umiro/core";
 import { SQLiteExecutionStore } from "../src/index.js";
-import { INITIAL_SCHEMA } from "../src/migrations/001-initial.js";
 
 const at = "2026-09-08T12:00:00.000Z";
 
@@ -504,56 +502,4 @@ test("delivery retry state and external evidence survive reopen", async () => {
     assert.deepEqual(saved?.deliveryEvidence, { transport: "discord", messageId: "m" });
     reopened.close();
   } finally { database.cleanup(); }
-});
-
-test("upgrades a version 1 database with pending delivery support", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "umiro-v1-migration-"));
-  const filename = join(directory, "execution.db");
-  const legacy = new Database(filename);
-  try {
-    legacy.exec(`
-      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      ${INITIAL_SCHEMA}
-      INSERT INTO schema_migrations(version, applied_at) VALUES (1, '${at}');
-    `);
-  } finally {
-    legacy.close();
-  }
-
-  const store = new SQLiteExecutionStore(filename);
-  try {
-    await store.createRunWithStep(run(), step());
-    await store.updateExecutionProgress({
-      runId: "run-1",
-      expectedRunRevision: 0,
-      expectedRunState: "queued",
-      runState: "running",
-      resumeEligibility: "eligible",
-      runUpdatedAt: at,
-    });
-    await store.completeRunWithOutput({
-      output: {
-        id: "output-v2",
-        runId: "run-1",
-        text: "migrated",
-        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
-        createdAt: at,
-      },
-      delivery: {
-        id: "delivery-v2",
-        runId: "run-1",
-        destination: { kind: "test" },
-        payload: { text: "migrated" },
-        state: "pending",
-        createdAt: at,
-      },
-      expectedRunRevision: 1,
-      runUpdatedAt: at,
-    });
-    assert.equal((await store.getDeliveryIntent("delivery-v2"))?.state, "pending");
-    assert.ok((await store.listAuditEvents("run-1")).some(event => event.entityType === "delivery"));
-  } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
 });

@@ -58,10 +58,6 @@ export class ArtifactFileService {
     return artifact;
   }
 
-  async createFromFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: PrincipalId; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact> {
-    return this.createFromWorkspaceFile(input);
-  }
-
   async createFromWorkspaceFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: PrincipalId; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact> {
     if (!this.workspaceRoot) throw new Error("workspace attachments are unavailable");
     const source = await this.safeWorkspaceAttachment(input.sourcePath);

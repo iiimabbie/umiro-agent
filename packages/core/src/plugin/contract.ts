@@ -101,15 +101,14 @@ export interface PluginLogger {
 export interface PluginArtifactService {
   read(input: { readonly artifactId: string; readonly principalId: string }): Promise<{ readonly bytes: Uint8Array; readonly filename?: string; readonly mediaType: string } | undefined>;
   createFromBytes(input: { readonly bytes: Uint8Array; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string }; readonly workspaceRelativePath?: string }): Promise<Artifact>;
-  createFromWorkspaceFile?(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
-  createFromFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
-  moveWorkspaceFile?(input: { readonly sourcePath: string; readonly destinationPath: string }): Promise<{ readonly oldPath: string; readonly newPath: string; readonly artifactId?: string; readonly databaseUpdated: boolean }>;
-  getWorkspaceRelativePath?(artifactId: string): Promise<string | undefined>;
+  createFromWorkspaceFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
+  moveWorkspaceFile(input: { readonly sourcePath: string; readonly destinationPath: string }): Promise<{ readonly oldPath: string; readonly newPath: string; readonly artifactId?: string; readonly databaseUpdated: boolean }>;
+  getWorkspaceRelativePath(artifactId: string): Promise<string | undefined>;
 }
 /** Protocol-neutral Discord operations exposed to Plugins; adapter enforces transport details. */
 export interface DiscordPluginService {
   /** Register a durable action button set and publish it to Discord. */
-  readonly createButtonSet?: (input: {
+  readonly createButtonSet: (input: {
     readonly channelId: string;
     readonly content: string;
     readonly allowedUserIds: readonly string[];

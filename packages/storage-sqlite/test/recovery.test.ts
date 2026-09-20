@@ -293,7 +293,7 @@ test("reconciles a durable final model response without calling the model again"
         runId,
         version: 1,
         data: {
-          version: 1,
+          version: 2,
           model: "fake-model",
           messages,
           usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
@@ -380,7 +380,7 @@ test("retries an interrupted idempotent tool and continues the same Run", async 
         runId,
         version: 1,
         data: {
-          version: 1,
+          version: 2,
           model: "fake-model",
           messages: [
             { role: "user", content: "write" },
@@ -508,7 +508,7 @@ test("continues from a durable tool result without executing the tool again", as
         runId,
         version: 1,
         data: {
-          version: 1,
+          version: 2,
           model: "fake-model",
           messages: [
             { role: "user", content: "read" },

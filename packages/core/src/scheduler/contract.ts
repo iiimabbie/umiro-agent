@@ -35,6 +35,6 @@ export interface SchedulerControl {
   create(input: Omit<CreateScheduledTrigger, "id" | "nextFireAt" | "createdAt">, idempotencyKey?: string): Promise<ScheduledTrigger>;
   list(): Promise<readonly ScheduledTrigger[]>;
   setEnabled(id: string, enabled: boolean): Promise<ScheduledTrigger>;
-  update?(id: string, patch: { readonly name: string; readonly schedule: TriggerSchedule; readonly timezone: string; readonly input: JsonObject; readonly destination?: JsonObject; readonly misfirePolicy: MisfirePolicy; readonly maxAttempts: number; readonly retryBackoffMs: number }): Promise<ScheduledTrigger>;
+  update(id: string, patch: { readonly name: string; readonly schedule: TriggerSchedule; readonly timezone: string; readonly input: JsonObject; readonly destination?: JsonObject; readonly misfirePolicy: MisfirePolicy; readonly maxAttempts: number; readonly retryBackoffMs: number }): Promise<ScheduledTrigger>;
   remove(id: string): Promise<boolean>;
 }

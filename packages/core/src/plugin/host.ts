@@ -102,7 +102,7 @@ function discordWithinCeiling(service: DiscordPluginService, manifest: PluginMan
     if (!manifest.permissions.capabilities.includes(capability)) throw new Error(`plugin ${manifest.id} requires undeclared service capability ${capability}`);
   };
   return {
-    ...(service.createButtonSet ? { async createButtonSet(input) { requireCapability("discord.button.write"); return service.createButtonSet!(input); } } : {}),
+    async createButtonSet(input) { requireCapability("discord.button.write"); return service.createButtonSet(input); },
     async sendButtons(input) { requireCapability("discord.button.write"); return service.sendButtons(input); },
     async sendMessage(input) { requireCapability("discord.message.write"); return service.sendMessage(input); },
     async react(input) { requireCapability("discord.message.react"); return service.react(input); },

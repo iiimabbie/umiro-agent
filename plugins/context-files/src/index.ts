@@ -257,7 +257,6 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
       }
       await removeBootstrapIfConfigured();
       await Promise.all((Object.keys(FILES) as Array<keyof typeof FILES>).map(role => publish(role)));
-      await context.services?.searchDocuments?.removeSource("MEMORY.md");
     },
   };
 }

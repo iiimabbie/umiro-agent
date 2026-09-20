@@ -1,6 +1,5 @@
 import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, ComponentType, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import { normalizeDiscordMentions, toDiscordAttachmentEnvelope, type DiscordMessageEnvelope, type DiscordTextTransport } from "./index.js";
-import type { DiscordPluginService } from "@umiro/core/plugin";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 import { ApplicationEmojiCatalog, type ApplicationEmoji } from "./emoji.js";
 import { extractDiscordMessageText } from "./message-text.js";
@@ -17,8 +16,7 @@ export function applicationCommandData(commands: readonly DiscordCommandDefiniti
   })) as ApplicationCommandDataResolvable[];
 }
 
-/** Register commands only in guild scopes for immediate availability. Global
- * commands are intentionally not touched after the one-time migration cleanup. */
+/** Register commands in guild scopes for immediate availability. */
 export async function syncApplicationCommands(guilds: readonly DiscordCommandManager[], commands: readonly ApplicationCommandDataResolvable[]): Promise<void> {
   await Promise.all(guilds.map(guild => guild.set(commands)));
 }
@@ -49,7 +47,7 @@ export function commandReplyEmbeds(result: Record<string, unknown>): readonly Re
   return result.embed && typeof result.embed === "object" && !Array.isArray(result.embed) ? [result.embed as Record<string, unknown>] : [];
 }
 
-export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginService {
+export class DiscordJsAdapter implements DiscordTextTransport {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
   private steerHandler?: (message: DiscordMessageEnvelope) => Promise<boolean>;
@@ -168,12 +166,12 @@ export class DiscordJsAdapter implements DiscordTextTransport, DiscordPluginServ
     return { messageId: sent.id };
   }
 
-  async editText(channelId: string, messageId: string, text: string): Promise<{ messageId: string; migrated: boolean }> {
+  async editText(channelId: string, messageId: string, text: string): Promise<{ messageId: string }> {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${channelId}`);
     const message = await channel.messages.fetch(messageId);
     const edited = await message.edit({ content: this.prepareText(text) });
-    return { messageId: edited.id, migrated: false };
+    return { messageId: edited.id };
   }
 
   async sendMessage(input: { readonly channelId: string; readonly content: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string }> {

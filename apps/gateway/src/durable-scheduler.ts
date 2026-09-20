@@ -31,12 +31,12 @@ export async function reconcilePluginSchedules(scheduler: SchedulerControl, plug
     if (!promptPluginId && !jobId) continue;
     if (!state) { if (await scheduler.remove(trigger.id)) removed += 1; continue; }
     if (state === "disabled") {
-      if (scheduler.update && trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
+      if (trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
       if (trigger.enabled) { await scheduler.setEnabled(trigger.id, false); disabled += 1; }
       continue;
     }
     if (trigger.input[LIFECYCLE_DISABLED] === true) {
-      if (scheduler.update) { const input = { ...trigger.input }; delete input[LIFECYCLE_DISABLED]; await scheduler.update(trigger.id, schedulePatch(trigger, input)); }
+      const input = { ...trigger.input }; delete input[LIFECYCLE_DISABLED]; await scheduler.update(trigger.id, schedulePatch(trigger, input));
       if (!trigger.enabled) { await scheduler.setEnabled(trigger.id, true); enabled += 1; }
     }
   }

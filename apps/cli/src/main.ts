@@ -93,23 +93,6 @@ async function removePluginSecrets(names: ReadonlySet<string>): Promise<void> {
   } finally { await rm(temporary, { force: true }); }
 }
 
-async function migrateLegacyEmbeddingSecret(): Promise<void> {
-  const config = await loadConfig();
-  const embedding = config.embedding;
-  const legacyName = typeof embedding?.apiKeyEnv === "string" ? embedding.apiKeyEnv.trim() : "";
-  if (!embedding || !legacyName) return;
-  if (!/^[A-Z][A-Z0-9_]{1,79}$/.test(legacyName)) throw new TypeError("embedding.apiKeyEnv contains an invalid legacy secret name");
-  const secrets = await readFile(secretsFile, "utf8");
-  if (!/^UMIRO_EMBEDDING_API_KEY=/m.test(secrets)) {
-    const legacyLine = secrets.split(/\r?\n/).find(line => line.startsWith(`${legacyName}=`));
-    const environmentValue = process.env[legacyName];
-    const encoded = legacyLine?.slice(legacyName.length + 1) ?? (environmentValue ? JSON.stringify(environmentValue) : undefined);
-    if (encoded !== undefined) await writeFile(secretsFile, `${secrets.trimEnd()}\nUMIRO_EMBEDDING_API_KEY=${encoded}\n`, { mode: 0o600 });
-  }
-  const { apiKeyEnv: _removed, ...currentEmbedding } = embedding;
-  await saveConfig({ ...config, embedding: currentEmbedding });
-}
-
 function assertPluginEntryInside(root: string, entry: string): void {
   const path = relative(root, entry);
   if (!path || path === ".." || path.startsWith(`..${sep}`)) throw new Error(`plugin entry escapes its directory: ${entry}`);
@@ -159,19 +142,16 @@ async function init(): Promise<void> {
   const templates = await workspaceTemplates();
   for (const name of ["SOUL.md", "AGENT.md", "OWNER.md", "BOOTSTRAP.md"]) if (!await exists(join(workspace, name))) await cp(join(templates, name), join(workspace, name));
   const memoryDirectory = join(workspace, "memory");
-  if (await exists(memoryDirectory) || !await exists(join(workspace, "MEMORY.md"))) {
-    await mkdir(memoryDirectory, { recursive: true, mode: 0o700 });
-    for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) {
-      const target = join(memoryDirectory, name);
-      if (!await exists(target)) await cp(join(templates, "memory", name), target);
-      await chmod(target, 0o600);
-    }
+  await mkdir(memoryDirectory, { recursive: true, mode: 0o700 });
+  for (const name of ["PREFERENCES.md", "LESSONS.md", "WORKFLOWS.md", "ONGOING.md", "FACTS.md"]) {
+    const target = join(memoryDirectory, name);
+    if (!await exists(target)) await cp(join(templates, "memory", name), target);
+    await chmod(target, 0o600);
   }
   await mkdir(join(home, "config"), { recursive: true, mode: 0o700 });
   if (!await exists(pluginsFile)) await savePlugins([]);
   if (!await exists(configFile)) await writeFile(configFile, `${JSON.stringify({ model: process.env.LLM_MODEL?.trim() || "not-configured", protocol: process.env.LLM_PROTOCOL === "openai_chat_completions" ? "openai_chat_completions" : "openai_responses", contextMaxTokens: 24_000, pricing: {}, embedding: { provider: "disabled" }, skills: [], discord: { ignoredChannels: [], ambientChannels: [], allowedChannels: [], allowedGuilds: [], respondToBots: true, queueMode: "queue", presence: { status: "online", activity: "with ümiro" } }, webUi: { enabled: true, host: "127.0.0.1", port: 3210 }, plugins: [] }, null, 2)}\n`, { mode: 0o600 });
   if (!await exists(secretsFile)) await writeFile(secretsFile, `# DISCORD_TOKEN=\n# LLM_BASE_URL=\n# LLM_API_KEY=\n# UMIRO_OWNER_DISCORD_ID=\n# UMIRO_EMBEDDING_BASE_URL=\n# UMIRO_EMBEDDING_API_KEY=\nUMIRO_WEB_UI_TOKEN=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
-  await migrateLegacyEmbeddingSecret();
   console.log(home);
 }
 

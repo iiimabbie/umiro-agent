@@ -63,7 +63,7 @@ import {
   type PendingSteeredInput,
   type InputEvent,
 } from "@umiro/core";
-import { migrate } from "../migrations/index.js";
+import { initializeSchema } from "../schema.js";
 import { SQLitePluginStateStore } from "./plugin-state-store.js";
 
 interface RunRow {
@@ -315,7 +315,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     this.database.pragma("busy_timeout = 5000");
     if (filename !== ":memory:") this.database.pragma("journal_mode = WAL");
     this.database.pragma("synchronous = FULL");
-    migrate(this.database);
+    initializeSchema(this.database);
     this.seedEmbeddingJobs();
   }
 

@@ -14,7 +14,7 @@ const memoryFiles = async (root: string) => {
     PREFERENCES: "# PREFERENCES\n\nPreferences.\n\n## Lead with outcome\nGive the result first.\n",
     LESSONS: "# LESSONS\n\nLessons.\n\n## Verify changes\nCheck the actual result.\n",
     WORKFLOWS: "# WORKFLOWS\n\nWorkflows.\n\n## Deploy safely\nPrivate workflow details.\n",
-    ONGOING: "# ONGOING\n\nOngoing.\n\n## V2 migration\nPrivate project details.\n",
+    ONGOING: "# ONGOING\n\nOngoing.\n\n## Current project\nPrivate project details.\n",
     FACTS: "# FACTS\n\nFacts.\n\n## Host names\nPrivate host details.\n",
   };
   await Promise.all(Object.entries(contents).map(([name, content]) => writeFile(join(root, "memory", `${name}.md`), content)));
@@ -35,7 +35,7 @@ test("built-in context provider loads OWNER with the other workspace files", asy
   assert.equal(owner[0]?.content, "owner");
   const memory = await providers.find(provider => provider.id === "context.memory")!.load(request);
   assert.match(memory[0]?.content ?? "", /<memory-preferences>[\s\S]*Give the result first[\s\S]*<memory-lessons>[\s\S]*Check the actual result/);
-  assert.match(memory[0]?.content ?? "", /WORKFLOWS: Deploy safely[\s\S]*ONGOING: V2 migration[\s\S]*FACTS: Host names/);
+  assert.match(memory[0]?.content ?? "", /WORKFLOWS: Deploy safely[\s\S]*ONGOING: Current project[\s\S]*FACTS: Host names/);
   assert.doesNotMatch(memory[0]?.content ?? "", /Private workflow details|Private project details|Private host details/);
   const skills = await providers.find(provider => provider.id === "context.skills")!.load(request);
   assert.match(skills[0]?.content ?? "", /Traveler: Plan trips.*skills\/travel\/SKILL\.md/);

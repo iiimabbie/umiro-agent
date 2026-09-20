@@ -71,9 +71,6 @@ umo start
 
 On first contact the agent walks the owner through a short setup: name, voice, how to address you. The setup protocol removes itself once `SOUL.md` and `OWNER.md` are filled in.
 
-> [!IMPORTANT]
-> Do not run this and the previous generation of ümiro with the same Discord token at the same time; both would consume the same event stream.
-
 ## Configuration
 
 Everything lives under one installation root, `~/.umiro/` by default (`UMIRO_HOME` overrides it).
@@ -224,7 +221,3 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
-
-## Migrating from the previous generation
-
-The earlier ümiro ([umiro-agent-v1](https://github.com/iiimabbie/umiro-agent-v1)) stored sessions as JSON files and is no longer maintained. There is no automatic migration: install this version alongside it under its own `UMIRO_HOME`, copy `SOUL.md`, `OWNER.md` and any skills you want to keep into the new workspace, and move the old memory content into the five `memory/*.md` files. Switch the Discord token over once you are satisfied.

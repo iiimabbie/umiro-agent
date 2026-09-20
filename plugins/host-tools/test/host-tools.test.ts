@@ -36,7 +36,8 @@ test("download_file reports the authoritative materialized path and enforces a s
     services: { artifacts: {
       async read() { return undefined; },
       async createFromBytes() { return artifact; },
-      async createFromFile() { return artifact; },
+      async createFromWorkspaceFile() { return artifact; },
+      async moveWorkspaceFile() { return { oldPath: "attachments/a", newPath: "attachments/b", databaseUpdated: false }; },
       async getWorkspaceRelativePath() { return "attachments/downloads/file (2).bin"; },
     } },
   } satisfies PluginSetupContext;

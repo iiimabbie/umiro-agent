@@ -37,15 +37,12 @@ export async function artifactModelContent(
   artifacts: readonly Artifact[],
   supportsVision = true,
   protocol: "openai_responses" | "openai_chat_completions" = "openai_responses",
-  modelRenditions?: ReadonlyMap<string, string> | readonly ArtifactModelRendition[],
+  modelRenditions: readonly ArtifactModelRendition[] = [],
   onImageRenditionFailure?: (artifact: Artifact, error: unknown) => void,
 ): Promise<readonly (ModelTextPart | ModelImagePart | ModelFilePart)[]> {
   const content: Array<ModelTextPart | ModelImagePart | ModelFilePart> = [];
   if (prompt.trim()) content.push({ type: "text", text: prompt });
-  let renditionMap: ReadonlyMap<string, string>;
-  if (modelRenditions === undefined) renditionMap = new Map();
-  else if (Array.isArray(modelRenditions)) renditionMap = new Map(modelRenditions.map((item: ArtifactModelRendition) => [item.artifactId, item.url]));
-  else renditionMap = modelRenditions as ReadonlyMap<string, string>;
+  const renditionMap = new Map(modelRenditions.map(item => [item.artifactId, item.url]));
   for (const artifact of artifacts) {
     const mediaType = artifact.mediaType.toLowerCase();
     const baseMediaType = mediaType.split(";", 1)[0]!.trim();

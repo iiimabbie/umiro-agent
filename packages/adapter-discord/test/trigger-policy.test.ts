@@ -30,7 +30,7 @@ test("Discord trigger policy protects DMs and bot traffic while Owner remains su
   assert.equal(decideDiscordIngress({ ...base, authorBot: true, botMentioned: true }, { ...config, respondToBots: true }, "owner").disposition, "trigger");
 });
 
-test("Discord trigger config is strict and empty allowlists retain V1 unrestricted semantics", () => {
+test("Discord trigger config is strict and empty allowlists allow all guild scopes", () => {
   const defaults = parseDiscordTriggerPolicy(undefined);
   assert.equal(defaults.respondToBots, true);
   assert.equal(defaults.queueMode, "queue");

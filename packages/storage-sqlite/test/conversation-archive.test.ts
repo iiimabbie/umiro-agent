@@ -4,9 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { capabilities, type Run, type Step } from "@umiro/core";
-import Database from "better-sqlite3";
 import { SQLiteExecutionStore } from "../src/index.js";
-import { CONVERSATION_LOCATIONS_SCHEMA } from "../src/migrations/026-conversation-locations.js";
 
 const event = (id: string) => ({ id, occurredAt: "2026-09-09T00:00:00.000Z", identity: { transport: "discord", externalId: "user", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: id }] });
 
@@ -102,27 +100,4 @@ test("session model and queue preferences survive conversation archive", async (
     const second = await store.updateConversationPreferences({ transport: "discord", externalId: "channel", expectedRevision: 1, queueMode: "queue", updatedAt: "2026-09-09T00:02:00.000Z" });
     assert.deepEqual(second, { transport: "discord", externalId: "channel", revision: 2, queueMode: "queue", updatedAt: "2026-09-09T00:02:00.000Z" });
   } finally { store.close(); }
-});
-
-test("schema 26 backfills an archived Conversation location from its Discord delivery", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "umiro-location-migration-"));
-  const filename = join(directory, "db.sqlite");
-  let store = new SQLiteExecutionStore(filename);
-  const execution = { actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, origin: { kind: "interactive" as const, transport: "discord", conversationId: "c1" }, authority: { capabilities: capabilities(), visibility: { kind: "all" as const }, instructionAuthority: "full" as const } };
-  try {
-    await store.ingestInputEvent({ event: event("old"), actorPrincipalId: "owner", newConversationId: "c1", newTurnId: "t1", newRunId: "r1", createdAt: "2026-09-09T00:00:00.000Z" });
-    await store.createRunWithStep({ id: "r1", revision: 0, state: "queued", context: execution, conversationId: "c1", turnId: "t1", resumeEligibility: "not_applicable", createdAt: "2026-09-09T00:00:00.000Z", updatedAt: "2026-09-09T00:00:00.000Z" }, { id: "s1", runId: "r1", revision: 0, sequence: 0, kind: "model_call", state: "pending", createdAt: "2026-09-09T00:00:00.000Z", updatedAt: "2026-09-09T00:00:00.000Z" });
-    await store.updateExecutionProgress({ runId: "r1", expectedRunRevision: 0, expectedRunState: "queued", runState: "running", resumeEligibility: "eligible", runUpdatedAt: "2026-09-09T00:00:01.000Z" });
-    await store.completeRunWithOutput({ output: { id: "o1", runId: "r1", text: "done", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, createdAt: "2026-09-09T00:00:02.000Z" }, delivery: { id: "d1", runId: "r1", destination: { kind: "discord", channelId: "channel" }, payload: { text: "done" }, state: "pending", createdAt: "2026-09-09T00:00:02.000Z" }, expectedRunRevision: 1, runUpdatedAt: "2026-09-09T00:00:02.000Z" });
-    await store.archiveBoundConversation("discord", "channel", "2026-09-09T00:01:00.000Z");
-    await store.ingestInputEvent({ event: event("new"), actorPrincipalId: "owner", newConversationId: "c2", newTurnId: "t2", newRunId: "r2", createdAt: "2026-09-09T00:02:00.000Z" });
-    store.close();
-    const database = new Database(filename);
-    database.exec("DROP TABLE conversation_locations;");
-    database.exec(CONVERSATION_LOCATIONS_SCHEMA);
-    database.close();
-    store = new SQLiteExecutionStore(filename);
-    const archived = await store.listConversations({ state: "archived" });
-    assert.deepEqual(archived.map(item => [item.conversation.id, item.location.transport, item.location.externalId, item.location.kind]), [["c1", "discord", "channel", "channel"]]);
-  } finally { try { store.close(); } catch {} rmSync(directory, { recursive: true, force: true }); }
 });
