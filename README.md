@@ -207,6 +207,8 @@ umo plugin configure <source> --config '{"key":"value"}'
 
 Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin declares the capabilities it needs; the host caps them at what the calling principal is allowed to do.
 
+Plugin install, update, enable, disable, configure and remove operations never restart the Gateway automatically. They save the requested change and leave the current process running; the user decides when to apply pending runtime changes with Discord `/restart`, the control panel restart button, or `umo restart`. Agent shell tools are not allowed to start, stop or restart Umiro; the owner-only Discord slash command and the control panel button remain explicit user actions and are not blocked.
+
 Disabling a plugin unregisters its tools, policies, hooks, jobs, commands, skills, and search projections, and lifecycle-disables its schedules until the plugin is enabled again. Removing a plugin also deletes its owned schedules and search projections. User data produced by the plugin, such as journals and reports, is preserved.
 
 Disabling a plugin always retains its declared secrets, and removing one retains them by default. The control panel's remove modal can explicitly request secret cleanup. The CLI equivalent is `umo plugin remove <source> [--workspace <name>] --remove-secrets`; it removes only secrets declared by the target plugin that are exclusive to it. Core secrets and secrets still declared by any other installed plugin are retained.

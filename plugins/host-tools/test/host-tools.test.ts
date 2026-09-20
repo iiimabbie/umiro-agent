@@ -24,6 +24,21 @@ test("host-tools confines file and shell operations to the configured workspace"
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
+test("agent shell cannot control the Umiro service", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-host-service-control-"));
+  const setup = { pluginId: "host-tools", namespace: "host-tools", permissionCeiling: authority, config: { workspacePath: root }, getSecret() { return undefined; } } satisfies PluginSetupContext;
+  const plugin = createPlugin(setup); await plugin.start?.();
+  const bash = plugin.contributions.tools!.find(tool => tool.name === "bash")!;
+  try {
+    for (const command of ["umo restart", "/home/user/.umiro/bin/umo stop", "systemctl --user restart umiro.service", "service umiro start"]) {
+      const result = await bash.execute({ command }, execution);
+      assert.equal(result.ok, false, command);
+      assert.match(result.ok ? "" : result.error.message, /user must do that manually/);
+    }
+    assert.equal((await bash.execute({ command: "printf 'plugin install remains allowed'" }, execution)).ok, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("download_file reports the authoritative materialized path and enforces a streamed size limit", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-host-download-"));
   const previousFetch = globalThis.fetch;

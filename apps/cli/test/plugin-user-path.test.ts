@@ -31,7 +31,8 @@ test("clean-home Plugin CLI runs install, list, configure, disable, enable, upda
   await writeFile(join(plugin, "index.js"), "export function createPlugin() { return { contributions: {} }; }\n");
   try {
     await exec(process.execPath, [cli, "init"], { env });
-    await exec(process.execPath, [cli, "plugin", "install", plugin, "--config", "{\"mode\":\"strict\"}"], { env });
+    const installed = await exec(process.execPath, [cli, "plugin", "install", plugin, "--config", "{\"mode\":\"strict\"}"], { env });
+    assert.match(installed.stdout, /automatic restart skipped.*user must run `umo restart` manually/);
     assert.match((await exec(process.execPath, [cli, "plugin", "list"], { env })).stdout, /enabled\s+.*sample-plugin/);
 
     await exec(process.execPath, [cli, "plugin", "configure", plugin, "--config", "{\"label\":\"owner\"}"], { env });
@@ -45,6 +46,24 @@ test("clean-home Plugin CLI runs install, list, configure, disable, enable, upda
     await exec(process.execPath, [cli, "plugin", "remove", plugin], { env });
     assert.deepEqual(JSON.parse(await readFile(join(home, "config", "plugins.json"), "utf8")), []);
     await assert.rejects(exec(process.execPath, [cli, "plugin", "enable", plugin], { env }), /plugin is not installed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Plugin changes never control a running service", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-plugin-no-restart-"));
+  const home = join(root, "home"); const plugin = join(root, "sample-plugin"); const bin = join(root, "bin"); const systemctlLog = join(root, "systemctl.log");
+  await mkdir(plugin); await mkdir(bin);
+  await writeFile(join(plugin, "umiro.plugin.json"), `${JSON.stringify({ schemaVersion: 0, id: "sample", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "sample", permissions: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, contributes: {} })}\n`);
+  await writeFile(join(plugin, "index.js"), "export function createPlugin() { return { contributions: {} }; }\n");
+  await writeFile(join(bin, "systemctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_SYSTEMCTL_LOG\"\nif [ \"$1 $2\" = \"--user is-active\" ]; then echo active; fi\nexit 0\n");
+  await chmod(join(bin, "systemctl"), 0o700);
+  const env = { ...process.env, UMIRO_HOME: home, FAKE_SYSTEMCTL_LOG: systemctlLog, PATH: `${bin}:${process.env.PATH ?? ""}` };
+  try {
+    await exec(process.execPath, [cli, "init"], { env });
+    const result = await exec(process.execPath, [cli, "plugin", "install", plugin], { env });
+    assert.match(result.stdout, /automatic restart skipped/);
+    const calls = await readFile(systemctlLog, "utf8").catch(() => "");
+    assert.doesNotMatch(calls, /(?:start|stop|restart).*umiro|umiro.*(?:start|stop|restart)/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -207,6 +207,8 @@ umo plugin configure <source> --config '{"key":"value"}'
 
 內掛與外掛共用同一套 manifest、權限、生命週期與 runtime。外掛宣告需要的 capability，host 會把它限制在呼叫者本身被允許的範圍內。
 
+安裝、更新、啟用、停用、設定或移除外掛都不會自動重啟 Gateway。操作只會儲存變更並讓目前程序繼續運行；何時套用待生效的 runtime 變更，由使用者自行透過 Discord `/restart`、控制台的重啟按鈕或 `umo restart` 決定。Agent 的 shell 工具不得啟動、停止或重啟 Umiro；Owner 專用的 Discord slash command 與控制台按鈕仍屬於使用者明確操作，不會被阻擋。
+
 停用外掛時，它註冊的工具、policy、hook、job、command、skill 與搜尋 projection 會從 runtime 撤下，所屬排程會標記為生命週期停用；再次啟用時才恢復。移除外掛時，所屬排程與搜尋 projection 會一併刪除。外掛執行後產生的日記、報告等使用者資料會保留。
 
 停用外掛永遠保留它宣告的 Secret；移除外掛預設也保留。控制台的移除 modal 可以明確勾選同時清理 Secret。CLI 用 `umo plugin remove <source> [--workspace <name>] --remove-secrets`；只會刪除目標外掛宣告、且只由它獨占的 Secret。ümiro 核心 Secret，以及其他仍安裝外掛宣告的共用 Secret，都會保留。

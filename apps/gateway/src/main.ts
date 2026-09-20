@@ -422,7 +422,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     const target = before.find(entry => entry.source === source && entry.workspace === workspace);
     const targetManifest = target && (action === "disable" || action === "remove") ? await loadPluginManifest(target.path).catch(() => undefined) : undefined;
     const args = ["plugin", action, source, ...(workspace ? ["--workspace", workspace] : []), ...(pluginConfig ? ["--config", JSON.stringify(pluginConfig)] : []), ...(removeSecrets ? ["--remove-secrets"] : [])];
-    const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024, env: { ...process.env, UMIRO_PLUGIN_ACTION_FROM_GATEWAY: "1" } });
+    const result = await exec(`${paths.root}/bin/umo`, args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024, env: process.env });
     if (targetManifest && (action === "disable" || action === "remove")) {
       const loaded = host.get(targetManifest.id);
       if (loaded && action === "remove") await host.remove(targetManifest.id);
