@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeDiscordIngress } from "../src/ingress-analysis.js";
+import { analyzeDiscordIngress, buildDiscordAnalysisText } from "../src/ingress-analysis.js";
 
 const analysis = (shouldReply: boolean) => ({ shouldReply, selectedToolNames: [], contextBlocks: [] });
+
+test("analysis text includes bounded recent context before the current message", () => {
+  const text = buildDiscordAnalysisText("你編輯一下", [
+    { userText: "我已經直接編輯文檔了，你去看一下並整理。", assistantText: "請告訴我要處理哪個檔案。" },
+  ]);
+  assert.match(text, /User: 我已經直接編輯文檔了/);
+  assert.match(text, /Assistant: 請告訴我要處理哪個檔案/);
+  assert.ok(text.endsWith("Current message:\n你編輯一下"));
+  assert.ok(text.length <= 10_000);
+});
+
+test("analysis text remains unchanged without conversation history", () => {
+  assert.equal(buildDiscordAnalysisText("  hello  ", []), "  hello  ");
+});
 
 test("hard-ignore does not call the analyzer", async () => {
   let calls = 0;
@@ -20,11 +34,11 @@ for (const reason of ["mention", "owner_dm", "reply_to_bot"] as const) {
   });
 }
 
-test("observe plus analyzer shouldReply=true becomes a single trigger", async () => {
+test("observe remains observe without consulting the analyzer", async () => {
   let calls = 0;
   const route = await analyzeDiscordIngress({ decision: { disposition: "observe", reason: "allowed_untriggered_message" }, text: "please help", analyze: async () => { calls += 1; return analysis(true); } });
-  assert.deepEqual(route, { kind: "trigger", analysis: analysis(true) });
-  assert.equal(calls, 1);
+  assert.deepEqual(route, { kind: "observe" });
+  assert.equal(calls, 0);
 });
 
 test("analyzer failure falls back to the deterministic policy", async () => {
@@ -33,7 +47,7 @@ test("analyzer failure falls back to the deterministic policy", async () => {
   const trigger = await analyzeDiscordIngress({ decision: { disposition: "trigger", reason: "mention" }, text: "hello", analyze: async () => { calls += 1; throw new Error("timeout"); } });
   assert.deepEqual(observe, { kind: "observe" });
   assert.deepEqual(trigger, { kind: "trigger" });
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
 
 test("attachment-only messages skip analysis and keep the trigger policy", async () => {

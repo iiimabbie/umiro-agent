@@ -32,7 +32,7 @@ import { importDiscordAttachments, mapDiscordAttachmentRenditions } from "./disc
 import { safeErrorMessage } from "./safe-error.js";
 import { configurationRequirements, modelEndpoint } from "./setup-mode.js";
 import { describeImageArtifacts } from "./image-description.js";
-import { analyzeDiscordIngress } from "./ingress-analysis.js";
+import { analyzeDiscordIngress, buildDiscordAnalysisText } from "./ingress-analysis.js";
 import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 
@@ -699,6 +699,24 @@ discord.onAutocomplete(async (name: string, option: string, value: string, conte
     return [];
   }
 });
+const discordAnalysisText = async (channelId: string, currentText: string): Promise<string> => {
+  const [summary] = await store.listConversations({ transport: "discord", externalId: channelId, state: "active", limit: 1 });
+  if (!summary) return currentText;
+  const turns = await store.listTurns(summary.conversation.id, 4);
+  const items = await Promise.all(turns.map(turn => store.getHistoryItem(turn.id)));
+  const history = items.flatMap(item => {
+    if (!item) return [];
+    const userText = item.turn.content
+      .filter(block => block.type === "text")
+      .map(block => block.text)
+      .join("\n")
+      .trim();
+    if (!userText || userText.startsWith("[System] This is the initial message")) return [];
+    return [{ userText, ...(item.assistantText ? { assistantText: item.assistantText } : {}) }];
+  });
+  return buildDiscordAnalysisText(currentText, history);
+};
+
 const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => {
   const decision = decideDiscordIngress({
     channelId: message.channelId,
@@ -711,7 +729,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const route = await analyzeDiscordIngress({
     decision,
     text: message.content,
-    analyze: () => host.analyzeTurn({ event: toInputEvent(message), text: message.content, defaultShouldReply: decision.disposition === "trigger" }),
+    analyze: async () => host.analyzeTurn({ event: toInputEvent(message), text: await discordAnalysisText(message.threadId ?? message.channelId, message.content), defaultShouldReply: decision.disposition === "trigger" }),
   });
   if (route.kind === "ignore") {
     logger.write({ level: "debug", event: "discord.ingress.ignored", message: "Discord event ignored by trigger policy", occurredAt: new Date().toISOString(), data: { reason: decision.reason, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
