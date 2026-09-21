@@ -27,6 +27,62 @@ test("one plugin entry composes hooks, jobs and commands and removes them on dis
   assert.deepEqual(host.listCommands(), []);
 });
 
+test("read-only control panel views are manifest-bound, validated, and lifecycle-scoped", async () => {
+  const manifest = { schemaVersion: 0 as const, id: "diary-view", version: "1.0.0", coreApi: "0" as const, entry: "./index.js", namespace: "diary-view", permissions: authority, contributes: { controlPanelViews: ["diary"] } };
+  validatePluginManifest(manifest);
+  assert.throws(() => validatePluginManifest({ ...manifest, contributes: { controlPanelViews: ["diary", "diary"] } }), /duplicate/);
+  assert.throws(() => validatePluginManifest({ ...manifest, contributes: { controlPanelViews: ["../diary"] } }), /invalid id/);
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  const view = { id: "diary", title: "日記", kind: "read-only-markdown-collection" as const, async list() { return [{ id: "2026-09-21", title: "2026-09-21", occurredAt: "2026-09-21T12:00:00.000Z" }]; }, async read(id: string) { return id === "2026-09-21" ? { id, title: "2026-09-21", content: "# today" } : undefined; } };
+  await host.enable({ manifest, create: () => ({ contributions: { controlPanelViews: [view] } }) });
+  assert.deepEqual(host.listControlPanelViews(), [{ pluginId: "diary-view", id: "diary", title: "日記", kind: "read-only-markdown-collection" }]);
+  assert.deepEqual(await host.listControlPanelDocuments("diary"), [{ id: "2026-09-21", title: "2026-09-21", occurredAt: "2026-09-21T12:00:00.000Z" }]);
+  assert.deepEqual(await host.readControlPanelDocument("diary", "2026-09-21"), { id: "2026-09-21", title: "2026-09-21", content: "# today" });
+  await host.disable("diary-view");
+  assert.deepEqual(host.listControlPanelViews(), []);
+  await assert.rejects(host.listControlPanelDocuments("diary"), /not found/);
+  await host.remove("diary-view");
+  assert.equal(host.get("diary-view"), undefined);
+});
+
+test("control panel views fail closed and roll back conflicting contributions", async () => {
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  const view = { id: "shared", title: "First", kind: "read-only-markdown-collection" as const, async list() { return []; }, async read() { return undefined; } };
+  await host.enable({ manifest: { schemaVersion: 0, id: "first-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "first-view", permissions: authority, contributes: { controlPanelViews: ["shared"] } }, create: () => ({ contributions: { controlPanelViews: [view] } }) });
+  await assert.rejects(host.enable({
+    manifest: { schemaVersion: 0, id: "conflicting-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "conflicting-view", permissions: authority, contributes: { commands: ["temporary"], controlPanelViews: ["shared"] } },
+    create: () => ({ contributions: { commands: [{ name: "temporary", description: "temporary", async execute() { return {}; } }], controlPanelViews: [{ ...view, title: "Second" }] } }),
+  }), /duplicate plugin control panel view/);
+  assert.deepEqual(host.listCommands(), []);
+  assert.deepEqual(host.listControlPanelViews(), [{ pluginId: "first-view", id: "shared", title: "First", kind: "read-only-markdown-collection" }]);
+
+  const mismatch = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  await assert.rejects(mismatch.enable({ manifest: { schemaVersion: 0, id: "missing-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "missing-view", permissions: authority, contributes: { controlPanelViews: ["declared"] } }, create: () => ({ contributions: {} }) }), /do not match/);
+  assert.deepEqual(mismatch.listControlPanelViews(), []);
+});
+
+test("control panel view results are bounded and validated", async () => {
+  let mode: "many" | "duplicate" | "valid" = "many";
+  let oversized = true;
+  const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
+  await host.enable({
+    manifest: { schemaVersion: 0, id: "bounded-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "bounded-view", permissions: authority, contributes: { controlPanelViews: ["bounded"] } },
+    create: () => ({ contributions: { controlPanelViews: [{ id: "bounded", title: "Bounded", kind: "read-only-markdown-collection", async list() {
+      if (mode === "many") return Array.from({ length: 5_001 }, (_, index) => ({ id: `item-${index}`, title: "item" }));
+      if (mode === "duplicate") return [{ id: "same", title: "one" }, { id: "same", title: "two" }];
+      return [{ id: "one", title: "one" }];
+    }, async read(id: string) { return { id, title: "one", content: oversized ? "x".repeat(100_001) : "safe" }; } }] } }),
+  });
+  await assert.rejects(host.listControlPanelDocuments("bounded"), /too many documents/);
+  mode = "duplicate";
+  await assert.rejects(host.listControlPanelDocuments("bounded"), /duplicate document IDs/);
+  mode = "valid";
+  assert.deepEqual(await host.listControlPanelDocuments("bounded"), [{ id: "one", title: "one" }]);
+  await assert.rejects(host.readControlPanelDocument("bounded", "one"), /content is invalid/);
+  oversized = false;
+  assert.deepEqual(await host.readControlPanelDocument("bounded", "one"), { id: "one", title: "one", content: "safe" });
+});
+
 test("turn analyzer is a singleton, receives model-facing tools, and is removed on disable", async () => {
   const tools = new ToolRegistry();
   tools.register({ name: "search", description: "Search documents", inputSchema: { type: "object", properties: { query: { type: "string" } } }, policy: { capability: "search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true, output: {}, effectStatus: "not_applicable" }; } });

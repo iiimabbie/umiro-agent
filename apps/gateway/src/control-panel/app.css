@@ -349,6 +349,14 @@ pre:empty { display: none; }
 .workspace-toolbar { margin: 8px 0; }
 .workspace-toolbar button { margin: 0; }
 .markdown-preview { min-height: 360px; border: 1px solid var(--border); background: var(--field); border-radius: 6px; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plugin-view-layout { display: grid; grid-template-columns: minmax(160px, 240px) minmax(0, 1fr); gap: 16px; }
+.plugin-document-list { display: grid; align-content: start; gap: 6px; }
+.plugin-document-item { margin: 0; text-align: left; background: var(--field); border-color: var(--border); overflow-wrap: anywhere; }
+.plugin-document-item.active { background: var(--accent-soft); border-color: var(--accent); }
+.plugin-document h3 { margin-top: 0; text-transform: none; letter-spacing: 0; }
+.plugin-view-state { min-height: 1.5em; color: var(--muted); }
+.plugin-view-state.error { color: var(--danger); }
+.plugin-view-state.success { color: var(--success); }
 .toast-region { position: fixed; z-index: 100; top: 18px; right: 18px; display: grid; gap: 8px; width: min(380px, calc(100vw - 36px)); }
 .toast { border: 1px solid var(--border-strong); border-left: 4px solid var(--accent); border-radius: 7px; background: var(--surface); box-shadow: 0 8px 24px var(--shadow-strong); padding: 10px 12px; }
 .toast.error { border-left-color: var(--danger); }
@@ -415,6 +423,7 @@ pre:empty { display: none; }
   section { padding: 16px; }
   .grid { grid-template-columns: 1fr; }
   .config-grid, .config-subgroup, .stat-grid { grid-template-columns: 1fr; }
+  .plugin-view-layout { grid-template-columns: 1fr; }
   .config-toolbar { align-items: stretch; flex-direction: column; }
   .config-toolbar input { max-width: none; }
   .config-page-header { align-items: flex-start; flex-direction: column; gap: 4px; }

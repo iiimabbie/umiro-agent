@@ -69,6 +69,7 @@ const validateShape = new Ajv({ allErrors: true, strict: true }).compile<PluginM
         jobs: { type: "array", items: { type: "string" }, uniqueItems: true },
         commands: { type: "array", items: { type: "string" }, uniqueItems: true },
         skills: { type: "array", items: { type: "string" }, uniqueItems: true },
+        controlPanelViews: { type: "array", items: { type: "string" }, uniqueItems: true },
         policy: { type: "array", maxItems: 16, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 2000 } },
         subagentProfiles: {
           type: "array", maxItems: 16,
@@ -130,6 +131,7 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
   unique(manifest.contributes.contextProviders, "contributes.contextProviders");
   unique(manifest.contributes.turnAnalyzers, "contributes.turnAnalyzers");
   unique(manifest.contributes.skills, "contributes.skills");
+  unique(manifest.contributes.controlPanelViews, "contributes.controlPanelViews");
   unique(manifest.contributes.subagentProfiles?.map(profile => profile.id), "contributes.subagentProfiles");
   if (manifest.contributes.policy?.some(item => !item.trim())) throw new TypeError("plugin manifest contributes.policy contains an empty policy");
   if ((manifest.contributes.policy?.reduce((total, item) => total + item.length, 0) ?? 0) > 8000) throw new TypeError("plugin manifest contributes.policy exceeds 8000 characters");

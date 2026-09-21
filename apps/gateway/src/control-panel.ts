@@ -7,6 +7,7 @@ import { parseDiscordTriggerPolicy } from "@umiro/adapter-discord";
 import { validateAuthorityConfig } from "./authority-config.js";
 import { validateEmbeddingConfig } from "./embedding-config.js";
 import { assertConfigContainsNoSecrets } from "@umiro/core/config";
+import type { PluginControlPanelDocument, PluginControlPanelDocumentSummary } from "@umiro/core";
 import { assertUserManagedSchedule, type ControlPanelScheduleView } from "./control-panel-schedules.js";
 
 const HTML = readFileSync(new URL("./control-panel/index.html", import.meta.url), "utf8");
@@ -37,6 +38,12 @@ export interface ControlPanelConversations {
   list(filter: { readonly scope?: { readonly transport: string; readonly externalId: string }; readonly state?: "active" | "archived"; readonly limit: number }): Promise<unknown>;
   messages(conversationId: string, limit: number, after?: number): Promise<unknown | undefined>;
 }
+export interface ControlPanelViewMetadata { readonly pluginId: string; readonly id: string; readonly title: string; readonly description?: string; readonly kind: "read-only-markdown-collection" }
+export interface ControlPanelPluginViews {
+  list(): Promise<readonly ControlPanelViewMetadata[]> | readonly ControlPanelViewMetadata[];
+  listDocuments(viewId: string): Promise<readonly PluginControlPanelDocumentSummary[]>;
+  readDocument(viewId: string, documentId: string): Promise<PluginControlPanelDocument | undefined>;
+}
 export interface GatewayReadiness {
   readonly storage: boolean;
   readonly plugins: boolean;
@@ -46,7 +53,7 @@ export interface GatewayReadiness {
   readonly shuttingDown?: boolean;
 }
 export interface ConfigApplyResult { readonly applied: readonly string[]; readonly restartRequired: readonly string[] }
-export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly workspaceFiles?: readonly string[]; readonly secrets?: () => Readonly<Record<string, boolean>>; readonly publicSecrets?: () => Readonly<Record<string, string>>; readonly updateSecrets?: (secrets: Readonly<Record<string, string>>) => Promise<ConfigApplyResult>; readonly models?: (connection?: { readonly baseUrl: string; readonly apiKey?: string }) => Promise<readonly string[]>; readonly applyConfig?: (config: Record<string, unknown>) => Promise<ConfigApplyResult>; readonly audit?: (event: string, data: Readonly<Record<string, string | number | boolean>>) => void; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly runs?: ControlPanelRuns; readonly channels?: ControlPanelChannels; readonly conversations?: ControlPanelConversations; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly usage?: () => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly restart?: () => Promise<void> | void; readonly processId?: number }
+export interface ControlPanelOptions { readonly host: string; readonly port: number; readonly token: string; readonly configFile: string; readonly workspace: string; readonly workspaceFiles?: readonly string[]; readonly secrets?: () => Readonly<Record<string, boolean>>; readonly publicSecrets?: () => Readonly<Record<string, string>>; readonly updateSecrets?: (secrets: Readonly<Record<string, string>>) => Promise<ConfigApplyResult>; readonly models?: (connection?: { readonly baseUrl: string; readonly apiKey?: string }) => Promise<readonly string[]>; readonly applyConfig?: (config: Record<string, unknown>) => Promise<ConfigApplyResult>; readonly audit?: (event: string, data: Readonly<Record<string, string | number | boolean>>) => void; readonly schedules?: ControlPanelSchedules; readonly plugins?: ControlPanelPlugins; readonly pluginViews?: ControlPanelPluginViews; readonly runs?: ControlPanelRuns; readonly channels?: ControlPanelChannels; readonly conversations?: ControlPanelConversations; readonly logs?: (limit: number) => Promise<unknown> | unknown; readonly usage?: () => Promise<unknown> | unknown; readonly runtime?: () => Promise<unknown> | unknown; readonly readiness?: () => Promise<GatewayReadiness> | GatewayReadiness; readonly restart?: () => Promise<void> | void; readonly processId?: number }
 
 export const CONFIG_EXPLANATIONS = {
   model: { label: "主要模型", description: "Discord 對話與未指定模型的 Run 使用的模型 ID。", defaultValue: null, risk: "模型必須存在於目前 API；錯誤值會使 Run 失敗。", restartRequired: false },
@@ -213,6 +220,32 @@ export class ControlPanelServer {
         return json(response, ready || configurationRequired ? 200 : 503, { status: ready ? "ready" : configurationRequired ? "configuration_required" : "not_ready", pid: this.options.processId ?? process.pid, checks });
       }
       if (!this.authorized(request)) return json(response, 401, { error: "unauthorized" });
+      if (url.pathname === "/api/plugin-views") {
+        if (request.method !== "GET") return json(response, 404, { error: "not found" });
+        if (!this.options.pluginViews) return json(response, 503, { error: "plugin view unavailable" });
+        try { return json(response, 200, await this.options.pluginViews.list()); }
+        catch { return json(response, 500, { error: "plugin view unavailable" }); }
+      }
+      if (url.pathname.startsWith("/api/plugin-views/")) {
+        if (request.method !== "GET") return json(response, 404, { error: "not found" });
+        if (!this.options.pluginViews) return json(response, 503, { error: "plugin view unavailable" });
+        const parts = url.pathname.split("/").slice(3);
+        let segments: string[];
+        try { segments = parts.map(segment => decodeURIComponent(segment)); }
+        catch { throw new TypeError("plugin view path is invalid"); }
+        if (segments.length !== 2 && segments.length !== 3 || segments.some(segment => !/^[A-Za-z0-9._:-]{1,160}$/.test(segment))) throw new TypeError("plugin view path is invalid");
+        const [viewId, marker, documentId] = segments;
+        if (marker !== "documents") throw new TypeError("plugin view path is invalid");
+        let metadata: readonly ControlPanelViewMetadata[];
+        try { metadata = await this.options.pluginViews.list(); }
+        catch { return json(response, 500, { error: "plugin view unavailable" }); }
+        if (!metadata.some(view => view.id === viewId)) return json(response, 404, { error: "plugin view not found" });
+        try {
+          if (documentId === undefined) return json(response, 200, await this.options.pluginViews.listDocuments(viewId!));
+          const document = await this.options.pluginViews.readDocument(viewId!, documentId);
+          return document === undefined ? json(response, 404, { error: "plugin document not found" }) : json(response, 200, document);
+        } catch { return json(response, 500, { error: "plugin view unavailable" }); }
+      }
       if (request.method === "GET" && url.pathname === "/api/schema") return json(response, 200, CONFIG_EXPLANATIONS);
       if (request.method === "GET" && url.pathname === "/api/config") return json(response, 200, JSON.parse(await readFile(this.options.configFile, "utf8")));
       if (request.method === "GET" && url.pathname === "/api/secrets") return json(response, 200, { ...(this.options.secrets?.() ?? {}), ...(this.options.publicSecrets?.() ?? {}) });

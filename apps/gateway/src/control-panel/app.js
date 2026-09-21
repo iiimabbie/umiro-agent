@@ -1083,9 +1083,11 @@ async function connect() {
   }));
   await Promise.all([channels(), archived()]);
   await plugins();
+  await discoverPluginViews();
   clearInterval(channelRefreshTimer);
   channelRefreshTimer = setInterval(() => channels().catch(() => {}), 60000);
   $('state').textContent = '已連線';
+  showPage();
 }
 
 async function load(name) {
@@ -1099,9 +1101,9 @@ async function load(name) {
   renderMarkdownPreview();
 }
 
-function renderMarkdownPreview() {
-  const target = $('documentPreview'); target.replaceChildren();
-  for (const line of $('document').value.split('\n')) {
+function renderMarkdown(target, content) {
+  target.replaceChildren();
+  for (const line of String(content).split('\n')) {
     let element;
     if (/^#{1,6}\s/.test(line)) { const level = Math.min(6, line.match(/^#+/)[0].length); element = document.createElement('h' + level); element.textContent = line.replace(/^#{1,6}\s+/, ''); }
     else if (/^[-*]\s/.test(line)) { element = document.createElement('div'); element.textContent = '• ' + line.replace(/^[-*]\s+/, ''); }
@@ -1109,6 +1111,85 @@ function renderMarkdownPreview() {
     target.append(element);
   }
 }
+
+function renderMarkdownPreview() { renderMarkdown($('documentPreview'), $('document').value); }
+
+const pluginViewIdPattern = /^[A-Za-z0-9._:-]{1,160}$/;
+const pluginViews = new Map();
+const pluginViewSelection = new Map();
+
+function pluginPageId(viewId) { return 'page-plugin-view-' + viewId; }
+function pluginHashId(viewId) { return 'plugin-view-' + viewId; }
+function pluginApiPath(viewId, documentId) { return '/api/plugin-views/' + encodeURIComponent(viewId) + '/documents' + (documentId === undefined ? '' : '/' + encodeURIComponent(documentId)); }
+function pluginViewMessage(view, message, type = 'info') {
+  const state = view.querySelector('[data-plugin-view-state]');
+  if (state) { state.textContent = message; state.className = 'plugin-view-state ' + type; }
+}
+function createPluginViewPage(metadata) {
+  if (!metadata || typeof metadata !== 'object' || !pluginViewIdPattern.test(metadata.id) || typeof metadata.title !== 'string' || !metadata.title.trim() || metadata.kind !== 'read-only-markdown-collection') return undefined;
+  const viewId = metadata.id;
+  const page = document.createElement('section'); page.id = pluginPageId(viewId); page.className = 'page'; page.dataset.pluginViewId = viewId;
+  const heading = document.createElement('div'); heading.className = 'page-heading';
+  const title = document.createElement('h2'); title.textContent = metadata.title.trim();
+  const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = '重新整理'; refresh.dataset.pluginRefresh = viewId;
+  heading.append(title, refresh); page.append(heading);
+  if (typeof metadata.description === 'string' && metadata.description.trim()) { const description = document.createElement('p'); description.textContent = metadata.description.trim(); page.append(description); }
+  const state = document.createElement('p'); state.dataset.pluginViewState = 'true'; state.className = 'plugin-view-state'; state.textContent = '尚未載入'; page.append(state);
+  const layout = document.createElement('div'); layout.className = 'plugin-view-layout';
+  const list = document.createElement('div'); list.className = 'plugin-document-list'; list.dataset.pluginDocumentList = viewId;
+  const article = document.createElement('article'); article.className = 'plugin-document';
+  const articleTitle = document.createElement('h3'); articleTitle.dataset.pluginDocumentTitle = viewId; articleTitle.textContent = '尚未選擇文件';
+  const content = document.createElement('div'); content.className = 'markdown-preview'; content.dataset.pluginDocumentContent = viewId;
+  article.append(articleTitle, content); layout.append(list, article); page.append(layout);
+  refresh.onclick = () => loadPluginView(viewId).catch(error => pluginViewMessage(page, errorMessage(error), 'error'));
+  return page;
+}
+async function loadPluginView(viewId) {
+  const page = pluginViews.get(viewId)?.page;
+  if (!page) return;
+  pluginViewMessage(page, '載入中…');
+  try {
+    const documents = await api(pluginApiPath(viewId));
+    if (!Array.isArray(documents)) throw new Error('文件清單格式無效');
+    const list = page.querySelector('[data-plugin-document-list]');
+    const selected = pluginViewSelection.get(viewId);
+    list.replaceChildren(...documents.map(documentSummary => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'plugin-document-item'; button.dataset.documentId = documentSummary.id;
+      const occurredDate = typeof documentSummary.occurredAt === 'string' ? documentSummary.occurredAt.slice(0, 10) : '';
+      button.textContent = documentSummary.title + (occurredDate && occurredDate !== documentSummary.title ? ' · ' + occurredDate : '');
+      button.onclick = () => selectPluginDocument(viewId, documentSummary.id).catch(error => pluginViewMessage(page, errorMessage(error), 'error'));
+      return button;
+    }));
+    if (!documents.length) { page.querySelector('[data-plugin-document-title]').textContent = '沒有文件'; page.querySelector('[data-plugin-document-content]').replaceChildren(); pluginViewMessage(page, '目前沒有可閱讀的文件'); return; }
+    const next = documents.some(item => item.id === selected) ? selected : documents[0].id;
+    await selectPluginDocument(viewId, next);
+    pluginViewMessage(page, '已載入 ' + documents.length + ' 份文件', 'success');
+  } catch (error) { pluginViewMessage(page, errorMessage(error), 'error'); throw error; }
+}
+async function selectPluginDocument(viewId, documentId) {
+  if (!pluginViewIdPattern.test(viewId) || !pluginViewIdPattern.test(documentId)) throw new Error('文件識別碼無效');
+  const entry = pluginViews.get(viewId); if (!entry) return;
+  const document = await api(pluginApiPath(viewId, documentId));
+  if (!document || document.id !== documentId || typeof document.content !== 'string') throw new Error('文件格式無效');
+  pluginViewSelection.set(viewId, documentId);
+  entry.page.querySelector('[data-plugin-document-title]').textContent = document.title;
+  renderMarkdown(entry.page.querySelector('[data-plugin-document-content]'), document.content);
+  for (const button of entry.page.querySelectorAll('[data-document-id]')) button.classList.toggle('active', button.dataset.documentId === documentId);
+}
+function rebuildPluginViews(metadata) {
+  const navSection = $('pluginNavSection'); const nav = $('pluginNavLinks');
+  for (const entry of pluginViews.values()) { entry.page.remove(); entry.link.remove(); }
+  pluginViews.clear(); nav.replaceChildren();
+  const safe = Array.isArray(metadata) ? metadata.filter(item => item && typeof item === 'object' && pluginViewIdPattern.test(item.id) && typeof item.title === 'string' && item.kind === 'read-only-markdown-collection') : [];
+  for (const item of safe) {
+    const page = createPluginViewPage(item); if (!page) continue;
+    const link = document.createElement('a'); link.href = '#' + pluginHashId(item.id); link.dataset.page = pluginHashId(item.id); link.textContent = item.title.trim(); link.className = 'nav-subitem'; link.onclick = event => guardNavigation(event, link);
+    nav.append(link); document.querySelector('.content').append(page);
+    pluginViews.set(item.id, { page, link });
+  }
+  navSection.hidden = pluginViews.size === 0;
+}
+async function discoverPluginViews() { rebuildPluginViews(await api('/api/plugin-views')); showPage(); }
 
 $('connect').onclick = () => withBusy($('connect'), connect, '連線中…').catch(error => { $('state').textContent = errorMessage(error); reportError(error); });
 $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
@@ -1228,32 +1309,33 @@ window.addEventListener('beforeunload', event => {
 });
 updateScheduleControls();
 
-const pages = [...document.querySelectorAll('.page')];
-const navLinks = [...document.querySelectorAll('nav a')];
 const pageLoaders = { channels: async () => { await Promise.all([channels(), archived()]); }, schedules, plugins, runs, usage: async () => { await Promise.all([usage(), logs()]); } };
+function pages() { return [...document.querySelectorAll('.page')]; }
+function navLinks() { return [...document.querySelectorAll('nav a')]; }
 
 function currentPageName() {
   const hash = (location.hash || '#status').slice(1);
-  return pages.some(p => p.id === 'page-' + hash) ? hash : 'status';
+  return pages().some(p => p.id === 'page-' + hash) ? hash : 'status';
 }
 
 function showPage() {
   const name = currentPageName();
-  for (const page of pages) page.hidden = page.id !== 'page-' + name;
-  for (const link of navLinks) link.classList.toggle('active', link.dataset.page === name);
+  for (const page of pages()) page.hidden = page.id !== 'page-' + name;
+  for (const link of navLinks()) link.classList.toggle('active', link.dataset.page === name);
   if ($('state').textContent === '已連線') {
-    const loader = pageLoaders[name];
+    const loader = pageLoaders[name] ?? (name.startsWith('plugin-view-') ? () => loadPluginView(name.slice('plugin-view-'.length)) : undefined);
     if (loader) loader().catch(() => {});
   }
 }
 
-window.addEventListener('hashchange', showPage);
-for (const link of navLinks) link.addEventListener('click', async event => {
+function guardNavigation(event, link) {
   const leavingConfig = currentPageName() === 'config' && configDirty;
   const leavingWorkspace = currentPageName() === 'workspace' && workspaceDirty;
   if (!leavingConfig && !leavingWorkspace) return;
   event.preventDefault();
-  const accepted = await confirmAction('尚有未儲存變更', '變更會保留在本頁，但關閉或重新載入瀏覽器會遺失。仍要切換頁面？', '仍要離開');
-  if (accepted) location.hash = link.hash;
-});
+  confirmAction('尚有未儲存變更', '變更會保留在本頁，但關閉或重新載入瀏覽器會遺失。仍要切換頁面？', '仍要離開').then(accepted => { if (accepted) location.hash = link.hash; });
+}
+
+window.addEventListener('hashchange', showPage);
+for (const link of navLinks()) link.addEventListener('click', event => guardNavigation(event, link));
 showPage();

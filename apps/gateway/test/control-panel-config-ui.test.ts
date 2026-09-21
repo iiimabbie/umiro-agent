@@ -127,4 +127,15 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(script, /api\('\/api\/secrets', \{ method: 'PUT'/);
   assert.match(script, /await r\.text\(\)/);
   assert.match(script, /無法連線到 ümiro Gateway/);
+  assert.match(html, /id="pluginNavSection"[^>]*hidden/);
+  assert.match(html, /id="pluginNavLinks"/);
+  const pluginViews = script.slice(script.indexOf("function renderMarkdown(target, content)"), script.indexOf("$('connect').onclick"));
+  assert.match(pluginViews, /api\('\/api\/plugin-views/);
+  assert.match(pluginViews, /read-only-markdown-collection/);
+  assert.match(pluginViews, /textContent = metadata\.title\.trim\(\)/);
+  assert.match(pluginViews, /renderMarkdown\(entry\.page\.querySelector/);
+  assert.doesNotMatch(pluginViews, /innerHTML|contenteditable|method:\s*['"](?:PUT|POST|PATCH|DELETE)/);
+  assert.match(script, /\$\('state'\)\.textContent = '已連線';\s*showPage\(\);/);
+  assert.match(css, /\.plugin-view-layout \{[^}]*grid-template-columns:/);
+  assert.match(css, /@media \(max-width: 800px\)[\s\S]*\.plugin-view-layout \{ grid-template-columns: 1fr; \}/);
 });

@@ -72,6 +72,7 @@ export interface PluginManifestV0 {
     readonly jobs?: readonly string[];
     readonly commands?: readonly string[];
     readonly skills?: readonly string[];
+    readonly controlPanelViews?: readonly string[];
     /** Static, author-auditable usage policy rendered by the Host as scoped instructions. */
     readonly policy?: readonly string[];
     /** Manifest-only static definitions; no runtime contribution may override them. */
@@ -168,6 +169,30 @@ export interface PluginContributions {
   readonly jobs?: readonly PluginJobDefinition[];
   readonly commands?: readonly PluginCommandDefinition[];
   readonly skills?: readonly SkillDefinition[];
+  readonly controlPanelViews?: readonly PluginControlPanelViewDefinition[];
+}
+
+/** A safe, declarative read-only Markdown collection exposed by a plugin. */
+export interface PluginControlPanelDocumentSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly occurredAt?: string;
+}
+
+export interface PluginControlPanelDocument {
+  readonly id: string;
+  readonly title: string;
+  readonly content: string;
+  readonly occurredAt?: string;
+}
+
+export interface PluginControlPanelViewDefinition {
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly kind: "read-only-markdown-collection";
+  list(): Promise<readonly PluginControlPanelDocumentSummary[]>;
+  read(id: string): Promise<PluginControlPanelDocument | undefined>;
 }
 
 export interface TurnToolCandidate {

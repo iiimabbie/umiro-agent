@@ -7,7 +7,7 @@ import { NOOP_LOGGER, type StructuredLogger } from "../observability/logger.js";
 import { validatePluginConfig, validatePluginManifest } from "./manifest.js";
 import type { PluginStateStore } from "./state.js";
 import { PluginHookRegistry } from "./hooks.js";
-import { PluginCommandRegistry, PluginJobRegistry, SkillRegistry, SubagentProfileRegistry } from "./contributions.js";
+import { PluginCommandRegistry, PluginControlPanelViewRegistry, PluginJobRegistry, SkillRegistry, SubagentProfileRegistry } from "./contributions.js";
 
 interface ActivePlugin {
   readonly manifest: PluginManifestV0;
@@ -137,6 +137,7 @@ export class PluginHost {
     private readonly subagentProfiles = new SubagentProfileRegistry(),
     private readonly modelProfiles: { has(id: string): boolean } = { has: () => true },
     private readonly logger: StructuredLogger = NOOP_LOGGER,
+    private readonly controlPanelViews = new PluginControlPanelViewRegistry(),
   ) {}
 
   async enable(module: PluginModule, options: PluginEnableOptions = {}): Promise<void> {
@@ -184,6 +185,7 @@ export class PluginHost {
     const jobIds = active.instance.contributions.jobs?.map(job => job.id) ?? [];
     const commandIds = active.instance.contributions.commands?.map(command => command.name) ?? [];
     const skillIds = active.instance.contributions.skills?.map(skill => skill.id) ?? [];
+    const controlPanelViewIds = active.instance.contributions.controlPanelViews?.map(view => view.id) ?? [];
     const registeredTools: string[] = [];
     const registeredProviders: string[] = [];
     let registeredTurnAnalyzer = false;
@@ -192,6 +194,7 @@ export class PluginHost {
     const registeredCommands: string[] = [];
     const registeredSkills: string[] = [];
     const registeredSkillProviders: string[] = [];
+    const registeredControlPanelViews: string[] = [];
     const registeredSubagentProfiles: string[] = [];
     const policyProvider = manifestPolicyProvider(manifest);
     try {
@@ -204,6 +207,7 @@ export class PluginHost {
       exactContributionSet(jobIds, manifest.contributes.jobs, `plugin ${manifest.id} jobs`);
       exactContributionSet(commandIds, manifest.contributes.commands, `plugin ${manifest.id} commands`);
       exactContributionSet(skillIds, manifest.contributes.skills, `plugin ${manifest.id} skills`);
+      exactContributionSet(controlPanelViewIds, manifest.contributes.controlPanelViews, `plugin ${manifest.id} control panel views`);
       for (const tool of active.instance.contributions.tools ?? []) {
         if (!manifest.permissions.capabilities.includes(tool.policy.capability)) {
           throw new TypeError(`tool ${tool.name} requires undeclared capability ${tool.policy.capability}`);
@@ -244,6 +248,7 @@ export class PluginHost {
         if (profile.model !== undefined && !this.modelProfiles.has(profile.model)) throw new TypeError(`subagent profile ${profile.id} requires an unknown model profile: ${profile.model}`);
         this.subagentProfiles.register(manifest.id, profile); registeredSubagentProfiles.push(profile.id);
       }
+      for (const view of active.instance.contributions.controlPanelViews ?? []) { this.controlPanelViews.register(manifest.id, view); registeredControlPanelViews.push(view.id); }
       active.state = "enabled";
     } catch (error) {
       for (const providerId of registeredProviders.reverse()) this.contextProviders.unregister(providerId);
@@ -254,6 +259,7 @@ export class PluginHost {
       for (const commandId of registeredCommands.reverse()) this.commands.unregister(commandId);
       for (const skillId of registeredSkills.reverse()) this.skills.unregister(skillId);
       for (const profileId of registeredSubagentProfiles.reverse()) this.subagentProfiles.unregister(profileId);
+      for (const viewId of registeredControlPanelViews.reverse()) this.controlPanelViews.unregister(viewId);
       for (const toolName of registeredTools.reverse()) this.tools.unregister(toolName);
       try {
         await active.instance.stop?.();
@@ -276,6 +282,7 @@ export class PluginHost {
     if (!active) throw new Error(`plugin is not loaded: ${pluginId}`);
     if (active.state !== "enabled") throw new Error(`plugin ${pluginId} is not enabled`);
     active.state = "stopping";
+    for (const view of active.instance.contributions.controlPanelViews ?? []) this.controlPanelViews.unregister(view.id);
     for (const tool of active.instance.contributions.tools ?? []) this.tools.unregister(tool.name);
     for (const provider of active.instance.contributions.contextProviders ?? []) {
       this.contextProviders.unregister(provider.id);
@@ -332,6 +339,9 @@ export class PluginHost {
   getSkill(id: string) { return this.skills.get(id); }
   listSubagentProfiles() { return this.subagentProfiles.list(); }
   getSubagentProfile(id: string) { return this.subagentProfiles.get(id); }
+  listControlPanelViews() { return this.controlPanelViews.list(); }
+  listControlPanelDocuments(viewId: string) { return this.controlPanelViews.listDocuments(viewId); }
+  readControlPanelDocument(viewId: string, documentId: string) { return this.controlPanelViews.readDocument(viewId, documentId); }
 
   /** Run the single enabled turn analyzer against the current event and all registered model-facing tools. */
   async analyzeTurn(input: Omit<TurnAnalyzerInput, "tools">): Promise<TurnAnalysis | undefined> {
