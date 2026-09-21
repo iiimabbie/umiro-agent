@@ -670,7 +670,8 @@ const handleCommand = async (name: string, input: Record<string, string | number
     const active = activeSessions.get(commandContext.channelId);
     const schedules = await scheduler.list();
     const plugins = host.list();
-    const runs = await store.listRuns(200);
+    const currentConversation = (await store.listConversations({ transport: "discord", externalId: commandContext.channelId, state: "active", limit: 1 }))[0]?.conversation;
+    const runs = currentConversation ? await store.listConversationRuns(currentConversation.id, 200) : [];
     const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat();
     const usage = summarizeModelUsage(calls, runtimePricing);
     const release = typeof releaseIdentity === "object" && releaseIdentity !== null && "revision" in releaseIdentity && typeof releaseIdentity.revision === "string" ? releaseIdentity.revision : "source";

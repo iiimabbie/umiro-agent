@@ -129,7 +129,7 @@ export interface DiscordTextTransport {
   prepareText?(text: string): string;
   sendText(channelId: string, text: string, signal?: AbortSignal): Promise<{ readonly messageId: string }>;
   sendTyping?(channelId: string): Promise<void>;
-  sendFiles?(channelId: string, files: readonly { readonly path: string; readonly name?: string }[], signal?: AbortSignal): Promise<{ readonly messageId: string }>;
+  sendFiles?(channelId: string, files: readonly { readonly path: string; readonly name?: string }[], text?: string, signal?: AbortSignal): Promise<{ readonly messageId: string }>;
 }
 
 interface FenceState { readonly marker: string; readonly opener: string }
@@ -224,7 +224,14 @@ export class DiscordDeliveryWorker {
             if (!artifact || artifact.state === "deleted") throw new Error(`artifact ${id} is unavailable`);
             files.push({ path: artifact.location, ...(artifact.filename ? { name: artifact.filename } : {}) });
           }
-          sent = await this.transport.sendFiles(intent.destination.channelId, files, signal);
+          const chunks = chunkDiscordText(preparedText);
+          const messageIds: string[] = [];
+          for (const chunk of chunks.slice(0, -1)) messageIds.push((await this.transport.sendText(intent.destination.channelId, chunk, signal)).messageId);
+          sent = await this.transport.sendFiles(intent.destination.channelId, files, chunks.at(-1) ?? "", signal);
+          messageIds.push(sent.messageId);
+          await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", messageId: sent.messageId, messageIds, channelId: intent.destination.channelId });
+          delivered++;
+          continue;
         } else {
           const messageIds: string[] = [];
           for (const chunk of chunkDiscordText(preparedText)) messageIds.push((await this.transport.sendText(intent.destination.channelId, chunk, signal)).messageId);
@@ -233,8 +240,6 @@ export class DiscordDeliveryWorker {
           delivered++;
           continue;
         }
-        await this.store.markDeliveryDelivered(intent.id, this.now(), { transport: "discord", messageId: sent.messageId, channelId: intent.destination.channelId });
-        delivered++;
       } catch (error) {
         const attempts = (intent.attempts ?? 0) + 1;
         const next = new Date(Date.parse(drainAt) + Math.min(300_000, 1000 * 2 ** Math.min(attempts - 1, 8))).toISOString();

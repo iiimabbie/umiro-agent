@@ -161,6 +161,21 @@ test("lists recent runs newest first with a bounded limit", async () => {
   } finally { database.cleanup(); }
 });
 
+test("lists only one conversation's runs and delegated descendants", async () => {
+  const database = fixture();
+  try {
+    await database.store.createRunWithStep({ ...run("run-old"), createdAt: "2026-09-08T10:00:00.000Z", updatedAt: "2026-09-08T10:00:00.000Z" }, step("run-old", "step-old"));
+    await database.store.createRunWithStep({ ...run("run-other"), conversationId: "conversation-2", turnId: "turn-2", createdAt: "2026-09-08T11:00:00.000Z", updatedAt: "2026-09-08T11:00:00.000Z" }, step("run-other", "step-other"));
+    const { conversationId: _conversationId, turnId: _turnId, ...child } = run("run-child");
+    await database.store.createRunWithStep({ ...child, parentRunId: "run-old", createdAt: "2026-09-08T12:00:00.000Z", updatedAt: "2026-09-08T12:00:00.000Z" }, step("run-child", "step-child"));
+
+    assert.deepEqual((await database.store.listConversationRuns("conversation-1")).map(item => item.id), ["run-child", "run-old"]);
+    assert.deepEqual((await database.store.listConversationRuns("conversation-1", 1)).map(item => item.id), ["run-child"]);
+    await assert.rejects(database.store.listConversationRuns("", 1), /conversation ID/);
+    await assert.rejects(database.store.listConversationRuns("conversation-1", 201), /between 1 and 200/);
+  } finally { database.cleanup(); }
+});
+
 test("rolls back the decision when its operation cannot be inserted", async () => {
   const database = fixture();
   try {

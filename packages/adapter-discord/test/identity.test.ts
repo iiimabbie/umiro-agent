@@ -123,17 +123,37 @@ test("marks an empty text outcome delivered without sending text", async () => {
 test("delivers durable artifacts before marking the intent delivered", async () => {
   const events: string[] = [];
   const worker = new DiscordDeliveryWorker({
-    async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "", artifactIds: ["a"] }, state: "pending" as const, createdAt: "now" }]; },
+    async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text: "here is the report", artifactIds: ["a"] }, state: "pending" as const, createdAt: "now" }]; },
     async markDeliveryDelivered(id) { events.push(`marked:${id}`); },
     async markDeliveryFailed() {},
   }, {
     async sendText() { throw new Error("text path must not run"); },
-    async sendFiles(channelId, files) { events.push(`files:${channelId}:${files[0]?.name}`); return { messageId: "m" }; },
+    async sendFiles(channelId, files, text) { events.push(`files:${channelId}:${files[0]?.name}:${text}`); return { messageId: "m" }; },
   }, () => "later", {
     async getArtifact() { return { id: "a", ownerPrincipalId: "owner", visibility: "shared", mediaType: "text/plain", filename: "report.txt", size: 1, sha256: "a".repeat(64), location: "/safe/report", state: "stored", createdAt: "now", updatedAt: "now" }; },
   });
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
-  assert.deepEqual(events, ["files:c:report.txt", "marked:d"]);
+  assert.deepEqual(events, ["files:c:report.txt:here is the report", "marked:d"]);
+});
+
+test("delivers overflow text before attaching files to the final chunk", async () => {
+  const sent: string[] = [];
+  const text = `intro\n${"x".repeat(2_100)}`;
+  const worker = new DiscordDeliveryWorker({
+    async listPendingDeliveries() { return [{ id: "d", runId: "r", destination: { kind: "discord", channelId: "c" }, payload: { text, artifactIds: ["a"] }, state: "pending" as const, createdAt: "now" }]; },
+    async markDeliveryDelivered() {},
+    async markDeliveryFailed() {},
+  }, {
+    async sendText(_channelId, chunk) { sent.push(`text:${chunk}`); return { messageId: "text" }; },
+    async sendFiles(_channelId, _files, chunk) { sent.push(`files:${chunk}`); return { messageId: "files" }; },
+  }, () => "later", {
+    async getArtifact() { return { id: "a", ownerPrincipalId: "owner", visibility: "shared", mediaType: "image/png", filename: "image.png", size: 1, sha256: "a".repeat(64), location: "/safe/image", state: "stored", createdAt: "now", updatedAt: "now" }; },
+  });
+  assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
+  assert.equal(sent.length, 2);
+  assert.ok(sent[0]?.startsWith("text:intro"));
+  assert.ok(sent[1]?.startsWith("files:"));
+  assert.equal(sent.map(item => item.slice(item.indexOf(":") + 1)).join(""), text);
 });
 
 test("persists delivery failure and retries only after durable backoff", async () => {

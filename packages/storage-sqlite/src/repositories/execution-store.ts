@@ -1862,6 +1862,22 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return rows.map(row => this.runFromRow(row));
   }
 
+  async listConversationRuns(conversationId: string, limit = 200): Promise<readonly Run[]> {
+    if (!conversationId.trim()) throw new TypeError("conversation run list requires a conversation ID");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new TypeError("conversation run list limit must be between 1 and 200");
+    const rows = this.database.prepare(`
+      WITH RECURSIVE conversation_runs(id) AS (
+        SELECT id FROM runs WHERE conversation_id = ?
+        UNION ALL
+        SELECT child.id FROM runs child JOIN conversation_runs parent ON child.parent_run_id = parent.id
+      )
+      SELECT runs.* FROM runs JOIN conversation_runs ON conversation_runs.id = runs.id
+      ORDER BY runs.created_at DESC, runs.id DESC
+      LIMIT ?
+    `).all(conversationId, limit) as RunRow[];
+    return rows.map(row => this.runFromRow(row));
+  }
+
   async listRecoverableRuns(): Promise<readonly Run[]> {
     const rows = this.database.prepare(`
       SELECT * FROM runs

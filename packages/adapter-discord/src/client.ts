@@ -160,10 +160,12 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     return () => clearInterval(timer);
   }
 
-  async sendFiles(channelId: string, files: readonly { readonly path: string; readonly name?: string }[]): Promise<{ messageId: string }> {
+  async sendFiles(channelId: string, files: readonly { readonly path: string; readonly name?: string }[], text = "", signal?: AbortSignal): Promise<{ messageId: string }> {
+    if (signal?.aborted) throw signal.reason;
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
-    const sent = await channel.send({ files: files.map(file => ({ attachment: file.path, ...(file.name ? { name: file.name } : {}) })) });
+    if (signal?.aborted) throw signal.reason;
+    const sent = await channel.send({ ...(text.trim() ? { content: this.prepareText(text) } : {}), files: files.map(file => ({ attachment: file.path, ...(file.name ? { name: file.name } : {}) })) });
     return { messageId: sent.id };
   }
 

@@ -84,6 +84,8 @@ export interface ExecutionStore {
   getRun(runId: string): Promise<Run | undefined>;
   /** Bounded newest-first query for operations and local control surfaces. */
   listRuns(limit?: number): Promise<readonly Run[]>;
+  /** Bounded newest-first query for a conversation's Runs, including delegated descendants. */
+  listConversationRuns(conversationId: string, limit?: number): Promise<readonly Run[]>;
   /** Used by the singleton daemon's startup sweep before it accepts new work. */
   listRecoverableRuns(): Promise<readonly Run[]>;
   getStep(stepId: string): Promise<Step | undefined>;
