@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "../src/discord-context.js";
+import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider, runtimeModelContextProvider } from "../src/discord-context.js";
 
 test("Discord thread context exposes its parent Forum as trusted transport metadata", async () => {
   const blocks = await discordRuntimeContextProvider.load({
@@ -20,6 +20,13 @@ test("current time context is available to every Run with an explicit timezone",
   const blocks = await provider.load({ runId: "scheduled", execution: {} as never, prompt: "today?" });
   assert.match(blocks[0]?.content ?? "", /2026-09-12T01:02:03\.000Z \(Europe\/London:/);
   assert.equal(blocks[0]?.retention, "essential");
+});
+
+test("runtime model context tells an interactive agent its fixed model profile", async () => {
+  const blocks = await runtimeModelContextProvider.load({ runId: "run", execution: { actor: { id: "owner", kind: "human", roles: ["owner"] }, authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "full" }, origin: { kind: "interactive", transport: "discord", conversationId: "conversation" }, modelProfile: { id: "default", model: "gpt-5.6-sol", protocol: "openai_responses", capabilities: [], reasoningEffort: "medium" } }, prompt: "which model?" });
+  assert.deepEqual(JSON.parse(blocks[0]!.content), { activeModel: { id: "gpt-5.6-sol", profile: "default", protocol: "openai_responses", reasoningEffort: "medium" } });
+  assert.equal(blocks[0]!.instructionAuthority, "none");
+  assert.equal(blocks[0]!.retention, "essential");
 });
 
 test("Discord Application Emoji names are injected only for Discord Runs", async () => {

@@ -15,6 +15,26 @@ export function createCurrentTimeContextProvider(now: () => Date = () => new Dat
   };
 }
 
+export const runtimeModelContextProvider: ContextProvider = {
+  id: "runtime.model",
+  role: "runtime-context",
+  priority: 4,
+  async load(request) {
+    const profile = request.execution.modelProfile;
+    if (!profile) return [];
+    return [{
+      id: `runtime.model:${request.runId}`,
+      providerId: "runtime.model",
+      role: "runtime-context",
+      content: JSON.stringify({ activeModel: { id: profile.model, profile: profile.id, protocol: profile.protocol, reasoningEffort: profile.reasoningEffort ?? "default" } }),
+      source: { kind: "host-runtime", ref: request.runId },
+      influence: "information",
+      instructionAuthority: "none",
+      retention: "essential",
+    }];
+  },
+};
+
 /** Trusted adapter metadata for destination-sensitive Discord tools. Message
  * text remains untrusted and cannot override these transport facts. */
 export const discordRuntimeContextProvider: ContextProvider = {

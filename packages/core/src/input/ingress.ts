@@ -14,7 +14,8 @@ import type { ContextBlock } from "../context/contract.js";
 export interface InteractiveIngressRequest {
   readonly event: InputEvent;
   readonly model: string;
-  readonly modelProfile?: { readonly id: string; readonly model: string; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
+  /** Immutable model selection snapshot for this interactive Run. */
+  readonly modelProfile?: { readonly id: string; readonly model: string; readonly protocol: string; readonly capabilities: readonly ModelCapability[]; readonly reasoningEffort?: ReasoningEffort };
   readonly reasoningEffort?: ReasoningEffort;
   readonly userContent?: ModelContent;
   readonly maxContextCharacters: number;

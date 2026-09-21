@@ -26,7 +26,7 @@ import { modelProtocolMap, OpenAIProtocolRouter, resolveDelegatedModel, type Ope
 import { compileModelProfiles, resolveModelProfile, type ConfigModelProfile } from "./model-profiles.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 import { PluginConversationHistory } from "./plugin-conversation-history.js";
-import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider } from "./discord-context.js";
+import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider, runtimeModelContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 import { importDiscordAttachments, mapDiscordAttachmentRenditions } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
@@ -98,6 +98,7 @@ const tools = new ToolRegistry();
 const discord = new DiscordJsAdapter();
 const providers = new ContextProviderRegistry();
 providers.register(createCurrentTimeContextProvider());
+providers.register(runtimeModelContextProvider);
 providers.register(discordRuntimeContextProvider);
 providers.register(discordOutputPolicyProvider);
 providers.register(createDiscordApplicationEmojiContextProvider(() => discord.applicationEmojis()));
@@ -601,7 +602,10 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     };
   },
 }, channels: {
-  list: async () => discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId)),
+  list: async () => Promise.all((await discord.listChannels((await store.listConversationScopes("discord")).map(scope => scope.externalId))).map(async channel => {
+    const profile = await sessionProfile(channel.id);
+    return { ...channel, model: profile.model, reasoningEffort: profile.reasoningEffort, modelSource: profile.preferences?.model ? "session" : "global" };
+  })),
   untrack: externalId => conversationScopeLifecycle.untrack(externalId, async () => {
     const result = await store.untrackConversationScope({ transport: "discord", externalId, archivedAt: new Date().toISOString() });
     conversationAutoArchive.onScopeUntracked(externalId);
@@ -841,7 +845,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   }
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
-  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: analysis.selectedToolNames } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
+  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, protocol: profile.protocol, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: analysis.selectedToolNames } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally {

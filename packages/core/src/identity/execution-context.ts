@@ -16,6 +16,8 @@ export interface ExecutionContext {
   readonly modelProfile?: {
     readonly id: string;
     readonly model: string;
+    /** Provider protocol fixed when this Run was created. */
+    readonly protocol: string;
     readonly capabilities: readonly ModelCapability[];
     readonly reasoningEffort?: ReasoningEffort;
   };

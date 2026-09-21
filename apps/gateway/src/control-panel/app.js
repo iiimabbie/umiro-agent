@@ -518,7 +518,10 @@ async function channels() {
     name.textContent = channelName(x.id);
     const id = document.createElement('small');
     id.textContent = ' — ' + x.id;
-    info.append(name, id);
+    const model = document.createElement('small');
+    model.className = 'channel-model';
+    model.textContent = (x.model || '未知模型') + ' · ' + (x.reasoningEffort || 'default') + (x.modelSource === 'session' ? ' · 頻道設定' : ' · 全域預設');
+    info.append(name, id, model);
     const stop = document.createElement('button');
     stop.type = 'button';
     stop.className = 'channel-untrack';

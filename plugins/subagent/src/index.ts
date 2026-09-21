@@ -29,7 +29,16 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
   const profiles = setup.services?.subagentProfiles;
   const replies = setup.services?.replies; if (!replies) throw new Error("subagent intermediate reply service is unavailable");
   const parentRunId = (context: Parameters<ToolDefinition["execute"]>[1]) => context.runId ?? (context.execution.origin.kind === "delegation" ? context.execution.origin.parentRunId : undefined);
-  const delegate: ToolDefinition = { name: "subagent_delegate", description: "Delegate a bounded objective to a durable Child Run. Select a registered profile, or provide both prompt and model when no profile is selected.", inputSchema: { type: "object", additionalProperties: false, required: ["objective", "idempotencyKey"], properties: { objective: { type: "string", minLength: 1 }, profile: { type: "string", minLength: 1 }, prompt: { type: "string", minLength: 1 }, idempotencyKey: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 }, constraints: { type: "array", items: { type: "string" } }, acceptanceCriteria: { type: "array", items: { type: "string" } }, outputContract: { type: "object" }, authorityScope: { type: "object" }, budgetCeiling: { type: "object" } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent", concurrency: "parallel_safe" }, async execute(input, context) {
+  const profileCatalog: ToolDefinition = { name: "subagent_profiles", description: "List the currently registered Subagent profiles and only the information needed to choose one. Call this when selecting an installed profile; for a direct delegation, use subagent_delegate with prompt and a complete model ID.", inputSchema: { type: "object", additionalProperties: false }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() {
+    const choices = (profiles?.list() ?? []).map(profile => ({
+      id: profile.id,
+      description: profile.description.slice(0, 1_000),
+      ...(profile.model ? { modelProfile: profile.model } : { requiresModel: true }),
+      ...(profile.requiredTools?.length ? { requiredTools: [...profile.requiredTools].slice(0, 32) } : {}),
+    }));
+    return ok(choices, "none");
+  } };
+  const delegate: ToolDefinition = { name: "subagent_delegate", description: "Delegate a bounded objective to a durable Child Run. For an installed Subagent role, first call subagent_profiles and provide its exact profile ID. For a direct delegation, provide a self-contained prompt and a complete actual model ID such as gpt-5.6-terra, gpt-5.6-luna, or gpt-5.6-sol.", inputSchema: { type: "object", additionalProperties: false, required: ["objective", "idempotencyKey"], properties: { objective: { type: "string", minLength: 1 }, profile: { type: "string", minLength: 1, description: "Registered Subagent role/profile ID for role-based delegation." }, prompt: { type: "string", minLength: 1, description: "Self-contained instructions for the Child Run; required when profile is omitted." }, idempotencyKey: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1, description: "Complete actual model ID for the Child Run, for example gpt-5.6-terra, gpt-5.6-luna, or gpt-5.6-sol." }, constraints: { type: "array", items: { type: "string" } }, acceptanceCriteria: { type: "array", items: { type: "string" } }, outputContract: { type: "object" }, authorityScope: { type: "object" }, budgetCeiling: { type: "object" } } }, policy: { capability: "subagent.delegate", tier: "common", interactionRequirement: "not_required", sideEffect: "idempotent", concurrency: "parallel_safe" }, async execute(input, context) {
     try {
       const selected = typeof input.profile === "string" ? profiles?.get(input.profile) : undefined;
       if (typeof input.profile === "string" && !selected) throw new Error(`unknown subagent profile: ${input.profile}; available profiles: ${profiles?.list().map(profile => profile.id).join(", ") || "none"}`);
@@ -65,5 +74,5 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       return ok(await replies.send(runId, String(input.text), context.signal), "idempotent");
     } catch (error) { return fail(error); }
   } };
-  return { contributions: { tools: [delegate, wait, cancel, replyNow] } };
+  return { contributions: { tools: [delegate, wait, cancel, replyNow, profileCatalog] } };
 }

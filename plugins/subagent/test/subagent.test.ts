@@ -8,6 +8,13 @@ test("subagent plugin delegates an explicit task package", async () => {
   let reply: unknown;
   const plugin = createPlugin({ pluginId: "subagent", namespace: "subagent", config: {}, permissionCeiling: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined, services: { childRuns: { async start(input: ExecuteChildRunRequest) { request = input; return { status: "active", childRunId: "child" }; }, async waitForAny(parentRunId: string, childRunIds: readonly string[]) { return { status: "succeeded", childRunId: childRunIds[0] ?? "child", text: parentRunId, reused: false }; }, async cancel(parentRunId: string, childRunId: string) { cancellation = [parentRunId, childRunId]; return { cancelled: true, childRunId }; } } as never, replies: { async send(runId, text) { reply = [runId, text]; return { deliveryId: "delivery-middle" }; } } } });
   const tool = plugin.contributions.tools?.[0]!;
+  assert.match(tool.description, /complete actual model ID/);
+  assert.match(String((tool.inputSchema.properties as Record<string, { description?: string }>).model?.description), /gpt-5\.6-terra/);
+  assert.match(String((tool.inputSchema.properties as Record<string, { description?: string }>).profile?.description), /Registered Subagent role\/profile ID/);
+  const profilesTool = plugin.contributions.tools?.find(item => item.name === "subagent_profiles")!;
+  assert.equal(profilesTool.policy.sideEffect, "none");
+  const emptyCatalog = await profilesTool.execute({}, {} as never);
+  assert.deepEqual(emptyCatalog.ok && emptyCatalog.output, []);
   const result = await tool.execute({ objective: "check", prompt: "check it", idempotencyKey: "k", model: "test-model", constraints: ["bounded"] }, { execution: { origin: { kind: "interactive", transport: "test", conversationId: "run-parent" }, actor: { id: "p", kind: "human", roles: ["owner"] }, authority: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "full" } }, runId: "run-parent", operationId: "op", idempotencyKey: "k", signal: new AbortController().signal });
   assert.equal(result.ok, true); assert.equal((request as { parentRunId: string }).parentRunId, "run-parent");
   const waitTool = plugin.contributions.tools?.[1]; assert.ok(waitTool);
@@ -23,8 +30,17 @@ test("subagent plugin delegates an explicit task package", async () => {
 
 test("subagent profile compiles static instructions and narrows supervisor choices", async () => {
   let request: ExecuteChildRunRequest | undefined;
-  const coder = { id: "coder", description: "code", instructions: ["You are a careful coder.", "Return verified changes."], model: "fast", authorityScope: { capabilities: ["filesystem.read" as const] }, budgetCeiling: { maxModelTurns: 3, maxToolCalls: 2 }, outputContract: { kind: "text" as const } };
-  const plugin = createPlugin({ pluginId: "subagent", namespace: "subagent", config: {}, permissionCeiling: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined, services: { subagentProfiles: { list: () => [coder], get: id => id === "coder" ? coder : undefined }, childRuns: { async start(input: ExecuteChildRunRequest) { request = input; return { status: "active", childRunId: "child" }; }, async waitForAny() { throw new Error("unused"); }, async cancel() { return { cancelled: false, childRunId: "child" }; } } as never, replies: { async send() { return { deliveryId: "d" }; } } } });
+  const coder = { id: "coder", description: "code", instructions: ["You are a careful coder.", "Return verified changes."], model: "fast", requiredTools: ["read_file", "write_file"], authorityScope: { capabilities: ["filesystem.read" as const] }, budgetCeiling: { maxModelTurns: 3, maxToolCalls: 2 }, outputContract: { kind: "text" as const } };
+  let catalog = [coder];
+  const plugin = createPlugin({ pluginId: "subagent", namespace: "subagent", config: {}, permissionCeiling: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined, services: { subagentProfiles: { list: () => catalog, get: id => catalog.find(profile => profile.id === id) }, childRuns: { async start(input: ExecuteChildRunRequest) { request = input; return { status: "active", childRunId: "child" }; }, async waitForAny() { throw new Error("unused"); }, async cancel() { return { cancelled: false, childRunId: "child" }; } } as never, replies: { async send() { return { deliveryId: "d" }; } } } });
+  const profilesTool = plugin.contributions.tools!.find(item => item.name === "subagent_profiles")!;
+  const listed = await profilesTool.execute({}, {} as never);
+  assert.deepEqual(listed.ok && listed.output, [{ id: "coder", description: "code", modelProfile: "fast", requiredTools: ["read_file", "write_file"] }]);
+  assert.doesNotMatch(JSON.stringify(listed.output), /You are a careful coder|authorityScope|outputContract/);
+  catalog = [];
+  const afterDisable = await profilesTool.execute({}, {} as never);
+  assert.deepEqual(afterDisable.ok && afterDisable.output, []);
+  catalog = [coder];
   const delegate = plugin.contributions.tools![0]!;
   const context = { execution: { origin: { kind: "interactive" as const, transport: "test", conversationId: "c" }, actor: { id: "owner", kind: "human" as const, roles: ["owner" as const] }, authority: { capabilities: ["subagent.delegate" as const], visibility: { kind: "all" as const }, instructionAuthority: "full" as const } }, runId: "parent", operationId: "op", signal: new AbortController().signal };
   const result = await delegate.execute({ profile: "coder", objective: "fix it", idempotencyKey: "k", constraints: ["small"], acceptanceCriteria: ["tests pass"], authorityScope: { capabilities: ["filesystem.read", "filesystem.write"] }, budgetCeiling: { maxModelTurns: 5, maxToolCalls: 1 } }, context);
