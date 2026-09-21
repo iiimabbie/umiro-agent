@@ -545,6 +545,7 @@ test("continues from a durable tool result without executing the tool again", as
       outcome: "succeeded",
       effectStatus: "not_applicable",
       output: { durable: true },
+      modelInputArtifactIds: ["artifact-durable"],
       completedAt: at,
     }, at);
     beforeCrash.close();
@@ -568,9 +569,14 @@ test("continues from a durable tool result without executing the tool again", as
       });
       const model: ModelPort = {
         async generate(request) {
-          const toolMessage = request.messages.at(-1);
+          const toolMessage = request.messages.at(-2);
           assert.equal(toolMessage?.role, "tool");
           assert.match(String(toolMessage?.content), /durable/);
+          const mediaMessage = request.messages.at(-1);
+          assert.equal(mediaMessage?.role, "user");
+          const injected = typeof mediaMessage?.content === "string" ? undefined : mediaMessage?.content.at(-1);
+          assert.equal(injected?.type, "text");
+          assert.equal(injected?.type === "text" ? injected.text : undefined, "artifact-durable");
           return {
             text: "used durable result",
             toolCalls: [],
@@ -584,6 +590,7 @@ test("continues from a durable tool result without executing the tool again", as
       const engine = new HeadlessRunEngine(model, registry, afterRestart, {
         now: () => recoveredAt,
         createId: kind => `${kind}-result-resume-${++nextId}`,
+        resolveModelInputArtifacts: async ({ artifactIds }) => [{ type: "text", text: artifactIds.join(",") }],
       });
       assert.equal((await engine.resume(claim)).status, "succeeded");
       assert.equal(toolCalls, 0);

@@ -137,6 +137,33 @@ test("runs model to tool to model and persists the final output", async () => {
   }
 });
 
+test("injects model-only tool artifacts after the complete tool batch", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const requests: Parameters<ModelPort["generate"]>[0][] = [];
+  const model: ModelPort = { async generate(request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      const calls = [{ id: "media-a", name: "test.media", input: {} }, { id: "media-b", name: "test.media", input: {} }, { id: "media-c", name: "test.media", input: {} }];
+      return response({ toolCalls: calls, finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: calls } });
+    }
+    assert.deepEqual(request.messages.slice(-4).map(message => message.role), ["tool", "tool", "tool", "user"], JSON.stringify(request.messages));
+    const media = request.messages.at(-1)!;
+    assert.equal(media.role, "user");
+    assert.equal(typeof media.content, "object");
+    const injected = typeof media.content === "string" ? undefined : media.content.at(-1);
+    assert.equal(injected?.type, "text");
+    assert.equal(injected?.type === "text" ? injected.text : undefined, "artifact-a,artifact-b");
+    return response({ text: "saw it", assistantMessage: { role: "assistant", content: "saw it" } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "test.media", description: "media", inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.media", tier: "common", interactionRequirement: "not_required", sideEffect: "none", concurrency: "parallel_safe" }, async execute(_input, context) { return { ok: true, output: { loaded: true }, modelInputArtifactIds: context.operationId === "operation-1" ? ["artifact-a"] : ["artifact-b", "artifact-a"], effectStatus: "not_applicable" }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds(), maxParallelToolCalls: 2, resolveModelInputArtifacts: async ({ artifactIds }) => [{ type: "text", text: artifactIds.join(",") }] }).run({ context: ownerContext("test.media"), model: "fake", prompt: "inspect" });
+    assert.equal(result.status, "succeeded");
+    assert.deepEqual(await store.getRunOutput("run-1"), { id: "output-1", runId: "run-1", text: "saw it", usage: { inputTokens: 20, outputTokens: 4, reasoningTokens: 0 }, createdAt: at });
+  } finally { store.close(); }
+});
+
 test("keeps analyzer-selected tools visible across model turns and rejects hidden hallucinations", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   let hiddenExecutions = 0;
@@ -208,23 +235,25 @@ test("classifies provider failures without exposing them in the Discord delivery
   } finally { store.close(); }
 });
 
-test("sends image data to the provider but omits base64 from model-call audit", async () => {
+test("sends media data to the provider but omits base64 from model-call audit", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   const model: ModelPort = { async generate(request) {
     const user = request.messages.find(message => message.role === "user");
     assert.equal(typeof user?.content === "string" ? undefined : user?.content.find(part => part.type === "image")?.url, "data:image/png;base64,AQID");
+    assert.equal(typeof user?.content === "string" ? undefined : user?.content.find(part => part.type === "file")?.data, "data:application/pdf;base64,BAUG");
     return response({ text: "seen", assistantMessage: { role: "assistant", content: "seen" } });
   } };
   try {
     const result = await new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() }).run({
       context: ownerContext(), model: "vision-model", prompt: "inspect",
-      userContent: [{ type: "text", text: "inspect" }, { type: "image", url: "data:image/png;base64,AQID", detail: "auto" }],
+      userContent: [{ type: "text", text: "inspect" }, { type: "image", url: "data:image/png;base64,AQID", detail: "auto" }, { type: "file", filename: "document.pdf", data: "data:application/pdf;base64,BAUG" }],
       maxContextTokens: 1_000,
     });
     assert.equal(result.status, "succeeded");
     const recorded = (await store.listModelCalls("run-1"))[0]?.messages.find(message => message.role === "user");
     assert.equal(typeof recorded?.content === "string" ? undefined : recorded?.content.find(part => part.type === "image")?.url, "[image data omitted from audit]");
-    assert.doesNotMatch(JSON.stringify(recorded), /AQID/);
+    assert.equal(typeof recorded?.content === "string" ? undefined : recorded?.content.find(part => part.type === "file")?.data, "[file data omitted from audit]");
+    assert.doesNotMatch(JSON.stringify(recorded), /AQID|BAUG/);
   } finally { store.close(); }
 });
 

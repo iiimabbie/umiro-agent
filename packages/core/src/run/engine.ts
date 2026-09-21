@@ -67,6 +67,7 @@ export interface HeadlessRunEngineOptions {
   readonly now?: () => string;
   readonly createId?: (kind: "run" | "step" | "model_call" | "output" | "delivery" | "operation" | "authorization") => string;
   readonly maxParallelToolCalls?: number;
+  readonly resolveModelInputArtifacts?: (input: { readonly artifactIds: readonly string[]; readonly context: ExecutionContext; readonly model: string }) => Promise<ModelContent>;
 }
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
@@ -312,6 +313,7 @@ export class HeadlessRunEngine {
   private readonly createId: NonNullable<HeadlessRunEngineOptions["createId"]>;
   private readonly toolRuntime: ToolRuntime;
   private maxParallelToolCalls: number;
+  private readonly resolveModelInputArtifacts?: HeadlessRunEngineOptions["resolveModelInputArtifacts"];
 
   constructor(
     private readonly modelPort: ModelPort,
@@ -322,6 +324,7 @@ export class HeadlessRunEngine {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? ((_kind) => crypto.randomUUID());
     this.maxParallelToolCalls = options.maxParallelToolCalls ?? 2;
+    this.resolveModelInputArtifacts = options.resolveModelInputArtifacts;
     if (!Number.isSafeInteger(this.maxParallelToolCalls) || this.maxParallelToolCalls <= 0) throw new TypeError("maxParallelToolCalls must be a positive safe integer");
     this.toolRuntime = new ToolRuntime(tools, store, { now: this.now, createId: kind => this.createId(kind) });
   }
@@ -706,11 +709,36 @@ export class HeadlessRunEngine {
       });
       return { status: "cancelled", runId: claim.run.id, error: toolResult.error.message };
     }
+    const remainingCall = assistant?.toolCalls?.find(candidate => !completedCallIds.has(candidate.id) && candidate.id !== call.id);
     const payload = toolResult.status === "succeeded"
       ? { ok: true, output: toolResult.output }
       : { ok: false, error: toolResult.error };
     const messages = checkpoint.messages;
     messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(payload) });
+    if (!remainingCall) {
+      const modelInputArtifactIds = new Set<string>(toolResult.status === "succeeded" ? (toolResult.modelInputArtifactIds ?? []) : []);
+      // A crash may leave earlier parallel operations durable while their tool
+      // messages are not yet in the checkpoint. Rebuild IDs from only the
+      // operation steps belonging to this assistant batch.
+      const modelCallRecord = assistant ? claim.modelCalls.find(candidate => candidate.response.toolCalls.length === assistant.toolCalls?.length && candidate.response.toolCalls.every((toolCall, index) => toolCall.id === assistant.toolCalls?.[index]?.id)) : undefined;
+      const modelCallStep = modelCallRecord ? claim.steps.find(candidate => candidate.id === modelCallRecord.stepId) : undefined;
+      const batchSteps = modelCallStep
+        ? claim.steps.filter(candidate => candidate.kind === "operation" && candidate.sequence > modelCallStep.sequence && candidate.sequence < (claim.steps.find(next => next.kind === "model_call" && next.sequence > modelCallStep.sequence)?.sequence ?? Number.POSITIVE_INFINITY))
+        : [];
+      for (const batchStep of batchSteps) {
+        const operation = claim.operations.filter(candidate => candidate.stepId === batchStep.id).at(-1);
+        if (!operation || operation.id === (existing?.id ?? "")) continue;
+        const result = await this.store.getOperationResult(operation.id);
+        for (const id of result?.modelInputArtifactIds ?? []) modelInputArtifactIds.add(id);
+      }
+      const assistantIndex = messages.findLastIndex(message => message.role === "assistant" && message.toolCalls?.some(toolCall => assistant?.toolCalls?.some(current => current.id === toolCall.id)));
+      const alreadyInjected = messages.slice(Math.max(0, assistantIndex + 1)).some(message => message.role === "user" && (typeof message.content === "string" ? message.content.startsWith("[Workspace attachment loaded by tool]") : message.content.some(part => part.type === "text" && part.text === "[Workspace attachment loaded by tool]")));
+      if (modelInputArtifactIds.size > 0 && !alreadyInjected) {
+        if (!this.resolveModelInputArtifacts) throw new Error("model input artifacts cannot be resolved by this runtime");
+        const content = await this.resolveModelInputArtifacts({ artifactIds: [...modelInputArtifactIds], context: claim.run.context, model: checkpoint.model });
+        messages.push({ role: "user", content: typeof content === "string" ? `[Workspace attachment loaded by tool]\n${content}` : [{ type: "text", text: "[Workspace attachment loaded by tool]" }, ...content] });
+      }
+    }
     const progressedAt = this.now();
     await this.store.updateExecutionProgress({
       runId: claim.run.id,
@@ -733,7 +761,6 @@ export class HeadlessRunEngine {
         updatedAt: progressedAt,
       },
     });
-    const remainingCall = assistant?.toolCalls?.find(candidate => !completedCallIds.has(candidate.id) && candidate.id !== call.id);
     const existingNextStep = claim.steps.find(step => step.sequence > operationStep.sequence && (step.state === "pending" || step.state === "running"));
     if (existingNextStep) {
       const advanced = { ...claim, run: { ...claim.run, revision: claim.run.revision + 1 }, checkpoint: { ...claim.checkpoint, version: claim.checkpoint.version + 1, data: checkpointData(checkpoint.model, messages, checkpoint.usage, checkpoint.deliveryDestination, checkpoint.reasoningEffort, checkpoint.maxContextTokens, checkpoint.visibleToolNames), updatedAt: progressedAt } };
@@ -795,13 +822,15 @@ export class HeadlessRunEngine {
 
   private projectOperationResult(result: OperationResult) {
     if (result.outcome === "succeeded") {
-      return { status: "succeeded" as const, operationId: result.operationId, output: result.output ?? null };
+      return { status: "succeeded" as const, operationId: result.operationId, output: result.output ?? null, ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}), ...(result.modelInputArtifactIds ? { modelInputArtifactIds: result.modelInputArtifactIds } : {}) };
     }
     return {
       status: result.outcome,
       operationId: result.operationId,
       error: result.error ?? { code: "operation_failed", message: "operation failed", retryable: false },
       ...(result.output !== undefined ? { output: result.output } : {}),
+      ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}),
+      ...(result.modelInputArtifactIds ? { modelInputArtifactIds: result.modelInputArtifactIds } : {}),
     };
   }
 
@@ -933,6 +962,17 @@ export class HeadlessRunEngine {
       modelStep = { ...modelStep, revision: modelStep.revision + 1, state: completeCurrentStep ? "succeeded" : "running" };
       return pending.length;
     };
+    const appendModelInputArtifacts = async (ids: readonly string[]): Promise<void> => {
+      const unique = [...new Set(ids.filter(id => typeof id === "string" && id.length > 0))];
+      if (unique.length === 0) return;
+      if (!this.resolveModelInputArtifacts) throw new Error("model input artifacts cannot be resolved by this runtime");
+      const content = await this.resolveModelInputArtifacts({ artifactIds: unique, context: executionContext, model: request.model });
+      const parts = typeof content === "string"
+        ? [{ type: "text" as const, text: `[Workspace attachment loaded by tool]\n${content}` }]
+        : [{ type: "text" as const, text: "[Workspace attachment loaded by tool]" }, ...content];
+      messages.push({ role: "user", content: parts });
+      compactWorkingMessages();
+    };
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
         await appendPendingSteer(false, false);
@@ -1006,6 +1046,7 @@ export class HeadlessRunEngine {
           return { status: "succeeded", runId, deliveryId, text: response.text, usage };
         }
 
+        const modelInputArtifactIds: string[] = [];
         for (let callIndex = 0; callIndex < response.toolCalls.length;) {
           const first = response.toolCalls[callIndex]!;
           const parallel = this.tools.get(first.name)?.policy.concurrency === "parallel_safe";
@@ -1058,6 +1099,7 @@ export class HeadlessRunEngine {
             }
             if (toolResult.status === "outcome_unknown") outcomeUnknown = true;
             if (toolResult.status === "cancelled") cancellationError ??= toolResult.error.message;
+            for (const id of toolResult.status === "succeeded" ? (toolResult.modelInputArtifactIds ?? []) : []) if (!modelInputArtifactIds.includes(id)) modelInputArtifactIds.push(id);
             await this.store.updateExecutionProgress({
               runId,
               expectedRunRevision: runRevision,
@@ -1080,6 +1122,7 @@ export class HeadlessRunEngine {
             return { status: "cancelled", runId, error: cancellationError };
           }
         }
+        await appendModelInputArtifacts(modelInputArtifactIds);
 
         modelStep = this.newStep(runId, sequence++, "model_call");
         await this.store.appendStep(modelStep);

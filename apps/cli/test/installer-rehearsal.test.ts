@@ -46,14 +46,14 @@ test("clean home completes install, configure, daemon, upgrade, backup, restore,
     assert.match((await exec(process.execPath, [cli, "status"], { env: environment("rev2") })).stdout, /\(ready\)/);
     await exec(process.execPath, [cli, "stop"], { env: environment("rev2") });
 
-    await mkdir(join(home, "data", "artifacts"), { recursive: true }); await writeFile(join(home, "data", "umiro.sqlite"), "database-v1"); await writeFile(join(home, "data", "artifacts", "a.txt"), "artifact-v1");
+    await mkdir(join(home, "data"), { recursive: true }); await writeFile(join(home, "data", "umiro.sqlite"), "database-v1");
     const backup = join(root, "backup"); await exec(process.execPath, [cli, "backup", backup], { env: environment("rev2") });
-    await writeFile(join(home, "data", "umiro.sqlite"), "database-v2"); await writeFile(join(home, "data", "artifacts", "a.txt"), "artifact-v2");
-    const tampered = join(root, "tampered"); await cp(backup, tampered, { recursive: true }); await writeFile(join(tampered, "artifacts", "a.txt"), "tampered");
+    await writeFile(join(home, "data", "umiro.sqlite"), "database-v2");
+    const tampered = join(root, "tampered"); await cp(backup, tampered, { recursive: true }); await writeFile(join(tampered, "umiro.sqlite"), "tampered");
     await assert.rejects(exec(process.execPath, [cli, "restore", tampered], { env: environment("rev2") }), /backup integrity verification failed/);
     assert.equal(await readFile(join(home, "data", "umiro.sqlite"), "utf8"), "database-v2");
     await exec(process.execPath, [cli, "restore", backup], { env: environment("rev2") });
-    assert.equal(await readFile(join(home, "data", "umiro.sqlite"), "utf8"), "database-v1"); assert.equal(await readFile(join(home, "data", "artifacts", "a.txt"), "utf8"), "artifact-v1");
+    assert.equal(await readFile(join(home, "data", "umiro.sqlite"), "utf8"), "database-v1");
 
     await exec(process.execPath, [cli, "rollback"], { env: environment("rev2") });
     assert.equal(await readlink(join(home, "app", "current")), first); assert.equal(await readlink(join(home, "app", "previous")), second);

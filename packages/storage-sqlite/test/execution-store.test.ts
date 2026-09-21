@@ -112,6 +112,7 @@ test("persists an execution atomically and survives close/reopen", async () => {
       outcome: "succeeded",
       effectStatus: "confirmed",
       output: { text: "pong" },
+      modelInputArtifactIds: ["artifact-model-only"],
       completedAt: at,
     };
     await database.store.recordOperationOutcome(operation.id, result, at);

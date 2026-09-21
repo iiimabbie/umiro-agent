@@ -19,19 +19,3 @@ export interface Artifact {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
-
-export type ArtifactWorkspaceEntryState = "active" | "modified" | "missing" | "trashed";
-
-/** Human-visible workspace projection of an immutable artifact blob. */
-export interface ArtifactWorkspaceEntry {
-  readonly artifactId: string;
-  /** Path relative to the installation workspace (normally attachments/...). */
-  readonly relativePath: string;
-  readonly originalFilename: string;
-  readonly state: ArtifactWorkspaceEntryState;
-  readonly device?: string;
-  readonly inode?: string;
-  readonly materializedSha256: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}

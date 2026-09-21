@@ -14,7 +14,7 @@ test("vision descriptions are bounded and only produced for image artifacts", as
   let calls = 0;
   const model: ModelPort = { async generate(request) { calls++; assert.equal(request.model, "vision-model"); return { text: "A room with a map and a desk.", toolCalls: [], finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "A room with a map and a desk." } }; } };
   try {
-    const result = await describeImageArtifacts(model, "vision-model", [image, text]);
+    const result = await describeImageArtifacts(model, "vision-model", [image, text], undefined, undefined, [], undefined, async input => ({ artifact: input, bytes: new Uint8Array([1, 2, 3]) }));
     assert.deepEqual(result.map(item => item.artifactId), ["image"]);
     assert.equal(result[0]?.description, "A room with a map and a desk."); assert.equal(calls, 1);
   } finally { await rm(root, { recursive: true, force: true }); }

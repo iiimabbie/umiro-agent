@@ -56,7 +56,7 @@ function canonicalJson(value: JsonValue): string {
 
 function projectResult(result: OperationResult): ToolInvocationResult {
   if (result.outcome === "succeeded") {
-    return { status: "succeeded", operationId: result.operationId, output: result.output ?? null, ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}) };
+    return { status: "succeeded", operationId: result.operationId, output: result.output ?? null, ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}), ...(result.modelInputArtifactIds ? { modelInputArtifactIds: result.modelInputArtifactIds } : {}) };
   }
   const error = result.error
     ?? operationError("operation_outcome_unknown", "the external effect could not be confirmed", true);
@@ -66,6 +66,7 @@ function projectResult(result: OperationResult): ToolInvocationResult {
     error,
     ...(result.output !== undefined ? { output: result.output } : {}),
     ...(result.artifactIds ? { artifactIds: result.artifactIds } : {}),
+    ...(result.modelInputArtifactIds ? { modelInputArtifactIds: result.modelInputArtifactIds } : {}),
   };
 }
 
@@ -81,6 +82,11 @@ function validateReturnedResult(tool: ToolDefinition, result: ToolExecutionResul
   }
   if (!result.ok && (!result.error || typeof result.error.code !== "string" || typeof result.error.message !== "string")) {
     throw new ToolContractError(`tool ${tool.name} returned an invalid structured error`);
+  }
+  for (const ids of [result.artifactIds, result.modelInputArtifactIds]) {
+    if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || id.length === 0))) {
+      throw new ToolContractError(`tool ${tool.name} returned invalid artifact IDs`);
+    }
   }
 }
 
@@ -330,9 +336,10 @@ export class ToolRuntime {
         effectStatus: executionResult.effectStatus,
         output: executionResult.output,
         ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}),
+        ...(executionResult.modelInputArtifactIds ? { modelInputArtifactIds: executionResult.modelInputArtifactIds } : {}),
         completedAt: this.now(),
       });
-    return { status: "succeeded", operationId, output: executionResult.output, ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}) };
+    return { status: "succeeded", operationId, output: executionResult.output, ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}), ...(executionResult.modelInputArtifactIds ? { modelInputArtifactIds: executionResult.modelInputArtifactIds } : {}) };
     }
 
     const outcome = executionResult.effectStatus === "unknown" ? "outcome_unknown" : "failed";
@@ -342,6 +349,7 @@ export class ToolRuntime {
       effectStatus: executionResult.effectStatus,
       ...(executionResult.output !== undefined ? { output: executionResult.output } : {}),
       ...(executionResult.artifactIds ? { artifactIds: executionResult.artifactIds } : {}),
+      ...(executionResult.modelInputArtifactIds ? { modelInputArtifactIds: executionResult.modelInputArtifactIds } : {}),
       error: executionResult.error,
       completedAt: this.now(),
     });

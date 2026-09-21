@@ -46,8 +46,9 @@ test("chat mapping preserves images, tools and tool-result correlation", () => {
   assert.equal("apiKey" in body, false);
 });
 
-test("chat mapping rejects files and respects token/reasoning settings", () => {
-  assert.throws(() => buildOpenAIChatBody(request({ messages: [{ role: "user", content: [{ type: "file", filename: "a.pdf", data: "data:application/pdf;base64,AA==" }] }] }), config), /does not support direct file input/);
+test("chat mapping supports PDF files and rejects non-PDF files", () => {
+  assert.deepEqual(buildOpenAIChatBody(request({ messages: [{ role: "user", content: [{ type: "file", filename: "a.pdf", data: "data:application/pdf;base64,AA==" }] }] }), config).messages, [{ role: "user", content: [{ type: "file", file: { filename: "a.pdf", file_data: "data:application/pdf;base64,AA==" } }] }]);
+  assert.throws(() => buildOpenAIChatBody(request({ messages: [{ role: "user", content: [{ type: "file", filename: "a.docx", data: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AA==" }] }] }), config), /only supports direct PDF/);
   const input = request({ maxOutputTokens: 128, reasoningEffort: "high" });
   const before = structuredClone(input);
   const body = buildOpenAIChatBody(input, { tokenLimitField: "max_tokens" });

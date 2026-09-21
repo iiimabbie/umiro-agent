@@ -31,6 +31,8 @@ export type ToolExecutionResult =
       readonly effectStatus: "not_applicable" | "confirmed";
       /** Artifacts created by this operation; delivery references their durable IDs. */
       readonly artifactIds?: readonly string[];
+      /** Artifacts for the next model input only; never delivery attachments. */
+      readonly modelInputArtifactIds?: readonly string[];
     }
   | {
       readonly ok: false;
@@ -38,6 +40,7 @@ export type ToolExecutionResult =
       readonly effectStatus: "not_applicable" | "confirmed" | "unknown";
       readonly output?: JsonValue;
       readonly artifactIds?: readonly string[];
+      readonly modelInputArtifactIds?: readonly string[];
     };
 
 export interface ToolDefinition {
@@ -53,13 +56,14 @@ export type ToolInvocationResult =
   | { readonly status: "tool_not_found"; readonly error: OperationError }
   | { readonly status: "invalid_input"; readonly error: OperationError }
   | { readonly status: "denied"; readonly operationId: string; readonly error: OperationError }
-  | { readonly status: "succeeded"; readonly operationId: string; readonly output: JsonValue; readonly artifactIds?: readonly string[] }
+  | { readonly status: "succeeded"; readonly operationId: string; readonly output: JsonValue; readonly artifactIds?: readonly string[]; readonly modelInputArtifactIds?: readonly string[] }
   | {
       readonly status: "failed" | "cancelled" | "outcome_unknown";
       readonly operationId: string;
       readonly error: OperationError;
       readonly output?: JsonValue;
       readonly artifactIds?: readonly string[];
+      readonly modelInputArtifactIds?: readonly string[];
     };
 
 export interface ToolInvocation {

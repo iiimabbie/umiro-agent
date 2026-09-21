@@ -20,7 +20,7 @@ test("responses mapping preserves instructions, images, files, tool calls and re
     messages: [
       { role: "system", content: "System one" },
       { role: "system", content: "System two" },
-      { role: "user", content: [{ type: "text", text: "Inspect" }, { type: "image", url: "data:image/png;base64,AA==", detail: "low" }, { type: "file", filename: "sample.pdf", data: "data:application/pdf;base64,AA==" }] },
+      { role: "user", content: [{ type: "text", text: "Inspect" }, { type: "image", url: "data:image/png;base64,AA==", detail: "low" }, { type: "file", filename: "sample.pdf", data: "data:application/pdf;base64,AA==" }, { type: "file", filename: "notes.docx", data: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AA==" }] },
       { role: "assistant", content: "Working", toolCalls: [{ id: "call_1", name: "lookup", input: { query: "sample" } }] },
       { role: "tool", toolCallId: "call_1", content: "result" },
     ],
@@ -33,7 +33,7 @@ test("responses mapping preserves instructions, images, files, tool calls and re
   assert.equal(body.max_output_tokens, 321);
   assert.deepEqual(body.reasoning, { effort: "high" });
   assert.deepEqual(body.input, [
-    { role: "user", content: [{ type: "input_text", text: "Inspect" }, { type: "input_image", image_url: "data:image/png;base64,AA==", detail: "low" }, { type: "input_file", filename: "sample.pdf", file_data: "data:application/pdf;base64,AA==" }] },
+    { role: "user", content: [{ type: "input_text", text: "Inspect" }, { type: "input_image", image_url: "data:image/png;base64,AA==", detail: "low" }, { type: "input_file", filename: "sample.pdf", file_data: "data:application/pdf;base64,AA==" }, { type: "input_file", filename: "notes.docx", file_data: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AA==" }] },
     { role: "assistant", content: [{ type: "output_text", text: "Working" }] },
     { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{\"query\":\"sample\"}" },
     { type: "function_call_output", call_id: "call_1", output: "result" },

@@ -131,9 +131,9 @@ test("delivers durable artifacts before marking the intent delivered", async () 
     async sendFiles(channelId, files, text) { events.push(`files:${channelId}:${files[0]?.name}:${text}`); return { messageId: "m" }; },
   }, () => "later", {
     async getArtifact() { return { id: "a", ownerPrincipalId: "owner", visibility: "shared", mediaType: "text/plain", filename: "report.txt", size: 1, sha256: "a".repeat(64), location: "/safe/report", state: "stored", createdAt: "now", updatedAt: "now" }; },
-  });
+  }, undefined, async artifact => ({ path: artifact.location, artifact: { ...artifact, filename: "renamed-report.txt" } }));
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
-  assert.deepEqual(events, ["files:c:report.txt:here is the report", "marked:d"]);
+  assert.deepEqual(events, ["files:c:renamed-report.txt:here is the report", "marked:d"]);
 });
 
 test("delivers overflow text before attaching files to the final chunk", async () => {
@@ -148,7 +148,7 @@ test("delivers overflow text before attaching files to the final chunk", async (
     async sendFiles(_channelId, _files, chunk) { sent.push(`files:${chunk}`); return { messageId: "files" }; },
   }, () => "later", {
     async getArtifact() { return { id: "a", ownerPrincipalId: "owner", visibility: "shared", mediaType: "image/png", filename: "image.png", size: 1, sha256: "a".repeat(64), location: "/safe/image", state: "stored", createdAt: "now", updatedAt: "now" }; },
-  });
+  }, undefined, async artifact => ({ path: artifact.location, artifact }));
   assert.deepEqual(await worker.drain(), { delivered: 1, skipped: 0 });
   assert.equal(sent.length, 2);
   assert.ok(sent[0]?.startsWith("text:intro"));

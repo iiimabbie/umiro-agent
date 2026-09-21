@@ -469,7 +469,6 @@ async function backup(destination?: string): Promise<void> {
   await access(join(home, "data", "umiro.sqlite"));
   try {
     await cp(join(home, "data", "umiro.sqlite"), join(temporaryTarget, "umiro.sqlite"));
-    if (await exists(join(home, "data", "artifacts"))) await cp(join(home, "data", "artifacts"), join(temporaryTarget, "artifacts"), { recursive: true });
     const files = await backupFiles(temporaryTarget);
     await writeFile(join(temporaryTarget, "backup.json"), `${JSON.stringify({ format: 2, createdAt: new Date().toISOString(), files }, null, 2)}\n`, { mode: 0o600 });
     await rename(temporaryTarget, target);
@@ -490,11 +489,6 @@ async function restore(source?: string): Promise<void> {
   const temporary = join(dataRoot, `.umiro-restore-${crypto.randomUUID()}.sqlite`);
   await cp(join(sourceRoot, "umiro.sqlite"), temporary); await chmod(temporary, 0o600);
   await rename(temporary, join(dataRoot, "umiro.sqlite"));
-  if (await exists(join(sourceRoot, "artifacts"))) {
-    const artifactTarget = join(dataRoot, "artifacts");
-    await rm(artifactTarget, { recursive: true, force: true });
-    await cp(join(sourceRoot, "artifacts"), artifactTarget, { recursive: true });
-  }
   console.log(sourceRoot);
 }
 

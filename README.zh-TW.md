@@ -143,9 +143,11 @@ Workspace 是純 Markdown，agent 每次執行都會讀，並透過工具編輯�
 
 ### 附件與下載檔案
 
-`workspace/attachments/` 是人與 agent 都能看見、管理的檔案區。Discord 上傳檔會放在 `attachments/inbox/discord/`，產生的圖片放在 `attachments/generated/`，`download_file` 的結果放在 `attachments/downloads/`。管理中的檔案請使用 `move_file` 改名，SQLite 的 workspace 對照與 artifact 顯示檔名才會同步；`web_fetch` 只回傳有大小限制的文字，不會儲存檔案。
+`workspace/attachments/` 是人與 agent 都能看見、管理，也是唯一持久化附件 bytes 的檔案區。Discord 上傳檔會放在 `attachments/inbox/discord/`，產生的圖片以可讀檔名直接放在 `attachments/generated/`，`download_file` 的結果放在 `attachments/downloads/`。附件改名可使用 `move_file`；resolver 會驗證 workspace 路徑與 SHA-256，也能在一般檔案移動後依雜湊找回檔案。`web_fetch` 只回傳有大小限制的文字，不會儲存檔案。
 
-`data/artifacts/` 是系統內部不可變、以內容雜湊命名的 blob。不要手動改名或編輯其中的檔案；workspace 副本是獨立的，可以安全編輯。artifact 資料表保存 blob 位置，`artifact_workspace_entries` 保存可見 workspace 路徑與改名狀態。
+使用者要求 agent 閱讀 `workspace/attachments/` 下的路徑時，`read_file` 會把支援的圖片與文件載入下一次模型請求。Responses 模型對支援文件使用原生 file input；Chat Completions 模型對 PDF 使用原生 file input，其他支援文件使用有大小限制的文字 fallback。讀取檔案不會自動把它附加到最後的 Discord 回覆。
+
+artifact metadata 保存最近一次驗證過的 `workspace/attachments/` 路徑、檔名、大小與 SHA-256。模型輸入、圖片描述、Discord delivery、文字擷取與回覆附件都使用同一個 workspace-only verifier；找不到或被修改的 bytes 會 fail closed。一般檔案移動不需要同步資料庫，下次解析會依雜湊重新定位。
 
 ### Discord
 

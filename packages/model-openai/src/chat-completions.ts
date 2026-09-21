@@ -13,7 +13,7 @@ import { postOpenAIJson } from "./http.js";
 import { parseToolCall } from "./tool-calls.js";
 
 interface OpenAIToolCall { id?: unknown; function?: { name?: unknown; arguments?: unknown } }
-type OpenAIContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } }>;
+type OpenAIContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } } | { type: "file"; file: { filename: string; file_data: string } }>;
 type OpenAIMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: OpenAIContent }
@@ -51,7 +51,10 @@ function contentToWire(content: ModelContent): OpenAIContent {
   if (typeof content === "string") return content;
   return content.map(part => {
     if (part.type === "text") return part;
-    if (part.type === "file") throw new OpenAIRequestError("OpenAI Chat Completions does not support direct file input", "upstream", false);
+    if (part.type === "file") {
+      if (!part.filename.toLowerCase().endsWith(".pdf") && !part.data.toLowerCase().startsWith("data:application/pdf;")) throw new OpenAIRequestError("OpenAI Chat Completions only supports direct PDF file input", "upstream", false);
+      return { type: "file" as const, file: { filename: part.filename, file_data: part.data } };
+    }
     return { type: "image_url" as const, image_url: { url: part.url, ...(part.detail ? { detail: part.detail } : {}) } };
   });
 }

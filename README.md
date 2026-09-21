@@ -143,9 +143,11 @@ The workspace is plain Markdown the agent reads on every run and edits through i
 
 ### Attachments and downloads
 
-`workspace/attachments/` is the human- and agent-visible file area. Discord uploads are materialized under `attachments/inbox/discord/`, generated images under `attachments/generated/`, and `download_file` results under `attachments/downloads/`. Use `move_file` for managed renames so the SQLite workspace mapping and displayed artifact filename stay synchronized. `web_fetch` only returns bounded text and does not save a file.
+`workspace/attachments/` is the human- and agent-visible file area and the only durable artifact byte store. Discord uploads are stored under `attachments/inbox/discord/`, generated images use readable filenames directly under `attachments/generated/`, and `download_file` results under `attachments/downloads/`. Use `move_file` for safe attachment renames; artifact resolution verifies the workspace path and SHA-256 and can recover a renamed file by hash. `web_fetch` only returns bounded text and does not save a file.
 
-`data/artifacts/` contains internal immutable, content-addressed blobs. Do not rename or edit those files manually; workspace copies are independent and safe to edit. The artifact database keeps the blob location, while `artifact_workspace_entries` records the visible workspace path and rename state.
+When a user asks the agent to read a path under `workspace/attachments/`, `read_file` loads supported images and documents into the next model request. Responses models receive native file inputs for supported document formats; Chat Completions models receive native PDF inputs and use bounded text fallback for other supported documents. Reading a file does not attach it to the final Discord reply.
+
+Artifact metadata keeps the last verified `workspace/attachments/` location, filename, size, and SHA-256. Every model input, image description, Discord delivery, text extraction, and reply attachment resolves through the same workspace-only verifier; missing or modified bytes fail closed. Normal filesystem moves do not require database synchronization because the next resolution locates the file by hash.
 
 ### Discord
 

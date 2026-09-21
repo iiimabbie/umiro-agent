@@ -67,6 +67,7 @@ CREATE TABLE operation_results (
   error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
   completed_at TEXT NOT NULL,
   artifact_ids_json TEXT CHECK (artifact_ids_json IS NULL OR json_valid(artifact_ids_json)),
+  model_input_artifact_ids_json TEXT CHECK (model_input_artifact_ids_json IS NULL OR json_valid(model_input_artifact_ids_json)),
   CHECK (outcome != 'outcome_unknown' OR effect_status = 'unknown'),
   CHECK (outcome != 'succeeded' OR error_json IS NULL),
   CHECK (outcome != 'failed' OR error_json IS NOT NULL),
@@ -352,18 +353,6 @@ CREATE TABLE conversation_locations (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE artifact_workspace_entries (
-  artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
-  relative_path TEXT NOT NULL UNIQUE,
-  original_filename TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('active','modified','missing','trashed')),
-  device TEXT,
-  inode TEXT,
-  materialized_sha256 TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
 CREATE UNIQUE INDEX operations_idempotency ON operations(kind, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX operations_step ON operations(step_id);
 CREATE INDEX steps_run_sequence ON steps(run_id, sequence);
@@ -383,9 +372,6 @@ CREATE INDEX search_documents_source ON search_documents(namespace, source_id);
 CREATE INDEX search_documents_source_group ON search_documents(namespace, source_group_id);
 CREATE INDEX search_embedding_jobs_ready ON search_embedding_jobs(status, next_retry_at, updated_at);
 CREATE INDEX conversation_locations_scope ON conversation_locations(transport, external_id, conversation_id);
-CREATE INDEX artifact_workspace_entries_state ON artifact_workspace_entries(state);
-CREATE INDEX artifact_workspace_entries_identity ON artifact_workspace_entries(device, inode);
-
 CREATE TRIGGER delegations_sync_child_state
 AFTER UPDATE OF state, updated_at ON runs
 WHEN NEW.parent_run_id IS NOT NULL

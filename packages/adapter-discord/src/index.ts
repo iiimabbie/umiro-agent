@@ -4,7 +4,7 @@ import type { IdentityMappingStore, IdentityResolver, ResolvedIdentity, Transpor
 import type { ExecutionStore } from "@umiro/core/ports";
 import type { JsonObject } from "@umiro/core/ports";
 import type { DeliveryIntent } from "@umiro/core/run";
-import type { ArtifactStore } from "@umiro/core";
+import type { Artifact, ArtifactStore } from "@umiro/core";
 export * from "./client.js";
 export * from "./emoji.js";
 export * from "./message-text.js";
@@ -187,6 +187,7 @@ export class DiscordDeliveryWorker {
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly artifacts?: Pick<ArtifactStore, "getArtifact">,
     private readonly suppressDuplicate?: (intent: DeliveryIntent) => Promise<JsonObject | undefined>,
+    private readonly resolveArtifactPath?: (artifact: Artifact) => Promise<{ readonly path: string; readonly artifact: Artifact }>,
   ) {}
 
   async drain(signal?: AbortSignal): Promise<{ delivered: number; skipped: number }> {
@@ -222,7 +223,9 @@ export class DiscordDeliveryWorker {
             if (typeof id !== "string") throw new TypeError(`Discord delivery ${intent.id} has an invalid artifact id`);
             const artifact = await this.artifacts.getArtifact(id);
             if (!artifact || artifact.state === "deleted") throw new Error(`artifact ${id} is unavailable`);
-            files.push({ path: artifact.location, ...(artifact.filename ? { name: artifact.filename } : {}) });
+            if (!this.resolveArtifactPath) throw new Error("Discord artifact resolver is unavailable");
+            const resolved = await this.resolveArtifactPath(artifact);
+            files.push({ path: resolved.path, ...(resolved.artifact.filename ? { name: resolved.artifact.filename } : {}) });
           }
           const chunks = chunkDiscordText(preparedText);
           const messageIds: string[] = [];

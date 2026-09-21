@@ -12,12 +12,12 @@ import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedders, EMBEDDING_API_KEY_SECRET, EMBEDDING_BASE_URL_SECRET, type EmbeddingConfig } from "./embedding-config.js";
 import { reconcilePluginSchedules, DurableScheduler, previewNextFire, type PluginRuntimeState } from "./durable-scheduler.js";
-import { ArtifactFileService } from "./artifact-files.js";
+import { ArtifactFileService, safeArtifactFilename } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
 import { JsonLineLogger } from "./structured-logger.js";
 import { ControlPanelServer, validateControlConfig } from "./control-panel.js";
-import { artifactModelContent } from "./artifact-input.js";
+import { artifactModelContent, resolveArtifactModelContent } from "./artifact-input.js";
 import { ActiveWorkTracker } from "./active-work.js";
 import { SteerGate } from "./steer-gate.js";
 import { summarizeModelUsage, type ModelPricing } from "./usage-summary.js";
@@ -112,10 +112,7 @@ const store = observeExecutionStore(new SQLiteExecutionStore(paths.sqlite), { em
 const pluginStateNamespaces = new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)]);
 await mkdir(paths.workspace, { recursive: true, mode: 0o700 });
 for (const directory of ["attachments/inbox/discord", "attachments/downloads", "attachments/generated", ".trash"]) await mkdir(`${paths.workspace}/${directory}`, { recursive: true, mode: 0o700 });
-const artifacts = new ArtifactFileService(paths.artifacts, store, undefined, undefined, paths.workspace);
-await artifacts.reconcileWorkspace().catch(error => logger.write({ level: "warn", event: "artifact.workspace_reconcile_failed", message: "Artifact workspace reconciliation failed; continuing in degraded mode", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } }));
-const workspaceReconcileTimer = setInterval(() => { void artifacts.reconcileWorkspace().catch(error => logger.write({ level: "warn", event: "artifact.workspace_reconcile_failed", message: "Artifact workspace reconciliation failed", occurredAt: new Date().toISOString(), data: { errorName: error instanceof Error ? error.name : "NonErrorThrown" } })); }, 30_000);
-workspaceReconcileTimer.unref?.();
+const artifacts = new ArtifactFileService(paths.workspace, store);
 const cleanupExpiredPluginState = async (): Promise<void> => {
   const now = new Date().toISOString();
   const removed = (await Promise.all([...pluginStateNamespaces].map(namespace => store.pluginState(namespace).deleteExpired?.(now) ?? 0))).reduce((sum, count) => sum + count, 0);
@@ -198,13 +195,21 @@ if (hostedImageGeneration) tools.register({
     if (!profile.capabilities.includes("hosted_image_generation")) return { ok: false, effectStatus: "unknown", error: { code: "model_capability_unavailable", message: `model profile ${profile.id} does not provide hosted image generation`, retryable: false } };
     try {
       const generated = await callResponsesImageGeneration({ config: { baseUrl, auth: apiKey ? "bearer" : "none", ...(apiKey ? { apiKey } : {}), timeoutMs: hostedImageGenerationTimeoutMs }, model: profile.model, prompt: String(input.prompt), signal: context.signal });
-      const filename = typeof input.filename === "string" ? input.filename : "generated-image.png";
-      const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename, mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId }, workspaceRelativePath: `attachments/generated/${context.operationId}/${filename}` });
+      const filename = safeArtifactFilename(typeof input.filename === "string" ? input.filename : "generated-image.png", "generated-image.png");
+      const artifact = await artifacts.createFromBytes({ bytes: generated.bytes, ownerPrincipalId: context.execution.actor.id, filename, mediaType: "image/png", parentSource: { kind: "operation", id: context.operationId }, workspaceRelativePath: `attachments/generated/${filename}` });
       return { ok: true, output: { artifactId: artifact.id, filename: artifact.filename ?? "generated-image.png" }, artifactIds: [artifact.id], effectStatus: "confirmed" };
     } catch (error) { return { ok: false, effectStatus: "unknown", error: { code: "hosted_image_generation_failed", message: error instanceof Error ? error.message : "hosted image generation failed", retryable: false } }; }
   },
 });
-const engine = new HeadlessRunEngine(modelPort, tools, store, { maxParallelToolCalls: runtimeMaxParallelTools });
+const engine = new HeadlessRunEngine(modelPort, tools, store, {
+  maxParallelToolCalls: runtimeMaxParallelTools,
+  resolveModelInputArtifacts: async ({ artifactIds, context, model }) => {
+    const selected = context.modelProfile?.model === model
+      ? resolveModelProfile(context.modelProfile.id, defaultModelProfile, configuredProfiles)
+      : Object.values(configuredProfiles).find(profile => profile.model === model) ?? (model === defaultModelProfile.model ? defaultModelProfile : { ...defaultModelProfile, model });
+    return resolveArtifactModelContent({ artifactIds, principalId: context.actor.id, store, supportsVision: selected.capabilities.includes("vision"), protocol: selected.protocol, resolveArtifactBytes: artifact => artifacts.resolveArtifactFile(artifact) });
+  },
+});
 const contextEngine = new ContextEngine(providers);
 const childRuns = new ChildRunService(engine, store, { maxActiveChildrenPerPrincipal: runtimeMaxConcurrentChildren, resolveModel: selection => resolveDelegatedModel(selection, defaultModelProfile.model, configuredProfiles) });
 await new HeadlessRecoveryCoordinator(store, engine).recoverAll();
@@ -327,7 +332,7 @@ discord.onButton(async (interaction: DiscordButtonInteraction) => {
 });
 const runtimeSecrets = () => [process.env.DISCORD_TOKEN, process.env.LLM_API_KEY, process.env[EMBEDDING_BASE_URL_SECRET], process.env[EMBEDDING_API_KEY_SECRET], process.env.GOOGLE_CLIENT_SECRET];
 discord.onError((error: unknown, context: DiscordAdapterErrorContext) => logger.write({ level: "error", event: `discord.${context.event}.failed`, message: "Discord event handler failed", occurredAt: new Date().toISOString(), data: { ...context, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
-const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store, intent => duplicateDiscordSendEvidence(store, intent));
+const delivery = new DiscordDeliveryWorker(store, discord, () => new Date().toISOString(), store, intent => duplicateDiscordSendEvidence(store, intent), artifact => artifacts.resolveArtifactFile(artifact));
 const replies = { async send(runId: string, text: string, signal?: AbortSignal) {
   const checkpoint = await store.getCheckpoint(runId);
   const data = checkpoint?.data;
@@ -810,9 +815,9 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   const gate = new SteerGate();
   const event = toInputEvent(message, artifactIds);
   const promptMessage = `[msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}${message.authorBot ? "; bot" : ""}): ${message.content}${imported.promptSuffix}`;
-  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol, imported.modelRenditions, reportImageRenditionFailure);
+  const userContent = await artifactModelContent(promptMessage, importedArtifacts, profile.capabilities.includes("vision"), profile.protocol, imported.modelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact));
   const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
-    ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure)
+    ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact))
     : [];
   const modelContent = [...userContent, ...replyContent];
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
@@ -861,7 +866,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   stopTyping();
   await delivery.drain();
   if (profile.capabilities.includes("vision") && importedArtifacts.some(artifact => artifact.mediaType.toLowerCase().startsWith("image/")) && store.updateArtifactExtractedText) {
-    void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort, imported.modelRenditions, reportImageRenditionFailure).then(async descriptions => {
+    void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort, imported.modelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact)).then(async descriptions => {
       for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description!, new Date().toISOString());
       if (descriptions.length) await store.rebuildSearchProjection();
     }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
@@ -900,9 +905,9 @@ discord.onSteer(async message => {
       : replyImported.modelRenditions;
     const artifactIds = imported.map(artifact => artifact.id);
     const event = toInputEvent(message, artifactIds);
-    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"), profile.protocol, importedResult.modelRenditions, reportImageRenditionFailure);
+    const modelContent = await artifactModelContent(`[steer] [msg:${message.messageId} ${message.createdAt}] <@${message.authorId}>(${message.authorName ?? message.authorId}): ${message.content}${importedResult.promptSuffix}`, imported, profile.capabilities.includes("vision"), profile.protocol, importedResult.modelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact));
     const replyContent = message.replyToMessageId && (message.replyToContent !== undefined || replyArtifacts.length)
-      ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure)
+      ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact))
       : [];
     await ingress.steer({ event, runId: activeSession.runId, userContent: [...modelContent, ...replyContent] });
   });
@@ -963,7 +968,6 @@ shutdown = async (exitCode = 0, restart = false) => {
   scheduler.stop();
   conversationAutoArchive.clear();
   embeddingWorker?.stop();
-  clearInterval(workspaceReconcileTimer);
   clearInterval(pluginStateCleanupTimer);
   await controlPanel?.stop();
   await discord.stop();

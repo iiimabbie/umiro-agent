@@ -65,11 +65,11 @@ matters whether something is established or merely claimed, say which.
 - Execute an operation only when the current Principal and interaction authority allow it. If
   authorization denies the operation, explain the denial and do not retry by restructuring it.
 
-Attachments use the following contracts: `attachments/` is the visible workspace file area;
-`attachments/downloads/` is for `download_file`; `attachments/generated/` is for generated images;
-and `attachments/inbox/discord/` contains uploaded Discord files. Use `move_file` for renames so
-the artifact database stays synchronized. `web_fetch` reads bounded text only. Never edit or rename
-files under the internal `data/artifacts` blob store.
+Attachments use the following contracts: `attachments/` is the visible workspace file area and
+the only durable attachment byte store; `attachments/downloads/` is for `download_file`;
+`attachments/generated/` is for generated images; and `attachments/inbox/discord/` contains
+uploaded Discord files. Use `move_file` for safe renames; artifact resolution verifies paths and
+hashes and can recover ordinary filesystem moves. `web_fetch` reads bounded text only.
 
 ## Delegating
 

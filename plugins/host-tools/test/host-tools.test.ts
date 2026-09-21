@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -39,6 +39,28 @@ test("agent shell cannot control the Umiro service", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("read_file loads supported workspace attachments as model-only metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-host-media-"));
+  await mkdir(join(root, "attachments"), { recursive: true });
+  await writeFile(join(root, "attachments/photo.png"), new Uint8Array([1, 2, 3]));
+  const setup = {
+    pluginId: "host-tools", namespace: "host-tools", permissionCeiling: authority,
+    config: { workspacePath: root }, getSecret() { return undefined; },
+    services: { artifacts: {
+      async resolveWorkspaceFileForModel(input: { sourcePath: string; ownerPrincipalId: string }) { return { id: "artifact-photo", ownerPrincipalId: input.ownerPrincipalId, visibility: "shared" as const, mediaType: "image/png", filename: "photo.png", size: 3, sha256: "a".repeat(64), location: "/hidden", state: "stored" as const, createdAt: "now", updatedAt: "now" }; },
+      async read() { return undefined; }, async createFromBytes() { throw new Error("unused"); }, async createFromWorkspaceFile() { throw new Error("unused"); }, async moveWorkspaceFile() { throw new Error("unused"); }, async getWorkspaceRelativePath() { return undefined; },
+    } },
+  } satisfies PluginSetupContext;
+  const plugin = createPlugin(setup); await plugin.start?.();
+  const read = await plugin.contributions.tools!.find(tool => tool.name === "read_file")!.execute({ path: "workspace/attachments/photo.png" }, execution);
+  try {
+    assert.equal(read.ok, true);
+    assert.deepEqual(read.ok && read.modelInputArtifactIds, ["artifact-photo"]);
+    assert.deepEqual(read.ok && read.output, { path: "attachments/photo.png", filename: "photo.png", mediaType: "image/png", size: 3, artifactId: "artifact-photo", loadedForModel: true });
+    assert.equal(read.ok && "artifactIds" in read, false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("download_file reports the authoritative materialized path and enforces a streamed size limit", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-host-download-"));
   const previousFetch = globalThis.fetch;
@@ -52,7 +74,7 @@ test("download_file reports the authoritative materialized path and enforces a s
       async read() { return undefined; },
       async createFromBytes() { return artifact; },
       async createFromWorkspaceFile() { return artifact; },
-      async moveWorkspaceFile() { return { oldPath: "attachments/a", newPath: "attachments/b", databaseUpdated: false }; },
+      async moveWorkspaceFile() { return { oldPath: "attachments/a", newPath: "attachments/b" }; },
       async getWorkspaceRelativePath() { return "attachments/downloads/file (2).bin"; },
     } },
   } satisfies PluginSetupContext;

@@ -16,11 +16,18 @@ export interface OperationResult {
   readonly effectStatus: ExternalEffectStatus;
   readonly output?: JsonValue;
   readonly artifactIds?: readonly string[];
+  /** Artifacts visible only to the next model turn, never final delivery. */
+  readonly modelInputArtifactIds?: readonly string[];
   readonly error?: OperationError;
   readonly completedAt: string;
 }
 
 export function assertOperationResult(result: OperationResult): void {
+  for (const field of [result.artifactIds, result.modelInputArtifactIds]) {
+    if (field !== undefined && (!Array.isArray(field) || field.some(id => typeof id !== "string" || id.length === 0))) {
+      throw new TypeError("operation artifact IDs must be non-empty strings");
+    }
+  }
   if (result.outcome === "outcome_unknown" && result.effectStatus !== "unknown") {
     throw new TypeError("outcome_unknown requires an unknown external effect status");
   }

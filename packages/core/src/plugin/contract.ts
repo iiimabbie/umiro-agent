@@ -103,7 +103,8 @@ export interface PluginArtifactService {
   read(input: { readonly artifactId: string; readonly principalId: string }): Promise<{ readonly bytes: Uint8Array; readonly filename?: string; readonly mediaType: string } | undefined>;
   createFromBytes(input: { readonly bytes: Uint8Array; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string }; readonly workspaceRelativePath?: string }): Promise<Artifact>;
   createFromWorkspaceFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
-  moveWorkspaceFile(input: { readonly sourcePath: string; readonly destinationPath: string }): Promise<{ readonly oldPath: string; readonly newPath: string; readonly artifactId?: string; readonly databaseUpdated: boolean }>;
+  resolveWorkspaceFileForModel?(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact>;
+  moveWorkspaceFile(input: { readonly sourcePath: string; readonly destinationPath: string }): Promise<{ readonly oldPath: string; readonly newPath: string }>;
   getWorkspaceRelativePath(artifactId: string): Promise<string | undefined>;
 }
 /** Protocol-neutral Discord operations exposed to Plugins; adapter enforces transport details. */

@@ -1,6 +1,6 @@
 import type { Artifact, ModelPort, ModelResponse } from "@umiro/core";
 import type { ModelContent, ModelImagePart } from "@umiro/core/model";
-import { readModelImageBytes, type ArtifactModelRendition } from "./artifact-input.js";
+import { readModelImageBytes, type ArtifactBytesResolver, type ArtifactModelRendition } from "./artifact-input.js";
 
 const MAX_DESCRIPTION_CHARACTERS = 6_000;
 
@@ -18,21 +18,24 @@ export async function describeImageArtifacts(
   reasoningEffort?: import("@umiro/core").ReasoningEffort,
   modelRenditions: readonly ArtifactModelRendition[] = [],
   onImageRenditionFailure?: (artifact: Artifact, error: unknown) => void,
+  resolveArtifactBytes?: ArtifactBytesResolver,
 ): Promise<readonly ImageDescriptionResult[]> {
   const results: ImageDescriptionResult[] = [];
   const renditionMap = new Map(modelRenditions.map(item => [item.artifactId, item.url]));
   for (const artifact of artifacts) {
-    if (!artifact.mediaType.toLowerCase().split(";", 1)[0]!.startsWith("image/")) continue;
+    const resolved = resolveArtifactBytes ? await resolveArtifactBytes(artifact) : undefined;
+    const effectiveArtifact = resolved?.artifact ?? artifact;
+    if (!effectiveArtifact.mediaType.toLowerCase().split(";", 1)[0]!.startsWith("image/")) continue;
     if (signal?.aborted) throw signal.reason;
     const renditionUrl = renditionMap.get(artifact.id);
     let image;
     if (!renditionUrl) {
-      image = await readModelImageBytes(artifact);
+      image = resolved ? { bytes: resolved.bytes, mediaType: effectiveArtifact.mediaType } : await readModelImageBytes(effectiveArtifact, undefined, resolveArtifactBytes);
     } else {
       try {
-        image = await readModelImageBytes(artifact, renditionUrl);
+        image = await readModelImageBytes(effectiveArtifact, renditionUrl);
       } catch (error) {
-        onImageRenditionFailure?.(artifact, error);
+        onImageRenditionFailure?.(effectiveArtifact, error);
         continue;
       }
     }
