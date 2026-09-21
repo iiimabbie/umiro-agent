@@ -91,3 +91,51 @@ test("download_file reports the authoritative materialized path and enforces a s
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("move_file validates attachment paths before invoking the artifact service", async () => {
+  const root = await mkdtemp(join(tmpdir(), "umiro-host-move-"));
+  let calls = 0;
+  let shouldThrow = false;
+  const setup = {
+    pluginId: "host-tools", namespace: "host-tools", permissionCeiling: authority,
+    config: { workspacePath: root }, getSecret() { return undefined; },
+    services: { artifacts: {
+      async resolveWorkspaceFileForModel() { throw new Error("unused"); },
+      async read() { return undefined; },
+      async createFromBytes() { throw new Error("unused"); },
+      async createFromWorkspaceFile() { throw new Error("unused"); },
+      async moveWorkspaceFile() { calls += 1; if (shouldThrow) throw new Error("filesystem move failed"); return { oldPath: "attachments/generated/a.png", newPath: "attachments/.trash/a.png" }; },
+      async getWorkspaceRelativePath() { return undefined; },
+    } },
+  } satisfies PluginSetupContext;
+  const plugin = createPlugin(setup); await plugin.start?.();
+  const move = plugin.contributions.tools!.find(tool => tool.name === "move_file")!;
+  try {
+    const invalid = await move.execute({ source: "attachments/generated/a.png", destination: ".trash/a.png" }, execution);
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.effectStatus, "not_applicable");
+    assert.equal(invalid.ok ? "" : invalid.error.code, "host_tool_error");
+    assert.match(invalid.ok ? "" : invalid.error.message, /inside workspace attachments/);
+    assert.equal(calls, 0);
+
+    const traversal = await move.execute({ source: "attachments/../outside/a.png", destination: "attachments/.trash/a.png" }, execution);
+    assert.equal(traversal.ok, false);
+    assert.equal(traversal.effectStatus, "not_applicable");
+    assert.equal(calls, 0);
+
+    const valid = await move.execute({ source: "workspace/attachments/generated/a.png", destination: "attachments/.trash/a.png" }, execution);
+    assert.equal(valid.ok, true);
+    assert.equal(valid.effectStatus, "confirmed");
+    assert.equal(calls, 1);
+
+    shouldThrow = true;
+    const failedMove = await move.execute({ source: "attachments/generated/a.png", destination: "attachments/.trash/a.png" }, execution);
+    assert.equal(failedMove.ok, false);
+    assert.equal(failedMove.effectStatus, "unknown");
+    assert.equal(calls, 2);
+
+    assert.match(move.description, /attachments\/\.trash/);
+    assert.match(plugin.contributions.tools!.find(tool => tool.name === "read_file")!.description, /binary model input/);
+    assert.match(plugin.contributions.tools!.find(tool => tool.name === "bash")!.description, /lifecycle controls remain user-operated/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

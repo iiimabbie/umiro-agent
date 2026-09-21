@@ -34,6 +34,12 @@ test("moves workspace files without database coupling", async () => {
   finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+test("rejects a move destination outside attachments before changing the source", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "umiro-workspace-move-safe-")); await mkdir(join(workspace, "attachments"), { recursive: true }); await writeFile(join(workspace, "attachments/a.txt"), "a"); const service = new ArtifactFileService(workspace, store(new Map()));
+  try { await assert.rejects(service.moveWorkspaceFile({ sourcePath: "attachments/a.txt", destinationPath: ".trash/a.txt" }), /inside workspace attachments/); assert.equal(await readFile(join(workspace, "attachments/a.txt"), "utf8"), "a"); }
+  finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 test("writes repeated identical bytes at each requested workspace target", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "umiro-workspace-single-copy-")); const rows = new Map<string, Artifact>(); const service = new ArtifactFileService(workspace, store(rows));
   try { const first = await service.createFromBytes({ bytes: new Uint8Array([9, 8]), ownerPrincipalId: "owner", filename: "one.bin", workspaceRelativePath: "attachments/one.bin" }); const second = await service.createFromBytes({ bytes: new Uint8Array([9, 8]), ownerPrincipalId: "owner", filename: "two.bin", workspaceRelativePath: "attachments/two.bin" }); assert.notEqual(first.location, second.location); assert.equal(await service.getWorkspaceRelativePath(second.id), "attachments/two.bin"); }
