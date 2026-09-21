@@ -17,6 +17,7 @@ test("archiving keeps canonical turns and the next ingress starts a new conversa
     assert.equal(await store.getConversationBinding("missing"), undefined);
     assert.deepEqual(await store.listConversationBindings("discord"), [{ transport: "discord", externalId: "channel", kind: "channel", conversationId: "c1" }]);
     assert.equal((await store.archiveBoundConversation("discord", "channel", "2026-09-09T00:01:00.000Z"))?.state, "archived");
+    assert.equal(await store.hasActiveConversationScope("discord", "channel"), false);
     assert.equal((await store.listTurns("c1")).length, 1);
     const second = await store.ingestInputEvent({ event: event("e2"), actorPrincipalId: "owner", newConversationId: "c2", newTurnId: "t2", newRunId: "r2", createdAt: "2026-09-09T00:02:00.000Z" });
     assert.equal(second.conversationCreated, true);
@@ -71,11 +72,25 @@ test("thread starter seed is inserted once before the triggering Turn", async ()
       initialTurns: [{ id: "starter-turn", actorPrincipalId: "starter-author", actorIdentity: { transport: "discord", externalId: "starter" }, inputEventId: "discord:starter:thread", content: [{ type: "text", text: "thread starter" }], createdAt: "2026-09-09T00:00:00.000Z" }],
     });
     assert.equal(first.conversationCreated, true);
+    assert.equal(await store.hasActiveConversationScope("discord", "channel"), true);
     assert.equal((await store.listTurns("thread-conversation")).map(turn => `${turn.sequence}:${turn.inputEventId}`).join(","), "0:discord:starter:thread,1:discord:reply");
     assert.equal(await store.hasConversationScope("discord", "channel"), true);
     const second = await store.ingestInputEvent({ event: event("discord:next"), actorPrincipalId: "reply-author", newConversationId: "unused", newTurnId: "next-turn", newRunId: "next-run", createdAt: "2026-09-09T00:02:00.000Z", initialTurns: [{ id: "must-not-insert", actorPrincipalId: "starter-author", inputEventId: "discord:starter:other", content: [{ type: "text", text: "ignored" }], createdAt: "2026-09-09T00:00:00.000Z" }] });
     assert.equal(second.turn.sequence, 2);
     assert.equal((await store.listTurns("thread-conversation")).length, 3);
+  } finally { store.close(); }
+});
+
+test("manual or automatic archive lets the next conversation seed the thread starter again", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  try {
+    const seed = (suffix: string) => ({ id: `starter-turn-${suffix}`, actorPrincipalId: "starter-author", inputEventId: `discord:starter:thread:${suffix}`, content: [{ type: "text" as const, text: "thread starter" }], createdAt: "2026-09-09T00:00:00.000Z" });
+    await store.ingestInputEvent({ event: event("discord:first"), actorPrincipalId: "reply-author", newConversationId: "first-conversation", newTurnId: "first-turn", newRunId: "first-run", createdAt: "2026-09-09T00:01:00.000Z", initialTurns: [seed("first")] });
+    await store.archiveBoundConversation("discord", "channel", "2026-09-09T00:02:00.000Z");
+    const second = await store.ingestInputEvent({ event: { ...event("discord:second"), replyToExternalId: "thread" }, actorPrincipalId: "reply-author", newConversationId: "second-conversation", newTurnId: "second-turn", newRunId: "second-run", createdAt: "2026-09-09T00:03:00.000Z", initialTurns: [seed("second")] });
+    assert.equal(second.conversationCreated, true);
+    assert.equal(second.turn.replyToTurnId, "starter-turn-second");
+    assert.deepEqual((await store.listTurns("second-conversation")).map(turn => turn.inputEventId), ["discord:starter:thread:second", "discord:second"]);
   } finally { store.close(); }
 });
 

@@ -423,6 +423,16 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     return row?.present === 1;
   }
 
+  async hasActiveConversationScope(transport: string, externalId: string): Promise<boolean> {
+    const row = this.database.prepare(`
+      SELECT 1 AS present
+      FROM conversation_bindings b
+      JOIN conversations c ON c.id = b.conversation_id
+      WHERE b.transport = ? AND b.external_id = ? AND c.state = 'active'
+    `).get(transport, externalId) as { present: number } | undefined;
+    return row?.present === 1;
+  }
+
   async listConversationScopes(transport?: string): Promise<readonly { readonly transport: string; readonly externalId: string; readonly kind: "direct" | "channel" | "thread" }[]> {
     const rows = (transport
       ? this.database.prepare("SELECT transport, external_id, kind FROM conversation_scopes WHERE transport = ? ORDER BY external_id").all(transport)
@@ -927,11 +937,12 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
     const externalId = event.replyToExternalId;
     if (!externalId) return undefined;
     const candidates = [`${event.conversation.transport}:${externalId}`, `${event.conversation.transport}:starter:${externalId}`];
-    const seeded = initialTurns.find(turn => candidates.includes(turn.inputEventId));
+    const starterPrefix = `${event.conversation.transport}:starter:${externalId}:`;
+    const seeded = initialTurns.find(turn => candidates.includes(turn.inputEventId) || turn.inputEventId.startsWith(starterPrefix));
     if (seeded) return seeded.id;
     const placeholders = candidates.map(() => "?").join(",");
-    const turn = this.database.prepare(`SELECT id FROM turns WHERE conversation_id=? AND input_event_id IN (${placeholders}) ORDER BY sequence DESC LIMIT 1`)
-      .get(conversationId, ...candidates) as { id: string } | undefined;
+    const turn = this.database.prepare(`SELECT id FROM turns WHERE conversation_id=? AND (input_event_id IN (${placeholders}) OR substr(input_event_id, 1, length(?)) = ?) ORDER BY sequence DESC LIMIT 1`)
+      .get(conversationId, ...candidates, starterPrefix, starterPrefix) as { id: string } | undefined;
     if (turn) return turn.id;
     const delivery = this.database.prepare(`SELECT r.turn_id AS turnId FROM delivery_intents d JOIN runs r ON r.id=d.run_id WHERE r.conversation_id=? AND d.state='delivered' AND json_extract(d.delivery_evidence_json, '$.transport')=? AND json_extract(d.delivery_evidence_json, '$.messageId')=? ORDER BY d.delivered_at DESC LIMIT 1`)
       .get(conversationId, event.conversation.transport, externalId) as { turnId: string | null } | undefined;

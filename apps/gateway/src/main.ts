@@ -825,16 +825,16 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     : [];
   const modelContent = [...userContent, ...replyContent];
   const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
-  if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasConversation(event))) {
+  if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasActiveConversation(event))) {
     try {
       const starter = await discord.fetchThreadStarter({ threadId: message.threadId, signal: controller.signal });
       if (starter && starter.messageId !== message.messageId) {
         const starterIdentity = await identities.resolve({ transport: "discord", externalId: starter.authorId, principalId: null, displayName: starter.authorName });
         initialTurns.push({
-          id: `turn:discord-starter:${starter.messageId}`,
+          id: `turn:discord-starter:${starter.messageId}:${message.messageId}`,
           actorPrincipalId: starterIdentity.principal.id,
           actorIdentity: { transport: "discord", externalId: starter.authorId },
-          inputEventId: `discord:starter:${starter.messageId}`,
+          inputEventId: `discord:starter:${starter.messageId}:${message.messageId}`,
           content: [{ type: "text", text: `[System] This is the initial message of thread "${starter.threadName}" (by ${starter.authorName}) [thread_id: ${message.threadId}]:\n${starter.content}` }],
           createdAt: starter.createdAt,
         });

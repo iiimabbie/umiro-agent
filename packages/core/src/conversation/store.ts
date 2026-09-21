@@ -143,6 +143,8 @@ export interface ConversationIngressStore extends Pick<ConversationStore, "getHi
   ingestInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult>;
   /** True only after this transport location has triggered the agent at least once. */
   hasConversationScope(transport: string, externalId: string): Promise<boolean>;
+  /** True only while this transport location is bound to an active Conversation. */
+  hasActiveConversationScope(transport: string, externalId: string): Promise<boolean>;
   /** Records only inside an established scope; may open a fresh Conversation after archive, but never creates a Run. */
   observeInputEvent(request: IngestInputEventRequest): Promise<IngestInputEventResult | undefined>;
   /** Atomically appends a canonical Turn and queues it for an already-running Run. */

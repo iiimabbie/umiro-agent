@@ -165,8 +165,8 @@ export class InteractiveIngress {
     };
   }
 
-  async hasConversation(event: InputEvent): Promise<boolean> {
-    return this.conversations.hasConversationScope(event.conversation.transport, event.conversation.externalId);
+  async hasActiveConversation(event: InputEvent): Promise<boolean> {
+    return this.conversations.hasActiveConversationScope(event.conversation.transport, event.conversation.externalId);
   }
 
   async steer(request: { readonly event: InputEvent; readonly runId: string; readonly userContent: ModelContent }): Promise<{ readonly conversationId: string; readonly turnId: string; readonly duplicate: boolean }> {
