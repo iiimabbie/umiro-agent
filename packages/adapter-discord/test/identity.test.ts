@@ -34,11 +34,13 @@ test("maps Discord messages and preserves stable principals", async () => {
   assert.deepEqual((await resolver.resolve({ transport: "discord", externalId: "3", principalId: null })).principal.roles, ["owner"]);
   const named = await resolver.resolve({ transport: "discord", externalId: "2", principalId: null, displayName: "小明" });
   assert.equal(named.principal.displayName, "小明");
-  const event = toInputEvent({ messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum", authorId: "2", authorName: "小明", content: "hi", createdAt: "2026-01-01T00:00:00Z" });
+  const event = toInputEvent({ messageId: "m", channelId: "thread", channelName: "Stale channel name", guildId: "g", threadId: "thread", threadName: "Latest post title", threadParentId: "forum", threadParentName: "Latest forum title", threadParentKind: "forum", authorId: "2", authorName: "小明", content: "hi", createdAt: "2026-01-01T00:00:00Z" });
   assert.equal(event.conversation.kind, "thread");
   assert.equal(event.content[0]?.type, "text");
   assert.equal(event.identity.displayName, "小明");
-  assert.deepEqual(event.metadata, { messageId: "m", channelId: "thread", guildId: "g", threadId: "thread", threadParentId: "forum", threadParentName: "Travel", threadParentKind: "forum" });
+  assert.deepEqual(event.metadata, { messageId: "m", channelId: "thread", channelName: "Stale channel name", guildId: "g", threadId: "thread", threadName: "Latest post title", threadParentId: "forum", threadParentName: "Latest forum title", threadParentKind: "forum" });
+  const channelEvent = toInputEvent({ messageId: "channel-message", channelId: "channel", channelName: "Latest channel name", guildId: "g", authorId: "2", content: "hi", createdAt: "2026-01-01T00:00:00Z" });
+  assert.equal(channelEvent.metadata?.channelName, "Latest channel name");
   const replied = toInputEvent({ messageId: "m2", channelId: "thread", guildId: "g", authorId: "2", content: "你看這張", createdAt: "2026-01-01T00:01:00Z", replyToMessageId: "m1", replyAuthorId: "3", replyToContent: "圖片", replyToAttachments: [{ id: "a1", url: "https://cdn.discordapp.com/a", filename: "photo.png", size: 3, mediaType: "image/png" }] });
   assert.equal(replied.metadata?.replyToAttachmentCount, 1);
 });

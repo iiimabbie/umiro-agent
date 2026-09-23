@@ -67,8 +67,8 @@ matters whether something is established or merely claimed, say which.
 
 Attachments use the following contracts: `attachments/` is the visible workspace file area and
 the only durable attachment byte store; `attachments/downloads/` is for `download_file`;
-`attachments/generated/` is for generated images; and `attachments/inbox/discord/` contains
-uploaded Discord files. Use `move_file` for safe renames; artifact resolution verifies paths and
+`attachments/generated/` is for generated images; Discord uploads are in `attachments/inbox/`.
+Use `move_file` for safe renames; artifact resolution verifies paths and
 hashes and can recover ordinary filesystem moves. `web_fetch` reads bounded text only.
 
 ## Delegating

@@ -2,6 +2,8 @@ import type { ContextProvider } from "@umiro/core";
 
 function string(value: unknown): string | undefined { return typeof value === "string" && value ? value : undefined; }
 
+export const PUBLIC_WEB_SOURCE_INSTRUCTION = "Every response based on public-web research cites its sources on one final line as descriptive Markdown links separated by ` | `, for example: `[Official status page](https://status.example/) | [Incident page](https://status.example/incidents/123)`.";
+
 export function createCurrentTimeContextProvider(now: () => Date = () => new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"): ContextProvider {
   return {
     id: "runtime.current-time",
@@ -46,21 +48,23 @@ export const discordRuntimeContextProvider: ContextProvider = {
     const metadata = request.inputEvent.metadata;
     const channelId = string(metadata?.channelId);
     if (!channelId) return [];
+    const channelName = string(metadata?.channelName);
     const threadId = string(metadata?.threadId);
+    const threadName = string(metadata?.threadName);
     const parentId = string(metadata?.threadParentId);
     const parentKind = string(metadata?.threadParentKind);
     const authorBot = typeof metadata?.authorBot === "boolean" ? metadata.authorBot : undefined;
     const content = {
       transport: "discord",
       ...(authorBot !== undefined ? { authorBot } : {}),
-      currentChannel: { id: channelId, kind: threadId ? "thread" : request.inputEvent.conversation.kind },
+      currentChannel: { id: channelId, kind: threadId ? "thread" : request.inputEvent.conversation.kind, ...(threadId && threadName ? { name: threadName } : !threadId && channelName ? { name: channelName } : {}) },
       ...(string(metadata?.guildId) ? { guild: { id: string(metadata?.guildId)! } } : {}),
-      ...(threadId ? { currentPost: { id: threadId } } : {}),
+      ...(threadId ? { currentPost: { id: threadId, ...(threadName ? { name: threadName } : {}) } } : {}),
       ...(threadId && parentId && (parentKind === "forum" || parentKind === undefined)
         ? { currentForum: { id: parentId, ...(string(metadata?.threadParentName) ? { name: string(metadata?.threadParentName)! } : {}) } }
         : {}),
       ...(threadId ? { thread: {
-        id: threadId,
+        id: threadId, ...(threadName ? { name: threadName } : {}),
         ...(parentId ? { parent: { id: parentId, kind: parentKind ?? "channel", ...(string(metadata?.threadParentName) ? { name: string(metadata?.threadParentName)! } : {}) } } : {}),
       } } : {}),
     };
@@ -79,7 +83,7 @@ export const discordOutputPolicyProvider: ContextProvider = {
       id: `discord.output-policy:${request.runId}`,
       providerId: "discord.output-policy",
       role: "runtime-policy",
-      content: "This Discord turn has already passed the reply gate. Return a non-empty final text response, including after using reaction or other tools.",
+      content: `This Discord turn has already passed the reply gate. Return a non-empty final text response, including after using reaction or other tools. ${PUBLIC_WEB_SOURCE_INSTRUCTION}`,
       source: { kind: "host-policy", ref: "discord-output" },
       influence: "instruction",
       instructionAuthority: "scoped",

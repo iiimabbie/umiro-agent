@@ -33,9 +33,9 @@ test("read-only control panel views are manifest-bound, validated, and lifecycle
   assert.throws(() => validatePluginManifest({ ...manifest, contributes: { controlPanelViews: ["diary", "diary"] } }), /duplicate/);
   assert.throws(() => validatePluginManifest({ ...manifest, contributes: { controlPanelViews: ["../diary"] } }), /invalid id/);
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
-  const view = { id: "diary", title: "日記", kind: "read-only-markdown-collection" as const, async list() { return [{ id: "2026-09-21", title: "2026-09-21", occurredAt: "2026-09-21T12:00:00.000Z" }]; }, async read(id: string) { return id === "2026-09-21" ? { id, title: "2026-09-21", content: "# today" } : undefined; } };
+  const view = { id: "diary", title: "日記", kind: "markdown-collection" as const, async list() { return [{ id: "2026-09-21", title: "2026-09-21", occurredAt: "2026-09-21T12:00:00.000Z" }]; }, async read(id: string) { return id === "2026-09-21" ? { id, title: "2026-09-21", content: "# today" } : undefined; } };
   await host.enable({ manifest, create: () => ({ contributions: { controlPanelViews: [view] } }) });
-  assert.deepEqual(host.listControlPanelViews(), [{ pluginId: "diary-view", id: "diary", title: "日記", kind: "read-only-markdown-collection" }]);
+  assert.deepEqual(host.listControlPanelViews(), [{ pluginId: "diary-view", id: "diary", title: "日記", kind: "markdown-collection", writable: false }]);
   assert.deepEqual(await host.listControlPanelDocuments("diary"), [{ id: "2026-09-21", title: "2026-09-21", occurredAt: "2026-09-21T12:00:00.000Z" }]);
   assert.deepEqual(await host.readControlPanelDocument("diary", "2026-09-21"), { id: "2026-09-21", title: "2026-09-21", content: "# today" });
   await host.disable("diary-view");
@@ -47,14 +47,14 @@ test("read-only control panel views are manifest-bound, validated, and lifecycle
 
 test("control panel views fail closed and roll back conflicting contributions", async () => {
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
-  const view = { id: "shared", title: "First", kind: "read-only-markdown-collection" as const, async list() { return []; }, async read() { return undefined; } };
+  const view = { id: "shared", title: "First", kind: "markdown-collection" as const, async list() { return []; }, async read() { return undefined; } };
   await host.enable({ manifest: { schemaVersion: 0, id: "first-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "first-view", permissions: authority, contributes: { controlPanelViews: ["shared"] } }, create: () => ({ contributions: { controlPanelViews: [view] } }) });
   await assert.rejects(host.enable({
     manifest: { schemaVersion: 0, id: "conflicting-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "conflicting-view", permissions: authority, contributes: { commands: ["temporary"], controlPanelViews: ["shared"] } },
     create: () => ({ contributions: { commands: [{ name: "temporary", description: "temporary", async execute() { return {}; } }], controlPanelViews: [{ ...view, title: "Second" }] } }),
   }), /duplicate plugin control panel view/);
   assert.deepEqual(host.listCommands(), []);
-  assert.deepEqual(host.listControlPanelViews(), [{ pluginId: "first-view", id: "shared", title: "First", kind: "read-only-markdown-collection" }]);
+  assert.deepEqual(host.listControlPanelViews(), [{ pluginId: "first-view", id: "shared", title: "First", kind: "markdown-collection", writable: false }]);
 
   const mismatch = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
   await assert.rejects(mismatch.enable({ manifest: { schemaVersion: 0, id: "missing-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "missing-view", permissions: authority, contributes: { controlPanelViews: ["declared"] } }, create: () => ({ contributions: {} }) }), /do not match/);
@@ -67,7 +67,7 @@ test("control panel view results are bounded and validated", async () => {
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
   await host.enable({
     manifest: { schemaVersion: 0, id: "bounded-view", version: "1.0.0", coreApi: "0", entry: "./index.js", namespace: "bounded-view", permissions: authority, contributes: { controlPanelViews: ["bounded"] } },
-    create: () => ({ contributions: { controlPanelViews: [{ id: "bounded", title: "Bounded", kind: "read-only-markdown-collection", async list() {
+    create: () => ({ contributions: { controlPanelViews: [{ id: "bounded", title: "Bounded", kind: "markdown-collection", async list() {
       if (mode === "many") return Array.from({ length: 5_001 }, (_, index) => ({ id: `item-${index}`, title: "item" }));
       if (mode === "duplicate") return [{ id: "same", title: "one" }, { id: "same", title: "two" }];
       return [{ id: "one", title: "one" }];
@@ -227,7 +227,7 @@ test("Discord Plugin services fail closed outside the manifest capability ceilin
   const backing = {
     async sendMessage() { calls.push("message"); return { messageId: "message" }; },
     async createButtonSet() { calls.push("buttons"); return { messageId: "message", buttonSetId: "set", expiresAt: "later" }; },
-    async sendButtons() { return { messageId: "message" }; }, async react() {}, async pin() {}, async unpin() {}, async fetchMessage() { return { messageId: "m", channelId: "c", authorId: "a", content: "", createdAt: "now" }; }, async createThread() { return { threadId: "t" }; }, async createForumPost() { return { threadId: "t" }; }, async archiveThread() {}, async deleteThread() {}, async editMessage() {}, async deleteMessage() {}, async fetchChannelMessages() { return []; }, async setRespondToBots() {},
+    async sendButtons() { return { messageId: "message" }; }, async react() {}, async pin() {}, async unpin() {}, async fetchMessage() { return { messageId: "m", channelId: "c", authorId: "a", content: "", createdAt: "now" }; }, async createThread() { return { threadId: "t" }; }, async createForumPost() { return { threadId: "t" }; }, async renameThread() {}, async renameForum() {}, async archiveThread() {}, async deleteThread() {}, async editMessage() {}, async deleteMessage() {}, async fetchChannelMessages() { return []; }, async setRespondToBots() {},
   } as DiscordPluginService;
   const ceiling = { ...authority, capabilities: ["discord.message.write", "discord.button.write"] };
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), ceiling, undefined, undefined, undefined, undefined, { discord: backing });
@@ -237,6 +237,8 @@ test("Discord Plugin services fail closed outside the manifest capability ceilin
   });
   await discord!.sendMessage({ channelId: "channel", content: "hello" });
   await assert.rejects(discord!.createButtonSet!({ channelId: "channel", content: "choose", allowedUserIds: ["owner"], buttons: [{ id: "go", label: "Go", style: "primary", actionTool: "tool", actionArgs: {} }] }), /undeclared service capability discord\.button\.write/);
+  await assert.rejects(discord!.renameThread({ threadId: "thread", name: "new post" }), /undeclared service capability discord\.thread\.write/);
+  await assert.rejects(discord!.renameForum({ channelId: "forum", name: "new forum" }), /undeclared service capability discord\.thread\.write/);
   assert.deepEqual(calls, ["message"]);
 });
 

@@ -14,7 +14,9 @@ export interface DiscordMessageEnvelope {
   readonly messageId: string;
   readonly channelId: string;
   readonly guildId?: string;
+  readonly channelName?: string;
   readonly threadId?: string;
+  readonly threadName?: string;
   readonly threadParentId?: string;
   readonly threadParentName?: string;
   readonly threadParentKind?: "forum" | "channel";
@@ -73,7 +75,7 @@ export function toInputEvent(message: DiscordMessageEnvelope, artifactIds: reado
     conversation: { transport: "discord", externalId: message.threadId ?? message.channelId, kind: message.threadId ? "thread" : (message.guildId ? "channel" : "direct") },
     content: [{ type: "text", text: message.content }, ...artifactIds.map(artifactId => ({ type: "artifact_reference" as const, artifactId }))],
     ...(message.replyToMessageId ? { replyToExternalId: message.replyToMessageId } : {}),
-    metadata: { messageId: message.messageId, channelId: message.channelId, ...(message.authorBot !== undefined ? { authorBot: message.authorBot } : {}), ...(message.guildId ? { guildId: message.guildId } : {}), ...(message.threadId ? { threadId: message.threadId } : {}), ...(message.threadParentId ? { threadParentId: message.threadParentId } : {}), ...(message.threadParentName ? { threadParentName: message.threadParentName } : {}), ...(message.threadParentKind ? { threadParentKind: message.threadParentKind } : {}), ...(message.mentionedUserIds ? { mentionedUserIds: [...message.mentionedUserIds] } : {}), ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}), ...(message.replyAuthorId ? { replyAuthorId: message.replyAuthorId } : {}), ...(message.replyToContent !== undefined ? { replyToContent: message.replyToContent } : {}), ...(message.replyToCreatedAt ? { replyToCreatedAt: message.replyToCreatedAt } : {}), ...(message.replyToAttachments?.length ? { replyToAttachmentCount: message.replyToAttachments.length } : {}), ...(message.attachments?.length ? { attachmentCount: message.attachments.length } : {}) },
+    metadata: { messageId: message.messageId, channelId: message.channelId, ...(message.channelName ? { channelName: message.channelName } : {}), ...(message.authorBot !== undefined ? { authorBot: message.authorBot } : {}), ...(message.guildId ? { guildId: message.guildId } : {}), ...(message.threadId ? { threadId: message.threadId } : {}), ...(message.threadName ? { threadName: message.threadName } : {}), ...(message.threadParentId ? { threadParentId: message.threadParentId } : {}), ...(message.threadParentName ? { threadParentName: message.threadParentName } : {}), ...(message.threadParentKind ? { threadParentKind: message.threadParentKind } : {}), ...(message.mentionedUserIds ? { mentionedUserIds: [...message.mentionedUserIds] } : {}), ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}), ...(message.replyAuthorId ? { replyAuthorId: message.replyAuthorId } : {}), ...(message.replyToContent !== undefined ? { replyToContent: message.replyToContent } : {}), ...(message.replyToCreatedAt ? { replyToCreatedAt: message.replyToCreatedAt } : {}), ...(message.replyToAttachments?.length ? { replyToAttachmentCount: message.replyToAttachments.length } : {}), ...(message.attachments?.length ? { attachmentCount: message.attachments.length } : {}) },
   };
 }
 

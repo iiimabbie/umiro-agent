@@ -71,6 +71,14 @@ export interface HeadlessRunEngineOptions {
 }
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+const DEFAULT_MAX_MODEL_TURNS = 50;
+
+function finalModelTurnReminder(maxModelTurns: number): ModelMessage {
+  return {
+    role: "system",
+    content: `This is the final allowed model turn (${maxModelTurns} of ${maxModelTurns}). Do not call any more tools. Give the best complete final response now using the evidence already collected, and state any unresolved limitations clearly.`,
+  };
+}
 
 export class ModelContextBudgetError extends Error {
   override readonly name = "ModelContextBudgetError";
@@ -914,7 +922,7 @@ export class HeadlessRunEngine {
       modelStep = { ...modelStep, revision: 1, state: "running" };
     }
 
-    const maxModelTurns = request.maxModelTurns ?? 50;
+    const maxModelTurns = request.maxModelTurns ?? DEFAULT_MAX_MODEL_TURNS;
     let toolCalls = 0;
     const startedMs = Date.now();
     const durationError = request.maxDurationMs === undefined ? undefined : new Error(`run duration budget exceeded: ${request.maxDurationMs}ms`);
@@ -977,6 +985,7 @@ export class HeadlessRunEngine {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
         await appendPendingSteer(false, false);
         assertBudget(true);
+        if (turn === maxModelTurns - 1) messages.push(finalModelTurnReminder(maxModelTurns));
         compactWorkingMessages();
         const response = await this.modelPort.generate({
           model: request.model,

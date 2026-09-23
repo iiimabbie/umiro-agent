@@ -144,6 +144,7 @@ CREATE TABLE turns (
   created_at TEXT NOT NULL,
   actor_transport TEXT,
   actor_external_id TEXT,
+  author_is_bot INTEGER NOT NULL DEFAULT 0 CHECK (author_is_bot IN (0,1)),
   UNIQUE (conversation_id, sequence)
 );
 
@@ -395,4 +396,5 @@ export function initializeSchema(database: Database.Database): void {
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'",
   ).get();
   if (!initialized) database.transaction(() => database.exec(CURRENT_SCHEMA))();
+  else if (!database.prepare("PRAGMA table_info(turns)").all().some((column: any) => column.name === "author_is_bot")) database.exec("ALTER TABLE turns ADD COLUMN author_is_bot INTEGER NOT NULL DEFAULT 0 CHECK (author_is_bot IN (0,1))");
 }

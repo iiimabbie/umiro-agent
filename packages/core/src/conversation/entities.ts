@@ -37,6 +37,7 @@ export interface Turn {
   /** Trusted transport identity captured at ingress for adapter-neutral context
    * selection. It is display/context metadata and never grants authority. */
   readonly actorIdentity?: { readonly transport: string; readonly externalId: string };
+  readonly authorIsBot?: boolean;
   readonly inputEventId: string;
   readonly primaryRunId?: string;
   readonly content: readonly InputContentBlock[];

@@ -257,13 +257,19 @@ test("sends media data to the provider but omits base64 from model-call audit", 
   } finally { store.close(); }
 });
 
-test("defaults the main Run to 50 model turns", async () => {
+test("reminds the model on the final default turn so it can finish", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   let modelCalls = 0;
   let toolCalls = 0;
+  let remindedAt: number | undefined;
   const model: ModelPort = {
-    async generate() {
+    async generate(request) {
       modelCalls += 1;
+      const reminder = request.messages.at(-1);
+      if (reminder?.role === "system" && reminder.content.includes("final allowed model turn")) {
+        remindedAt = modelCalls;
+        return response({ text: "done", assistantMessage: { role: "assistant", content: "done" } });
+      }
       const toolCall = { id: `call-${modelCalls}`, name: "test.continue", input: {} };
       return response({
         toolCalls: [toolCall],
@@ -286,10 +292,37 @@ test("defaults the main Run to 50 model turns", async () => {
   try {
     const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() })
       .run({ context: ownerContext("test.continue"), model: "fake-model", prompt: "keep going" });
+    assert.equal(result.status, "succeeded");
+    assert.equal(remindedAt, 50);
+    assert.equal(modelCalls, remindedAt);
+    assert.equal(toolCalls, remindedAt - 1);
+  } finally { store.close(); }
+});
+
+test("still enforces a configured model-turn limit when the final reminder is ignored", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const maxModelTurns = 3;
+  const finalMessages: Array<Parameters<ModelPort["generate"]>[0]["messages"][number] | undefined> = [];
+  const model: ModelPort = { async generate(request) {
+    finalMessages.push(structuredClone(request.messages.at(-1)));
+    const toolCall = { id: `call-${finalMessages.length}`, name: "test.continue", input: {} };
+    return response({ toolCalls: [toolCall], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [toolCall] } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "test.continue", description: "Continue", inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    policy: { capability: "test.continue", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+    async execute() { return { ok: true, output: null, effectStatus: "not_applicable" }; },
+  });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() })
+      .run({ context: ownerContext("test.continue"), model: "fake-model", prompt: "keep going", maxModelTurns });
     assert.equal(result.status, "failed");
-    if (result.status === "failed") assert.match(result.error, /model turn limit exceeded: 50/);
-    assert.equal(modelCalls, 50);
-    assert.equal(toolCalls, 50);
+    if (result.status === "failed") assert.match(result.error, /model turn limit exceeded: 3/);
+    assert.equal(finalMessages.length, maxModelTurns);
+    const finalReminder = finalMessages.at(-1);
+    assert.equal(finalReminder?.role, "system");
+    assert.match(finalReminder?.content ?? "", /final allowed model turn \(3 of 3\)/);
   } finally { store.close(); }
 });
 

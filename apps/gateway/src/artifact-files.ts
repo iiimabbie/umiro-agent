@@ -12,7 +12,6 @@ export function safeArtifactFilename(value: string | undefined, fallback: string
   const name = basename(value?.replace(/[\\/\0\x00-\x1f\x7f]/g, "") ?? "").trim().replace(/[. ]+$/g, "");
   return name.slice(0, 120) || fallback;
 }
-function safeSegment(value: string): string { return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "unknown"; }
 function extensionOf(filename: string): string { return extname(filename).toLowerCase(); }
 function inferWorkspaceMediaType(filename: string): string | undefined {
   return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv", ".tsv": "text/tsv", ".log": "text/plain", ".json": "application/json", ".html": "text/html", ".xml": "text/xml", ".rtf": "application/rtf", ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".ppt": "application/vnd.ms-powerpoint", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".odt": "application/vnd.oasis.opendocument.text" } as Record<string, string>)[extensionOf(filename)];
@@ -69,7 +68,7 @@ export class ArtifactFileService {
     if (!Number.isSafeInteger(attachment.size) || attachment.size < 0 || attachment.size > this.maxBytes) throw new Error(`attachment exceeds ${this.maxBytes} byte limit`);
     const response = await fetch(url, { signal: AbortSignal.timeout(30_000) }); if (!response.ok) throw new Error(`attachment download failed: HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > this.maxBytes) throw new Error(`attachment exceeds ${this.maxBytes} byte limit`); const mediaType = response.headers.get("content-type") ?? attachment.mediaType;
-    return this.createFromBytes({ bytes, ownerPrincipalId, filename: attachment.filename, ...(mediaType ? { mediaType } : {}), parentSource: { kind: "discord_message", id: sourceMessageId }, workspaceRelativePath: join("attachments", "inbox", "discord", safeSegment(sourceMessageId), safeArtifactFilename(attachment.filename, `attachment-${randomUUID().slice(0, 8)}`)) });
+    return this.createFromBytes({ bytes, ownerPrincipalId, filename: attachment.filename, ...(mediaType ? { mediaType } : {}), parentSource: { kind: "discord_message", id: sourceMessageId }, workspaceRelativePath: join("attachments", "inbox", safeArtifactFilename(attachment.filename, `attachment-${randomUUID().slice(0, 8)}`)) });
   }
 
   async createFromWorkspaceFile(input: { readonly sourcePath: string; readonly ownerPrincipalId: string; readonly filename?: string; readonly mediaType?: string; readonly parentSource?: { readonly kind: string; readonly id: string } }): Promise<Artifact> {

@@ -148,7 +148,7 @@ function resolvedPluginConfig(manifest: PluginManifestV0 | undefined, current: R
 
 async function init(): Promise<void> {
   await mkdir(workspace, { recursive: true, mode: 0o700 });
-  for (const directory of ["attachments/inbox/discord", "attachments/downloads", "attachments/generated", ".trash"]) {
+  for (const directory of ["attachments/inbox", "attachments/downloads", "attachments/generated", ".trash"]) {
     await mkdir(join(workspace, directory), { recursive: true, mode: 0o700 });
   }
   const templates = await workspaceTemplates();

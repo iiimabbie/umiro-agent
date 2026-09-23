@@ -3,20 +3,85 @@ import test from "node:test";
 import { ActionRow, ButtonStyle, ComponentType } from "discord.js";
 import { DiscordJsAdapter, type DiscordAdapterErrorContext } from "../src/client.js";
 
-function message(id: string) {
+function message(id: string, channel: Record<string, unknown> = { isThread: () => false }) {
   return {
     id,
     channelId: "channel",
     guildId: "guild",
     author: { id: "author", bot: false, globalName: null, username: "author" },
     reference: null,
-    channel: { isThread: () => false },
+    channel,
     mentions: { users: new Map<string, unknown>() },
     content: id,
     createdAt: new Date("2026-09-09T00:00:00.000Z"),
     attachments: new Map(),
   };
 }
+
+test("ingress normalization reads current channel and thread parent names", async () => {
+  const adapter = new DiscordJsAdapter();
+  adapter.onMessage(async () => {});
+  const normalize = (adapter as unknown as { normalize(value: unknown): Promise<{ channelName?: string; threadName?: string; threadParentName?: string } | undefined> }).normalize.bind(adapter);
+  const channel = await normalize(message("channel", { isThread: () => false, name: "renamed-channel" }));
+  assert.equal(channel?.channelName, "renamed-channel");
+  const thread = await normalize(message("thread", { isThread: () => true, isThreadOnly: () => true, id: "thread", name: "renamed-post", parentId: "forum", parent: { name: "renamed-forum", isThreadOnly: () => true } }));
+  assert.deepEqual({ channelName: thread?.channelName, threadName: thread?.threadName, threadParentName: thread?.threadParentName }, { channelName: "renamed-post", threadName: "renamed-post", threadParentName: "renamed-forum" });
+});
+
+test("thread starter retrieval uses Discord's parent-aware starter API", async () => {
+  const adapter = new DiscordJsAdapter();
+  const fetched: string[] = [];
+  const thread = (kind: string) => ({
+    isThread: () => true,
+    messages: {},
+    name: `${kind} post`,
+    fetchStarterMessage: async () => {
+      fetched.push(kind);
+      return { id: `${kind}-starter`, channelId: "parent", author: { id: "author", displayName: "Author", bot: true }, content: "starter text", createdAt: new Date("2026-09-09T00:00:00Z"), attachments: new Map() };
+    },
+  });
+  const channels = (adapter as unknown as { client: { channels: { fetch(id: string): Promise<unknown> } } }).client.channels;
+  channels.fetch = async id => thread(id);
+  for (const kind of ["parent", "forum"]) {
+    const result = await adapter.fetchThreadStarter({ threadId: kind });
+    assert.equal(result?.messageId, `${kind}-starter`);
+    assert.equal(result?.content, "starter text");
+    assert.equal(result?.authorBot, true);
+  }
+  assert.deepEqual(fetched, ["parent", "forum"]);
+});
+
+test("thread starter retrieval stops waiting when its abort signal fires", async () => {
+  const adapter = new DiscordJsAdapter();
+  const channels = (adapter as unknown as { client: { channels: { fetch(id: string): Promise<unknown> } } }).client.channels;
+  let finish!: (value: never) => void;
+  channels.fetch = async () => ({ isThread: () => true, messages: {}, name: "post", fetchStarterMessage: () => new Promise(resolve => { finish = resolve; }) });
+  const controller = new AbortController();
+  const pending = adapter.fetchThreadStarter({ threadId: "thread", signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort(new DOMException("Timed out", "TimeoutError"));
+  await assert.rejects(pending, error => error instanceof DOMException && error.name === "TimeoutError");
+  finish(undefined as never);
+});
+
+test("rename operations validate their channel kind, name length, and abort signal", async () => {
+  const adapter = new DiscordJsAdapter();
+  let channel: Record<string, unknown> = { isThread: () => true, isThreadOnly: () => false, setName: async (name: string) => { renamed.push(name); } };
+  const renamed: string[] = [];
+  const client = (adapter as unknown as { client: { channels: { fetch(id: string): Promise<unknown> } } }).client;
+  client.channels.fetch = async () => channel;
+  await adapter.renameThread({ threadId: "thread", name: "New post title" });
+  assert.deepEqual(renamed, ["New post title"]);
+  await assert.rejects(adapter.renameThread({ threadId: "thread", name: "" }), /1 to 100/);
+  await assert.rejects(adapter.renameThread({ threadId: "thread", name: "x".repeat(101) }), /1 to 100/);
+  const aborted = new AbortController(); aborted.abort(new Error("cancelled"));
+  await assert.rejects(adapter.renameForum({ channelId: "forum", name: "New forum", signal: aborted.signal }), /cancelled/);
+  channel = { isThread: () => false, isThreadOnly: () => true, setName: async (name: string) => { renamed.push(name); } };
+  await adapter.renameForum({ channelId: "forum", name: "New forum" });
+  assert.deepEqual(renamed, ["New post title", "New forum"]);
+  channel = { isThread: () => false, isThreadOnly: () => false, setName: async () => { throw new Error("must not rename channel"); } };
+  await assert.rejects(adapter.renameForum({ channelId: "ordinary-channel", name: "not a forum" }), /not a Forum/);
+});
 
 test("message handler failures are reported and do not poison the channel queue", async () => {
   const adapter = new DiscordJsAdapter();

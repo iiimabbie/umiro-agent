@@ -109,6 +109,7 @@ export interface ConversationSeedTurn {
   readonly id: TurnId;
   readonly actorPrincipalId: PrincipalId;
   readonly actorIdentity?: { readonly transport: string; readonly externalId: string };
+  readonly authorIsBot?: boolean;
   readonly inputEventId: string;
   readonly content: readonly InputContentBlock[];
   readonly createdAt: string;

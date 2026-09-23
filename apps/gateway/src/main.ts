@@ -2,8 +2,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type JsonObject, type ModelCapability, type PluginManifestV0, type ReasoningEffort } from "@umiro/core";
-import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
+import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type ConversationSeedTurn, type JsonObject, type ModelCapability, type PluginManifestV0, type ReasoningEffort } from "@umiro/core";
+import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordMessageEnvelope, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { loadPluginManifest, loadPluginModule } from "./plugin-loader.js";
@@ -26,7 +26,7 @@ import { modelProtocolMap, OpenAIProtocolRouter, resolveDelegatedModel, type Ope
 import { compileModelProfiles, resolveModelProfile, type ConfigModelProfile } from "./model-profiles.js";
 import { resolveRuntimeAuthorities, type RuntimeAuthorityConfig } from "./authority-config.js";
 import { PluginConversationHistory } from "./plugin-conversation-history.js";
-import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider, runtimeModelContextProvider } from "./discord-context.js";
+import { createCurrentTimeContextProvider, createDiscordApplicationEmojiContextProvider, discordOutputPolicyProvider, discordRuntimeContextProvider, PUBLIC_WEB_SOURCE_INSTRUCTION, runtimeModelContextProvider } from "./discord-context.js";
 import { ButtonActionCoordinator } from "./button-action-coordinator.js";
 import { importDiscordAttachments, mapDiscordAttachmentRenditions } from "./discord-attachments.js";
 import { safeErrorMessage } from "./safe-error.js";
@@ -112,7 +112,7 @@ let emitPluginEvent = async (_event: CoreExecutionEventName, _payload: JsonObjec
 const store = observeExecutionStore(new SQLiteExecutionStore(paths.sqlite), { emit: (event, payload) => emitPluginEvent(event, payload) });
 const pluginStateNamespaces = new Set(["discord-tools", ...modules.map(module => module.manifest.namespace)]);
 await mkdir(paths.workspace, { recursive: true, mode: 0o700 });
-for (const directory of ["attachments/inbox/discord", "attachments/downloads", "attachments/generated", ".trash"]) await mkdir(`${paths.workspace}/${directory}`, { recursive: true, mode: 0o700 });
+for (const directory of ["attachments/inbox", "attachments/downloads", "attachments/generated", ".trash"]) await mkdir(`${paths.workspace}/${directory}`, { recursive: true, mode: 0o700 });
 const artifacts = new ArtifactFileService(paths.workspace, store);
 const cleanupExpiredPluginState = async (): Promise<void> => {
   const now = new Date().toISOString();
@@ -172,7 +172,7 @@ tools.register({
 });
 if (hostedWebSearch) tools.register({
   name: "web_search",
-  description: "Search the public web through the active model's hosted web search capability.",
+  description: `Search the public web through the active model's hosted web search capability. ${PUBLIC_WEB_SOURCE_INSTRUCTION}`,
   inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 2, maxLength: 2_000 } } },
   policy: { capability: "model.hosted_web_search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
   async execute(input, context) {
@@ -361,7 +361,7 @@ const namedConversationScopes = async (locations: readonly ConversationLocation[
       transport: location.transport,
       externalId: location.externalId,
       kind: location.kind,
-      ...(channel ? { name: channel.name, guildName: channel.guildName, ...(channel.parentName ? { parentName: channel.parentName } : {}) } : {}),
+      ...(channel ? { name: channel.name, guildId: channel.guildId, guildName: channel.guildName, ...(channel.parentId ? { parentId: channel.parentId } : {}), ...(channel.parentName ? { parentName: channel.parentName } : {}) } : {}),
     }];
   }));
 };
@@ -463,7 +463,8 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   list: () => host?.listControlPanelViews() ?? [],
   listDocuments: (viewId: string) => host.listControlPanelDocuments(viewId),
   readDocument: (viewId: string, documentId: string) => host.readControlPanelDocument(viewId, documentId),
-}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md", ...(modules.some(module => module.manifest.id === "people") ? ["PEOPLE.md"] : [])], secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), publicSecrets: () => Object.fromEntries(["LLM_BASE_URL", EMBEDDING_BASE_URL_SECRET].flatMap(name => process.env[name]?.trim() ? [[name, process.env[name]!.trim()]] : [])), updateSecrets: async values => {
+  updateDocument: (viewId: string, documentId: string, content: string) => host.updateControlPanelDocument(viewId, documentId, content),
+}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"], secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), publicSecrets: () => Object.fromEntries(["LLM_BASE_URL", EMBEDDING_BASE_URL_SECRET].flatMap(name => process.env[name]?.trim() ? [[name, process.env[name]!.trim()]] : [])), updateSecrets: async values => {
   const unexpected = Object.keys(values).find(name => !editableSecretNames.has(name));
   if (unexpected) throw new TypeError(`secret is not editable here: ${unexpected}`);
   await persistSecrets(values);
@@ -571,6 +572,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
       state: summary.conversation.state,
       scope: scopes.get(`${summary.location.transport}:${summary.location.externalId}`)!,
       createdAt: summary.conversation.createdAt,
+      archivedAt: summary.conversation.state === "archived" ? summary.conversation.updatedAt : null,
       lastActivityAt: summary.lastActivityAt,
       turnCount: summary.turnCount,
       ...(summary.firstText ? { firstText: summary.firstText } : {}),
@@ -581,16 +583,31 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     if (!page) return undefined;
     const scopes = await namedConversationScopes([page.location]);
     const scope = scopes.get(`${page.location.transport}:${page.location.externalId}`)!;
+    let starter: { readonly messageId: string; readonly authorName: string; readonly authorBot: boolean; readonly content: string; readonly createdAt: string; readonly attachmentCount: number } | undefined;
+    let starterMessageId: string | undefined;
+    if (after === undefined && page.location.transport === "discord" && page.location.kind === "thread") {
+      try {
+        const alreadySeeded = page.messages.some(item => item.turn.sequence === 0 && (item.turn.inputEventId === `discord:${page.location.externalId}` || item.turn.content.some(block => block.type === "text" && block.text.includes(`[thread_id: ${page.location.externalId}]`))));
+        if (!alreadySeeded) {
+          const fetched = await discord.fetchThreadStarter({ threadId: page.location.externalId, signal: AbortSignal.timeout(5_000) });
+          starterMessageId = fetched?.messageId;
+          const alreadyPresent = fetched && page.messages.some(item => item.turn.sequence === 0 && (item.turn.inputEventId === `discord:${fetched.messageId}` || item.turn.inputEventId.startsWith(`discord:starter:${fetched.messageId}:`)));
+          if (fetched && !alreadyPresent) starter = fetched;
+        }
+      } catch { /* Archived history remains available when Discord no longer exposes the starter. */ }
+    }
     return {
       conversation: { id: page.conversation.id, state: page.conversation.state, scope, createdAt: page.conversation.createdAt },
+      ...(starter ? { starter } : {}),
       messages: page.messages.map(item => {
         const text = item.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n");
         const attachments = item.turn.content.filter(block => block.type === "artifact_reference").length;
         return {
           turnId: item.turn.id,
           sequence: item.turn.sequence,
+          ...(page.location.kind === "thread" && item.turn.sequence === 0 && (item.turn.inputEventId === `discord:${page.location.externalId}` || (starterMessageId && item.turn.inputEventId === `discord:${starterMessageId}`)) ? { isStarter: true } : {}),
           at: item.turn.createdAt,
-          author: { principalId: item.turn.actorPrincipalId, ...(item.actorDisplayName ? { displayName: item.actorDisplayName } : {}), isOwner: item.turn.actorPrincipalId === "owner" },
+          author: { principalId: item.turn.actorPrincipalId, ...(item.actorDisplayName ? { displayName: item.actorDisplayName } : {}), isOwner: item.turn.actorPrincipalId === "owner", isBot: item.turn.authorIsBot === true },
           text,
           ...(attachments ? { attachments } : {}),
           ...(item.turn.replyToTurnId ? { replyToTurnId: item.turn.replyToTurnId } : {}),
@@ -765,6 +782,19 @@ const discordAnalysisText = async (channelId: string, currentText: string): Prom
   return buildDiscordAnalysisText(currentText, history);
 };
 
+const threadStarterTurns = async (message: DiscordMessageEnvelope, event: ReturnType<typeof toInputEvent>): Promise<ConversationSeedTurn[]> => {
+  if (!message.threadId || message.messageId === message.threadId || await ingress.hasActiveConversation(event)) return [];
+  try {
+    const starter = await discord.fetchThreadStarter({ threadId: message.threadId });
+    if (!starter || starter.messageId === message.messageId) return [];
+    const identity = await identities.resolve({ transport: "discord", externalId: starter.authorId, principalId: null, displayName: starter.authorName });
+    return [{ id: `turn:discord-starter:${starter.messageId}:${message.messageId}`, actorPrincipalId: identity.principal.id, actorIdentity: { transport: "discord", externalId: starter.authorId }, ...(starter.authorBot ? { authorIsBot: true } : {}), inputEventId: `discord:starter:${starter.messageId}:${message.messageId}`, content: [{ type: "text", text: `[System] This is the initial message of thread "${starter.threadName}" (by ${starter.authorName}) [thread_id: ${message.threadId}]:\n${starter.content}${starter.attachmentCount ? `\n[${starter.attachmentCount} attachment(s)]` : ""}` }], createdAt: starter.createdAt }];
+  } catch (error) {
+    logger.write({ level: "warn", event: "discord.thread_starter.unavailable", message: "Thread starter could not be loaded; continuing without it", occurredAt: new Date().toISOString(), data: { threadId: message.threadId, errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
+    return [];
+  }
+};
+
 const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => {
   const decision = decideDiscordIngress({
     channelId: message.channelId,
@@ -786,7 +816,9 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     return;
   }
   if (route.kind === "observe") {
-    const observed = await ingress.observe(toInputEvent(message), decision.disposition === "trigger");
+    const event = toInputEvent(message);
+    const starterTurns = await threadStarterTurns(message, event);
+    const observed = await ingress.observe(event, decision.disposition === "trigger", starterTurns);
     logger.write({ level: "debug", event: "discord.ingress.observed", message: "Discord event evaluated without a Run", occurredAt: new Date().toISOString(), data: { reason: decision.reason, recorded: observed !== undefined, channelId: message.channelId, ...(message.guildId ? { guildId: message.guildId } : {}) } });
     return;
   }
@@ -824,25 +856,8 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
     ? await artifactModelContent(`[reply-target] [msg:${message.replyToMessageId} ${message.replyToCreatedAt ?? ""}] <@${message.replyAuthorId ?? "unknown"}>: ${message.replyToContent ?? "[內容無法取得；僅保留 Discord 訊息參照。]"}${replyImported.promptSuffix}`, replyArtifacts, profile.capabilities.includes("vision"), profile.protocol, replyModelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact))
     : [];
   const modelContent = [...userContent, ...replyContent];
-  const initialTurns = [] as { readonly id: string; readonly actorPrincipalId: string; readonly actorIdentity: { readonly transport: string; readonly externalId: string }; readonly inputEventId: string; readonly content: readonly [{ readonly type: "text"; readonly text: string }]; readonly createdAt: string }[];
-  if (message.threadId && message.messageId !== message.threadId && !(await ingress.hasActiveConversation(event))) {
-    try {
-      const starter = await discord.fetchThreadStarter({ threadId: message.threadId, signal: controller.signal });
-      if (starter && starter.messageId !== message.messageId) {
-        const starterIdentity = await identities.resolve({ transport: "discord", externalId: starter.authorId, principalId: null, displayName: starter.authorName });
-        initialTurns.push({
-          id: `turn:discord-starter:${starter.messageId}:${message.messageId}`,
-          actorPrincipalId: starterIdentity.principal.id,
-          actorIdentity: { transport: "discord", externalId: starter.authorId },
-          inputEventId: `discord:starter:${starter.messageId}:${message.messageId}`,
-          content: [{ type: "text", text: `[System] This is the initial message of thread "${starter.threadName}" (by ${starter.authorName}) [thread_id: ${message.threadId}]:\n${starter.content}` }],
-          createdAt: starter.createdAt,
-        });
-      }
-    } catch (error) {
-      logger.write({ level: "warn", event: "discord.thread_starter.unavailable", message: "Thread starter could not be loaded; continuing without it", occurredAt: new Date().toISOString(), data: { threadId: message.threadId, errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
-    }
-  }
+  const initialTurns: ConversationSeedTurn[] = [];
+  initialTurns.push(...await threadStarterTurns(message, event));
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
   const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, protocol: profile.protocol, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: analysis.selectedToolNames } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });

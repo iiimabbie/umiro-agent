@@ -16,6 +16,21 @@ test("stores bytes only in workspace attachments and resolves metadata", async (
   finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+test("imports Discord images and other files into the inbox", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "umiro-discord-inbox-"));
+  const rows = new Map<string, Artifact>();
+  const service = new ArtifactFileService(workspace, store(rows));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "application/octet-stream" } });
+  try {
+    const image = await service.importDiscord({ url: "https://cdn.discordapp.com/attachments/1/2/photo.png", filename: "photo.png", size: 3 }, "owner", "source-message");
+    const document = await service.importDiscord({ url: "https://cdn.discordapp.com/attachments/1/3/data.csv", filename: "data.csv", size: 3 }, "owner", "source-message");
+    assert.equal(await service.getWorkspaceRelativePath(image.id), "attachments/inbox/photo.png");
+    assert.equal(await service.getWorkspaceRelativePath(document.id), "attachments/inbox/data.csv");
+    assert.deepEqual(image.parentSource, { kind: "discord_message", id: "source-message" });
+  } finally { globalThis.fetch = originalFetch; await rm(workspace, { recursive: true, force: true }); }
+});
+
 test("relocates an artifact by hash after a normal filesystem move", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "umiro-workspace-relocate-")); await mkdir(join(workspace, "attachments"), { recursive: true }); const rows = new Map<string, Artifact>(); const service = new ArtifactFileService(workspace, store(rows));
   try { const artifact = await service.createFromBytes({ bytes: new Uint8Array([1, 2, 3]), ownerPrincipalId: "owner", filename: "photo.png", mediaType: "image/png", workspaceRelativePath: "attachments/photo.png" }); await rename(join(workspace, "attachments/photo.png"), join(workspace, "attachments/renamed.png")); const resolved = await service.resolveArtifactFile(artifact); assert.equal(resolved.path, join(workspace, "attachments/renamed.png")); assert.equal(resolved.artifact.filename, "renamed.png"); assert.equal(rows.get(artifact.id)?.location, resolved.path); assert.equal(rows.get(artifact.id)?.filename, "renamed.png"); }

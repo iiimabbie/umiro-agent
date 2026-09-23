@@ -45,7 +45,8 @@ export interface PluginControlPanelViewMetadata {
   readonly id: string;
   readonly title: string;
   readonly description?: string;
-  readonly kind: "read-only-markdown-collection";
+  readonly kind: "markdown-collection";
+  readonly writable: boolean;
 }
 
 const CONTROL_PANEL_ID = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -94,14 +95,16 @@ export class PluginControlPanelViewRegistry {
   private readonly items = new Map<string, { pluginId: string; value: PluginControlPanelViewDefinition }>();
   register(pluginId: string, value: PluginControlPanelViewDefinition): void {
     const id = validateId(value?.id, "plugin control panel view id");
-    if (value?.kind !== "read-only-markdown-collection") throw new TypeError(`plugin control panel view ${id} has an unsupported kind`);
+    if (value?.kind !== "markdown-collection") throw new TypeError(`plugin control panel view ${id} has an unsupported kind`);
+    if (value.writable !== true && value.update) throw new TypeError(`plugin control panel view ${id} has an update handler without writable capability`);
+    if (value.writable === true && typeof value.update !== "function") throw new TypeError(`plugin control panel view ${id} declares writable capability without an update handler`);
     const title = validateTitle(value.title, `plugin control panel view ${id} title`);
     if (value.description !== undefined && (typeof value.description !== "string" || value.description.length > 1_000)) throw new TypeError(`plugin control panel view ${id} description is invalid`);
     if (this.items.has(id)) throw new Error(`duplicate plugin control panel view: ${id}`);
-    this.items.set(id, { pluginId, value: { ...value, id, title, ...(value.description !== undefined ? { description: value.description } : {}) } });
+    this.items.set(id, { pluginId, value: { ...value, id, title, writable: value.writable === true, ...(value.description !== undefined ? { description: value.description } : {}) } });
   }
   unregister(id: string): boolean { return this.items.delete(id); }
-  list(): readonly PluginControlPanelViewMetadata[] { return [...this.items.entries()].map(([id, item]) => ({ pluginId: item.pluginId, id, title: item.value.title, ...(item.value.description !== undefined ? { description: item.value.description } : {}), kind: item.value.kind })).sort((a, b) => a.id.localeCompare(b.id)); }
+  list(): readonly PluginControlPanelViewMetadata[] { return [...this.items.entries()].map(([id, item]) => ({ pluginId: item.pluginId, id, title: item.value.title, ...(item.value.description !== undefined ? { description: item.value.description } : {}), kind: item.value.kind, writable: item.value.writable === true })).sort((a, b) => a.id.localeCompare(b.id)); }
   private get(id: string): { pluginId: string; value: PluginControlPanelViewDefinition } | undefined { return this.items.get(id); }
   async listDocuments(viewId: string): Promise<readonly PluginControlPanelDocumentSummary[]> {
     validateId(viewId, "plugin control panel view id");
@@ -116,6 +119,14 @@ export class PluginControlPanelViewRegistry {
     validateId(viewId, "plugin control panel view id"); validateId(documentId, "plugin control panel document id");
     const item = this.get(viewId); if (!item) throw new Error(`plugin control panel view not found: ${viewId}`);
     const value = await item.value.read(documentId);
+    return value === undefined ? undefined : validateDocument(value, documentId);
+  }
+  async updateDocument(viewId: string, documentId: string, content: string): Promise<PluginControlPanelDocument | undefined> {
+    validateId(viewId, "plugin control panel view id"); validateId(documentId, "plugin control panel document id");
+    if (typeof content !== "string" || content.length > MAX_CONTROL_PANEL_TEXT) throw new TypeError("plugin control panel document content is invalid");
+    const item = this.get(viewId); if (!item) throw new Error(`plugin control panel view not found: ${viewId}`);
+    if (item.value.writable !== true || !item.value.update) throw new Error(`plugin control panel view is read-only: ${viewId}`);
+    const value = await item.value.update(documentId, content);
     return value === undefined ? undefined : validateDocument(value, documentId);
   }
 }

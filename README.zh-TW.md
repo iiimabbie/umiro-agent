@@ -143,7 +143,7 @@ Workspace 是純 Markdown，agent 每次執行都會讀，並透過工具編輯�
 
 ### 附件與下載檔案
 
-`workspace/attachments/` 是人與 agent 都能看見、管理，也是唯一持久化附件 bytes 的檔案區。Discord 上傳檔會放在 `attachments/inbox/discord/`，產生的圖片以可讀檔名直接放在 `attachments/generated/`，`download_file` 的結果放在 `attachments/downloads/`。附件改名可使用 `move_file`；resolver 會驗證 workspace 路徑與 SHA-256，也能在一般檔案移動後依雜湊找回檔案。`web_fetch` 只回傳有大小限制的文字，不會儲存檔案。
+`workspace/attachments/` 是人與 agent 都能看見、管理，也是唯一持久化附件 bytes 的檔案區。Discord 上傳檔都放在 `attachments/inbox/`，產生的圖片以可讀檔名直接放在 `attachments/generated/`，`download_file` 的結果放在 `attachments/downloads/`。附件改名可使用 `move_file`；resolver 會驗證 workspace 路徑與 SHA-256，也能在一般檔案移動後依雜湊找回檔案。`web_fetch` 只回傳有大小限制的文字，不會儲存檔案。
 
 使用者要求 agent 閱讀 `workspace/attachments/` 下的路徑時，`read_file` 會把支援的圖片與文件載入下一次模型請求。Responses 模型對支援文件使用原生 file input；Chat Completions 模型對 PDF 使用原生 file input，其他支援文件使用有大小限制的文字 fallback。讀取檔案不會自動把它附加到最後的 Discord 回覆。
 

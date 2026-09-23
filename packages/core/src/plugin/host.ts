@@ -111,6 +111,8 @@ function discordWithinCeiling(service: DiscordPluginService, manifest: PluginMan
     async fetchMessage(input) { requireCapability("discord.message.read"); return service.fetchMessage(input); },
     async createThread(input) { requireCapability("discord.thread.write"); return service.createThread(input); },
     async createForumPost(input) { requireCapability("discord.thread.write"); return service.createForumPost(input); },
+    async renameThread(input) { requireCapability("discord.thread.write"); return service.renameThread(input); },
+    async renameForum(input) { requireCapability("discord.thread.write"); return service.renameForum(input); },
     async archiveThread(input) { requireCapability("discord.thread.write"); return service.archiveThread(input); },
     async deleteThread(input) { requireCapability("discord.thread.delete"); return service.deleteThread(input); },
     async editMessage(input) { requireCapability("discord.message.write"); return service.editMessage(input); },
@@ -342,6 +344,7 @@ export class PluginHost {
   listControlPanelViews() { return this.controlPanelViews.list(); }
   listControlPanelDocuments(viewId: string) { return this.controlPanelViews.listDocuments(viewId); }
   readControlPanelDocument(viewId: string, documentId: string) { return this.controlPanelViews.readDocument(viewId, documentId); }
+  updateControlPanelDocument(viewId: string, documentId: string, content: string) { return this.controlPanelViews.updateDocument(viewId, documentId, content); }
 
   /** Run the single enabled turn analyzer against the current event and all registered model-facing tools. */
   async analyzeTurn(input: Omit<TurnAnalyzerInput, "tools">): Promise<TurnAnalysis | undefined> {

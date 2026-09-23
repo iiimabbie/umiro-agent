@@ -69,11 +69,12 @@ test("thread starter seed is inserted once before the triggering Turn", async ()
   try {
     const first = await store.ingestInputEvent({
       event: event("discord:reply"), actorPrincipalId: "reply-author", newConversationId: "thread-conversation", newTurnId: "reply-turn", newRunId: "reply-run", createdAt: "2026-09-09T00:01:00.000Z",
-      initialTurns: [{ id: "starter-turn", actorPrincipalId: "starter-author", actorIdentity: { transport: "discord", externalId: "starter" }, inputEventId: "discord:starter:thread", content: [{ type: "text", text: "thread starter" }], createdAt: "2026-09-09T00:00:00.000Z" }],
+      initialTurns: [{ id: "starter-turn", actorPrincipalId: "starter-author", actorIdentity: { transport: "discord", externalId: "starter" }, authorIsBot: true, inputEventId: "discord:starter:thread", content: [{ type: "text", text: "thread starter" }], createdAt: "2026-09-09T00:00:00.000Z" }],
     });
     assert.equal(first.conversationCreated, true);
     assert.equal(await store.hasActiveConversationScope("discord", "channel"), true);
     assert.equal((await store.listTurns("thread-conversation")).map(turn => `${turn.sequence}:${turn.inputEventId}`).join(","), "0:discord:starter:thread,1:discord:reply");
+    assert.equal((await store.listTurns("thread-conversation"))[0]?.authorIsBot, true);
     assert.equal(await store.hasConversationScope("discord", "channel"), true);
     const second = await store.ingestInputEvent({ event: event("discord:next"), actorPrincipalId: "reply-author", newConversationId: "unused", newTurnId: "next-turn", newRunId: "next-run", createdAt: "2026-09-09T00:02:00.000Z", initialTurns: [{ id: "must-not-insert", actorPrincipalId: "starter-author", inputEventId: "discord:starter:other", content: [{ type: "text", text: "ignored" }], createdAt: "2026-09-09T00:00:00.000Z" }] });
     assert.equal(second.turn.sequence, 2);

@@ -143,7 +143,7 @@ The workspace is plain Markdown the agent reads on every run and edits through i
 
 ### Attachments and downloads
 
-`workspace/attachments/` is the human- and agent-visible file area and the only durable artifact byte store. Discord uploads are stored under `attachments/inbox/discord/`, generated images use readable filenames directly under `attachments/generated/`, and `download_file` results under `attachments/downloads/`. Use `move_file` for safe attachment renames; artifact resolution verifies the workspace path and SHA-256 and can recover a renamed file by hash. `web_fetch` only returns bounded text and does not save a file.
+`workspace/attachments/` is the human- and agent-visible file area and the only durable artifact byte store. Discord uploads are stored under `attachments/inbox/`, generated images use readable filenames directly under `attachments/generated/`, and `download_file` results under `attachments/downloads/`. Use `move_file` for safe attachment renames; artifact resolution verifies the workspace path and SHA-256 and can recover a renamed file by hash. `web_fetch` only returns bounded text and does not save a file.
 
 When a user asks the agent to read a path under `workspace/attachments/`, `read_file` loads supported images and documents into the next model request. Responses models receive native file inputs for supported document formats; Chat Completions models receive native PDF inputs and use bounded text fallback for other supported documents. Reading a file does not attach it to the final Discord reply.
 

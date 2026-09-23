@@ -17,7 +17,7 @@ const CSS = readFileSync(new URL("./control-panel/app.css", import.meta.url), "u
 const FAVICON = readFileSync(new URL("./control-panel/favicon.png", import.meta.url));
 
 const BASE_EDITABLE_FILES = ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"] as const;
-const KNOWN_EDITABLE_FILES = new Set([...BASE_EDITABLE_FILES, "PEOPLE.md"]);
+const KNOWN_EDITABLE_FILES: ReadonlySet<string> = new Set(BASE_EDITABLE_FILES);
 const MAX_BODY = 1024 * 1024;
 
 export interface ControlPanelSchedules {
@@ -38,11 +38,12 @@ export interface ControlPanelConversations {
   list(filter: { readonly scope?: { readonly transport: string; readonly externalId: string }; readonly state?: "active" | "archived"; readonly limit: number }): Promise<unknown>;
   messages(conversationId: string, limit: number, after?: number): Promise<unknown | undefined>;
 }
-export interface ControlPanelViewMetadata { readonly pluginId: string; readonly id: string; readonly title: string; readonly description?: string; readonly kind: "read-only-markdown-collection" }
+export interface ControlPanelViewMetadata { readonly pluginId: string; readonly id: string; readonly title: string; readonly description?: string; readonly kind: "markdown-collection"; readonly writable: boolean }
 export interface ControlPanelPluginViews {
   list(): Promise<readonly ControlPanelViewMetadata[]> | readonly ControlPanelViewMetadata[];
   listDocuments(viewId: string): Promise<readonly PluginControlPanelDocumentSummary[]>;
   readDocument(viewId: string, documentId: string): Promise<PluginControlPanelDocument | undefined>;
+  updateDocument(viewId: string, documentId: string, content: string): Promise<PluginControlPanelDocument | undefined>;
 }
 export interface GatewayReadiness {
   readonly storage: boolean;
@@ -227,7 +228,7 @@ export class ControlPanelServer {
         catch { return json(response, 500, { error: "plugin view unavailable" }); }
       }
       if (url.pathname.startsWith("/api/plugin-views/")) {
-        if (request.method !== "GET") return json(response, 404, { error: "not found" });
+        if (request.method !== "GET" && request.method !== "PUT") return json(response, 404, { error: "not found" });
         if (!this.options.pluginViews) return json(response, 503, { error: "plugin view unavailable" });
         const parts = url.pathname.split("/").slice(3);
         let segments: string[];
@@ -239,9 +240,20 @@ export class ControlPanelServer {
         let metadata: readonly ControlPanelViewMetadata[];
         try { metadata = await this.options.pluginViews.list(); }
         catch { return json(response, 500, { error: "plugin view unavailable" }); }
-        if (!metadata.some(view => view.id === viewId)) return json(response, 404, { error: "plugin view not found" });
+        const viewMetadata = metadata.find(view => view.id === viewId);
+        if (!viewMetadata) return json(response, 404, { error: "plugin view not found" });
+        if (request.method === "PUT" && !viewMetadata.writable) return json(response, 404, { error: "plugin document not found" });
         try {
-          if (documentId === undefined) return json(response, 200, await this.options.pluginViews.listDocuments(viewId!));
+          if (documentId === undefined) {
+            if (request.method !== "GET") return json(response, 404, { error: "not found" });
+            return json(response, 200, await this.options.pluginViews.listDocuments(viewId!));
+          }
+          if (request.method === "PUT") {
+            const input = await body(request) as { content?: unknown };
+            if (typeof input.content !== "string") throw new TypeError("content must be a string");
+            const document = await this.options.pluginViews.updateDocument(viewId!, documentId, input.content);
+            return document === undefined ? json(response, 404, { error: "plugin document not found" }) : json(response, 200, document);
+          }
           const document = await this.options.pluginViews.readDocument(viewId!, documentId);
           return document === undefined ? json(response, 404, { error: "plugin document not found" }) : json(response, 200, document);
         } catch { return json(response, 500, { error: "plugin view unavailable" }); }

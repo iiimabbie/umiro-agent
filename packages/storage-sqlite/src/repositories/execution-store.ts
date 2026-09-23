@@ -175,6 +175,7 @@ interface TurnRow {
   actor_principal_id: string;
   actor_transport: string | null;
   actor_external_id: string | null;
+  author_is_bot: number;
   input_event_id: string;
   primary_run_id: string | null;
   content_json: string;
@@ -499,6 +500,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           inputEventId: request.event.id,
           primaryRunId: newRunId,
           content: structuredClone(request.event.content),
+          ...(request.event.metadata?.authorBot === true ? { authorIsBot: true } : {}),
           ...(replyToTurnId ? { replyToTurnId } : {}),
           createdAt: request.createdAt,
         };
@@ -542,6 +544,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         inputEventId: request.event.id,
         primaryRunId: newRunId,
         content: structuredClone(request.event.content),
+        ...(request.event.metadata?.authorBot === true ? { authorIsBot: true } : {}),
         ...(replyToTurnId ? { replyToTurnId } : {}),
         createdAt: request.createdAt,
       };
@@ -583,7 +586,8 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           .get(request.event.conversation.transport, request.event.conversation.externalId) as { present: number } | undefined;
         if (!scope && request.establishScope !== true) return undefined;
         const conversation: Conversation = { id: request.newConversationId, revision: 0, state: "active", createdAt: request.createdAt, updatedAt: request.createdAt };
-        const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: 0, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), createdAt: request.createdAt };
+        const initialTurns = request.initialTurns ?? [];
+        const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: initialTurns.length, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), ...(request.event.metadata?.authorBot === true ? { authorIsBot: true } : {}), createdAt: request.createdAt };
         this.database.prepare("INSERT INTO conversations(id, revision, state, created_at, updated_at) VALUES (?, 0, 'active', ?, ?)").run(conversation.id, conversation.createdAt, conversation.updatedAt);
         this.insertConversationLocation(conversation.id, request.event, request.createdAt);
         this.database.prepare("INSERT INTO conversation_bindings(transport, external_id, kind, conversation_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, conversation_id=excluded.conversation_id, created_at=excluded.created_at")
@@ -593,6 +597,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
           VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(transport, external_id) DO UPDATE SET kind=excluded.kind, last_seen_at=excluded.last_seen_at
         `).run(request.event.conversation.transport, request.event.conversation.externalId, request.event.conversation.kind, request.createdAt, request.createdAt);
+        for (const [sequence, seed] of initialTurns.entries()) this.insertTurn({ ...seed, conversationId: conversation.id, sequence });
         this.insertTurn(turn);
         return { conversation, turn, duplicate: false, conversationCreated: true };
       }
@@ -608,6 +613,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
         actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId },
         inputEventId: request.event.id,
         content: structuredClone(request.event.content),
+        ...(request.event.metadata?.authorBot === true ? { authorIsBot: true } : {}),
         ...(replyToTurnId ? { replyToTurnId } : {}),
         createdAt: request.createdAt,
       };
@@ -639,7 +645,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       if (!conversation || conversation.state !== "active") throw new ExecutionStoreConflictError("steered input conversation is not active");
       const next = this.database.prepare("SELECT COALESCE(MAX(sequence)+1,0) AS sequence FROM turns WHERE conversation_id=?").get(conversation.id) as { sequence: number };
       const replyToTurnId = this.resolveReplyToTurnId(conversation.id, request.event);
-      const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: next.sequence, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), ...(replyToTurnId ? { replyToTurnId } : {}), createdAt: request.createdAt };
+      const turn: Turn = { id: request.newTurnId, conversationId: conversation.id, sequence: next.sequence, actorPrincipalId: request.actorPrincipalId, actorIdentity: { transport: request.event.identity.transport, externalId: request.event.identity.externalId }, inputEventId: request.event.id, content: structuredClone(request.event.content), ...(request.event.metadata?.authorBot === true ? { authorIsBot: true } : {}), ...(replyToTurnId ? { replyToTurnId } : {}), createdAt: request.createdAt };
       this.insertTurn(turn);
       expectOne(this.database.prepare("UPDATE conversations SET revision=revision+1, updated_at=? WHERE id=? AND revision=? AND state='active'").run(request.createdAt, conversation.id, conversation.revision).changes, `conversation ${conversation.id} changed concurrently`);
       this.database.prepare("INSERT INTO run_steered_inputs(id,run_id,turn_id,content_json,authority_json,actor_roles_json,state,created_at) VALUES (?,?,?,?,?,?, 'pending', ?)").run(request.event.id, request.runId, turn.id, json(request.modelContent), json(request.authority), json(request.actorRoles), request.createdAt);
@@ -951,8 +957,8 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
 
   private insertTurn(turn: Turn): void {
     this.database.prepare(`
-      INSERT INTO turns(id, conversation_id, sequence, actor_principal_id, actor_transport, actor_external_id, input_event_id, primary_run_id, content_json, reply_to_turn_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO turns(id, conversation_id, sequence, actor_principal_id, actor_transport, actor_external_id, author_is_bot, input_event_id, primary_run_id, content_json, reply_to_turn_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       turn.id,
       turn.conversationId,
@@ -960,6 +966,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       turn.actorPrincipalId,
       turn.actorIdentity?.transport ?? null,
       turn.actorIdentity?.externalId ?? null,
+      turn.authorIsBot ? 1 : 0,
       turn.inputEventId,
       turn.primaryRunId ?? null,
       json(turn.content),
@@ -1408,6 +1415,7 @@ export class SQLiteExecutionStore implements ExecutionStore, ConversationStore, 
       sequence: row.sequence,
       actorPrincipalId: row.actor_principal_id,
       ...(row.actor_transport && row.actor_external_id ? { actorIdentity: { transport: row.actor_transport, externalId: row.actor_external_id } } : {}),
+      ...(row.author_is_bot ? { authorIsBot: true } : {}),
       inputEventId: row.input_event_id,
       ...(row.primary_run_id ? { primaryRunId: row.primary_run_id } : {}),
       content: parseJson<Turn["content"]>(row.content_json),

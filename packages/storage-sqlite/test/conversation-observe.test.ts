@@ -41,3 +41,17 @@ test("an untriggered channel is never recorded, while an archived established sc
     assert.deepEqual(await store.listConversationScopes("discord"), [{ transport: "discord", externalId: "channel", kind: "channel" }]);
   } finally { store.close(); }
 });
+
+test("observing into a new thread stores the starter before the first observed message and retains bot authorship", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  try {
+    await store.ingestInputEvent({ event: event("trigger"), actorPrincipalId: "member", newConversationId: "old", newTurnId: "old-turn", newRunId: "run", createdAt: "2026-09-09T00:00:00.000Z" });
+    await store.archiveBoundConversation("discord", "channel", "2026-09-09T00:01:00.000Z");
+    const message = { ...event("observed"), conversation: { transport: "discord", externalId: "channel", kind: "thread" as const }, metadata: { authorBot: true } };
+    const result = await store.observeInputEvent({ event: message, actorPrincipalId: "bot-principal", newConversationId: "new", newTurnId: "observed-turn", createdAt: "2026-09-09T00:02:00.000Z", initialTurns: [{ id: "starter-turn", actorPrincipalId: "starter-author", actorIdentity: { transport: "discord", externalId: "starter" }, inputEventId: "discord:starter:starter:event", content: [{ type: "text", text: "starter text" }], createdAt: "2026-09-09T00:00:30.000Z" }] });
+    assert.equal(result?.turn.sequence, 1);
+    assert.equal(result?.turn.authorIsBot, true);
+    assert.equal((await store.listTurns("new"))[0]?.content[0]?.type, "text");
+    assert.equal((await store.listTurns("new"))[0]?.id, "starter-turn");
+  } finally { store.close(); }
+});

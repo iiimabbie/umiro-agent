@@ -123,22 +123,16 @@ const configFields = () => CONFIG_GROUPS.flatMap(group => group.fields);
 const fieldId = path => 'config-' + path.replace(/[^A-Za-z0-9_-]/g, '-');
 let secretStatus = {};
 
-function configHeaderOffset() {
-  return window.matchMedia('(max-width: 800px)').matches ? document.querySelector('.sidebar').getBoundingClientRect().height : 0;
-}
-
 function jumpToConfig(section) {
   const heading = section?.querySelector('h3');
   if (!heading) return;
   heading.tabIndex = -1;
   heading.focus({ preventScroll: true });
-  const offset = configHeaderOffset() + document.querySelector('.config-toolbar').getBoundingClientRect().height + 12;
+  const appHeaderHeight = document.querySelector('.app-header')?.getBoundingClientRect().height ?? 0;
+  const toolbarHeight = document.querySelector('.config-toolbar')?.getBoundingClientRect().height ?? 0;
+  const offset = appHeaderHeight + toolbarHeight + 12;
   window.scrollTo({ top: window.scrollY + heading.getBoundingClientRect().top - offset, behavior: 'smooth' });
 }
-
-new ResizeObserver(() => {
-  document.documentElement.style.setProperty('--config-header-offset', configHeaderOffset() + 'px');
-}).observe(document.querySelector('.sidebar'));
 
 function getPath(value, path) {
   return path.split('.').reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, value);
@@ -476,7 +470,7 @@ function renderRuntime(runtime) {
     const meta = document.createElement('small'); meta.textContent = detail;
     card.append(title, strong, meta); return card;
   }));
-  $('connectionBadge').className = 'badge' + (runtime.ready ? '' : ' badge-warning');
+  $('connectionBadge').className = 'badge ' + (runtime.ready ? 'badge-success' : 'badge-warning');
   $('connectionBadge').textContent = runtime.ready ? '運作中' : '需要處理';
 }
 
@@ -508,30 +502,61 @@ async function untrackChannel(channel, event, button) {
 async function channels() {
   const items = await api('/api/channels');
   channelCatalog = new Map(items.map(x => [x.id, x]));
-  $('channels').replaceChildren(...items.map(x => {
+  const guilds = new Map();
+  for (const item of items) {
+    const guildId = item.guildId || 'dm:' + (item.transport || 'discord');
+    if (!guilds.has(guildId)) guilds.set(guildId, { label: item.guildName || '私訊', channels: new Map() });
+    const guild = guilds.get(guildId);
+    const isThread = item.kind === 'thread';
+    const channelId = isThread ? (item.parentId || 'parent:' + (item.parentName || item.id)) : item.id;
+    const channelName = isThread ? (item.parentName || item.parentId || '上層頻道') : (item.name || item.id);
+    if (!guild.channels.has(channelId)) guild.channels.set(channelId, { label: channelName, item: undefined, threads: new Map() });
+    const channel = guild.channels.get(channelId);
+    if (isThread) channel.threads.set(item.id, item);
+    else channel.item = item;
+  }
+  const tree = document.createElement('div');
+  tree.className = 'conversation-tree';
+  const branch = (label, children, open = false) => {
+    const details = document.createElement('details');
+    details.open = open;
+    const summary = document.createElement('summary');
+    summary.textContent = label;
+    details.append(summary, ...children);
+    return details;
+  };
+  const channelRow = (x, labelOverride) => {
     const d = document.createElement('div');
     d.className = 'channel';
     d.dataset.channelId = x.id;
-    const info = document.createElement('span');
-    info.className = 'channel-info';
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.className = 'channel-select';
+    select.setAttribute('aria-label', '檢視 ' + channelName(x.id));
     const name = document.createElement('span');
-    name.textContent = channelName(x.id);
-    const id = document.createElement('small');
-    id.textContent = ' — ' + x.id;
-    const model = document.createElement('small');
-    model.className = 'channel-model';
-    model.textContent = (x.model || '未知模型') + ' · ' + (x.reasoningEffort || 'default') + (x.modelSource === 'session' ? ' · 頻道設定' : ' · 全域預設');
-    info.append(name, id, model);
+    name.textContent = labelOverride || channelName(x.id);
+    select.append(name);
+    select.onclick = () => selectChannel(x.id, d).catch(reportError);
     const stop = document.createElement('button');
     stop.type = 'button';
     stop.className = 'channel-untrack';
     stop.textContent = '停止追蹤';
+    stop.title = '停止追蹤 ' + channelName(x.id);
     stop.setAttribute('aria-label', '停止追蹤 ' + channelName(x.id));
     stop.onclick = event => untrackChannel(x, event, stop);
-    d.append(info, stop);
-    d.onclick = () => selectChannel(x.id, d).catch(reportError);
+    d.append(select, stop);
     return d;
-  }));
+  };
+  for (const guild of guilds.values()) {
+    const channelNodes = [];
+    for (const channel of guild.channels.values()) {
+      const children = channel.item ? [channelRow(channel.item, '目前對話')] : [];
+      for (const thread of channel.threads.values()) children.push(channelRow(thread, thread.name || thread.id));
+      channelNodes.push(branch(channel.label, children, true));
+    }
+    tree.append(branch(guild.label, channelNodes, true));
+  }
+  $('channels').replaceChildren(tree);
   if (items.length === 0) $('channels').append(emptyState('尚無 Discord 頻道紀錄', '請先在 Discord 頻道觸發一次對話，該頻道才會出現在這裡。', '重新取得', () => withBusy($('refreshChannels'), channels)));
   const selected = $('scheduleChannel').value;
   $('scheduleChannel').replaceChildren(
@@ -542,7 +567,7 @@ async function channels() {
   await Promise.all([runs(), schedules()]);
   if (selectedChannelId) {
     const el = document.querySelector('#channels .channel[data-channel-id="' + CSS.escape(selectedChannelId) + '"]');
-    if (el) await selectChannel(selectedChannelId, el);
+    if (el) await showChannelConversation(selectedChannelId, el);
   }
 }
 
@@ -554,6 +579,11 @@ async function selectChannel(channelId, element) {
     target.replaceChildren();
     return;
   }
+  await showChannelConversation(channelId, element);
+}
+
+async function showChannelConversation(channelId, element) {
+  const target = $('channelConversation');
   selectedChannelId = channelId;
   for (const el of document.querySelectorAll('#channels .channel.active')) el.classList.remove('active');
   element.classList.add('active');
@@ -568,7 +598,7 @@ async function selectChannel(channelId, element) {
   await renderConversation(target, items[0]);
 }
 
-const STARTER_PREFIX = '[System] This is the initial message of thread';
+const STARTER_PREFIXES = ['[System] This is the initial message of thread', '[System] This is the initial message of forum post'];
 
 function formatMsgTime(iso) {
   const d = new Date(iso);
@@ -592,7 +622,7 @@ function replyStateBadge(state) {
 
 function renderMessage(msg) {
   const nodes = [];
-  if (msg.sequence === 0 && msg.text.startsWith(STARTER_PREFIX)) {
+  if (msg.sequence === 0 && STARTER_PREFIXES.some(prefix => msg.text.startsWith(prefix))) {
     const el = document.createElement('div');
     el.className = 'msg starter';
     const title = document.createElement('div');
@@ -615,10 +645,22 @@ function renderMessage(msg) {
   name.className = 'msg-name';
   name.textContent = msg.author.displayName || msg.author.principalId;
   head.append(name);
+  if (msg.isStarter) {
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = '串的第一則';
+    head.append(badge);
+  }
   if (msg.author.isOwner) {
     const badge = document.createElement('span');
     badge.className = 'badge';
     badge.textContent = 'Owner';
+    head.append(badge);
+  }
+  if (msg.author.isBot) {
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = 'Bot';
     head.append(badge);
   }
   const time = document.createElement('span');
@@ -645,6 +687,10 @@ function renderMessage(msg) {
     rname.className = 'msg-name';
     rname.textContent = 'ümiro';
     rhead.append(rname);
+    const botBadge = document.createElement('span');
+    botBadge.className = 'badge';
+    botBadge.textContent = 'Bot';
+    rhead.append(botBadge);
     if (msg.reply.state === 'succeeded') {
       const rtime = document.createElement('span');
       rtime.className = 'msg-time';
@@ -676,9 +722,11 @@ async function renderConversation(container, summary) {
 
   const header = document.createElement('div');
   header.className = 'chat-header';
+  const title = document.createElement('strong');
+  title.textContent = summary.scope?.name || summary.scope?.externalId || '目前對話';
   const meta = document.createElement('small');
   meta.textContent = summary.turnCount + ' 則 · 開始於 ' + new Date(summary.createdAt).toLocaleString();
-  header.append(meta);
+  header.append(title, meta);
 
   const chat = document.createElement('div');
   chat.className = 'chat';
@@ -693,6 +741,24 @@ async function renderConversation(container, summary) {
   async function loadPage() {
     const query = 'limit=200' + (after !== undefined ? '&after=' + after : '');
     const data = await api('/api/conversations/' + encodeURIComponent(summary.id) + '/messages?' + query);
+    if (after === undefined && data.starter) {
+      const starter = document.createElement('div');
+      starter.className = 'msg starter';
+      const title = document.createElement('div');
+      title.className = 'msg-title';
+      title.textContent = '串的第一則 · ' + data.starter.authorName;
+      if (data.starter.authorBot) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = 'Bot';
+        title.append(badge);
+      }
+      const body = document.createElement('div');
+      body.className = 'msg-text';
+      body.textContent = data.starter.content || (data.starter.attachmentCount ? '（無文字 · ' + data.starter.attachmentCount + ' 個附件）' : '（無文字）');
+      starter.append(title, body);
+      chat.append(starter);
+    }
     for (const msg of data.messages) {
       chat.append(...renderMessage(msg));
       after = msg.sequence;
@@ -704,36 +770,75 @@ async function renderConversation(container, summary) {
 }
 
 async function archived() {
-  const items = await api('/api/conversations?state=archived&limit=100');
+  const items = await api('/api/conversations?state=archived&limit=200');
   $('archivedConversation').replaceChildren();
   if (items.length === 0) {
-    const empty = document.createElement('small');
     $('archivedList').replaceChildren(emptyState('尚無封存對話', '使用 Discord 的 /new 開始新對話後，舊對話會出現在這裡。'));
     return;
   }
-  $('archivedList').replaceChildren(...items.map(x => {
-    const d = document.createElement('div');
-    d.className = 'archived-item';
-    const location = (x.scope.parentName ? x.scope.parentName + ' / ' : '') + '#' + (x.scope.name || x.scope.externalId);
-    const line1 = document.createElement('div');
-    line1.textContent = x.scope.guildName ? x.scope.guildName + ' · ' + location : location;
-    const line2 = document.createElement('div');
-    line2.textContent = x.firstText || '（無文字）';
-    const line3 = document.createElement('small');
-    line3.textContent = new Date(x.createdAt).toLocaleString() + ' → ' + new Date(x.lastActivityAt).toLocaleString() + ' · ' + x.turnCount + ' 則';
-    d.append(line1, line2, line3);
-    d.onclick = () => {
-      if (d.classList.contains('active')) {
-        d.classList.remove('active');
-        $('archivedConversation').replaceChildren();
-        return;
-      }
-      for (const el of document.querySelectorAll('#archivedList .archived-item.active')) el.classList.remove('active');
-      d.classList.add('active');
-      renderConversation($('archivedConversation'), x).catch(reportError);
-    };
-    return d;
-  }));
+  const guilds = new Map();
+  for (const x of items) {
+    const scope = x.scope;
+    const guildId = scope.guildId || 'dm:' + scope.transport;
+    if (!guilds.has(guildId)) guilds.set(guildId, { label: scope.guildName || '私訊', channels: new Map() });
+    const guild = guilds.get(guildId);
+    const isThread = scope.kind === 'thread';
+    const channelId = isThread ? (scope.parentId || 'parent:' + (scope.parentName || scope.externalId)) : scope.externalId;
+    const channelName = isThread ? (scope.parentName || scope.parentId || '上層頻道') : (scope.name || scope.externalId);
+    if (!guild.channels.has(channelId)) guild.channels.set(channelId, { label: channelName, conversations: [], threads: new Map() });
+    const channel = guild.channels.get(channelId);
+    if (isThread) {
+      if (!channel.threads.has(scope.externalId)) channel.threads.set(scope.externalId, { label: scope.name || scope.externalId, conversations: [] });
+      channel.threads.get(scope.externalId).conversations.push(x);
+    } else channel.conversations.push(x);
+  }
+  const tree = document.createElement('div');
+  tree.className = 'archive-tree';
+  const branch = (label, children, open = false) => {
+    const details = document.createElement('details');
+    details.open = open;
+    const summary = document.createElement('summary');
+    summary.textContent = label;
+    details.append(summary, ...children);
+    return details;
+  };
+  const dateItems = conversations => conversations
+    .slice()
+    .sort((a, b) => archiveTimestamp(b) - archiveTimestamp(a))
+    .map(x => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'archive-date';
+      const timestamp = archiveTimestamp(x);
+      const date = new Date(timestamp);
+      button.textContent = Number.isNaN(timestamp) ? '日期不詳' : date.toLocaleDateString();
+      if (!Number.isNaN(timestamp) && conversations.filter(item => archiveDateKey(item) === archiveDateKey(x)).length > 1) button.textContent += ' · ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      button.onclick = () => {
+        for (const el of document.querySelectorAll('#archivedList .archive-date.active')) el.classList.remove('active');
+        button.classList.add('active');
+        renderConversation($('archivedConversation'), x).catch(reportError);
+      };
+      return button;
+    });
+  for (const guild of guilds.values()) {
+    const channelNodes = [];
+    for (const channel of guild.channels.values()) {
+      const children = dateItems(channel.conversations);
+      for (const thread of channel.threads.values()) children.push(branch(thread.label, dateItems(thread.conversations), true));
+      channelNodes.push(branch(channel.label, children, true));
+    }
+    tree.append(branch(guild.label, channelNodes, true));
+  }
+  $('archivedList').replaceChildren(tree);
+}
+
+function archiveTimestamp(item) {
+  return Date.parse(item.archivedAt || item.lastActivityAt || item.createdAt || '');
+}
+
+function archiveDateKey(item) {
+  const timestamp = archiveTimestamp(item);
+  return Number.isNaN(timestamp) ? 'unknown' : new Date(timestamp).toLocaleDateString();
 }
 
 function scheduleExpression() {
@@ -767,12 +872,18 @@ let previewTimer;
 function updateScheduleControls() {
   const once = $('scheduleKind').value === 'once';
   const custom = $('scheduleFrequency').value === 'custom';
+  $('scheduleWhenLabel').textContent = once ? '提醒時間' : 'Cron 表達式';
   $('scheduleFrequency').hidden = once;
   $('scheduleTime').hidden = once || custom;
   $('scheduleWeekday').hidden = once || custom || $('scheduleFrequency').value !== 'weekly';
   $('scheduleWhen').hidden = !once && !custom;
   $('scheduleWhen').type = once ? 'datetime-local' : 'text';
   $('scheduleWhen').placeholder = once ? '提醒時間' : 'Cron expression';
+  for (const id of ['scheduleFrequency', 'scheduleTime', 'scheduleWeekday', 'scheduleWhen']) {
+    const control = $(id);
+    const field = control.closest('.form-field');
+    if (field) field.hidden = control.hidden;
+  }
   if ($('state').textContent !== '已連線') { $('scheduleAdvancedHint').textContent = once ? '填入時間後可預覽下次執行' : '連線後會顯示下次執行時間'; return; }
   clearTimeout(previewTimer);
   previewTimer = setTimeout(async () => {
@@ -786,14 +897,25 @@ function updateScheduleControls() {
 
 function scheduleLabel(x) {
   const when = x.schedule.kind === 'once' ? new Date(x.schedule.at).toLocaleString() : x.schedule.expression;
-  const destination = x.destination?.channelId ? ' — ' + channelName(x.destination.channelId) : '';
-  const next = x.nextFireAt ? ' — 下次 ' + new Date(x.nextFireAt).toLocaleString() : '';
-  return x.name + ' — ' + when + ' — ' + x.timezone + destination + next + ' — ' + (x.enabled ? '啟用' : '停用');
+  const destination = x.destination?.channelId ? '頻道：' + channelName(x.destination.channelId) : '未指定頻道';
+  const next = x.nextFireAt ? '下次執行 ' + new Date(x.nextFireAt).toLocaleString() : '';
+  return [when, x.timezone, destination, next].filter(Boolean).join(' · ');
+}
+
+function scheduleSummary(x, owner) {
+  const summary = document.createElement('div'); summary.className = 'item-summary';
+  const heading = document.createElement('div'); heading.className = 'item-heading';
+  const name = document.createElement('strong'); name.className = 'item-title'; name.textContent = x.name;
+  const state = document.createElement('span'); state.className = 'badge ' + (x.enabled ? 'badge-success' : 'badge-off'); state.textContent = x.enabled ? '啟用' : '停用';
+  heading.append(state, name);
+  const detail = document.createElement('small'); detail.className = 'item-detail'; detail.textContent = scheduleLabel(x) + (owner ? ' · ' + owner : '');
+  summary.append(heading, detail);
+  return summary;
 }
 
 function renderUserSchedule(x) {
   const d = document.createElement('div'); d.className = 'schedule';
-  const label = document.createElement('span'); label.textContent = scheduleLabel(x);
+  d.append(scheduleSummary(x));
   const toggle = document.createElement('button'); toggle.type = 'button'; toggle.textContent = x.enabled ? '停用' : '啟用'; toggle.setAttribute('aria-label', (x.enabled ? '停用' : '啟用') + '排程 ' + x.name);
   toggle.onclick = () => withBusy(toggle, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'PATCH', body: JSON.stringify({ enabled: !x.enabled }) }); await schedules(); showToast(x.enabled ? '排程已停用' : '排程已啟用', 'success'); }).catch(reportError);
   const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = '編輯'; edit.onclick = () => {
@@ -812,12 +934,13 @@ function renderUserSchedule(x) {
   };
   const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '刪除';
   remove.onclick = async () => { if (!await confirmAction('刪除排程', '確定刪除「' + x.name + '」？這個操作無法復原。', '刪除')) return; await withBusy(remove, async () => { await api('/api/schedules/' + encodeURIComponent(x.id), { method: 'DELETE' }); await schedules(); showToast('排程已刪除', 'success'); }, '刪除中…').catch(reportError); };
-  d.append(label, toggle, edit, remove); return d;
+  d.append(toggle, edit, remove); return d;
 }
 
 function renderManagedSchedule(x, plugin) {
   const d = document.createElement('div'); d.className = 'schedule managed-schedule';
-  const label = document.createElement('span'); label.textContent = scheduleLabel(x) + (x.owner.kind === 'plugin' ? ' — ' + x.owner.pluginId : '');
+  const owner = x.owner.kind === 'plugin' ? '外掛：' + x.owner.pluginId : 'Umiro 系統';
+  d.append(scheduleSummary(x, owner));
   const action = document.createElement('button'); action.type = 'button';
   if (x.owner.kind === 'plugin') {
     action.textContent = '外掛設定'; action.setAttribute('aria-label', '設定外掛排程 ' + x.name);
@@ -829,7 +952,7 @@ function renderManagedSchedule(x, plugin) {
     action.disabled = x.actions.settingsTarget !== 'conversation'; action.title = action.disabled ? '此系統排程沒有可用的設定入口' : '在對話設定中調整自動封存';
     action.onclick = () => openConversationAutoArchiveSettings();
   }
-  d.append(label, action); return d;
+  d.append(action); return d;
 }
 
 function renderScheduleGroup(container, items, emptyTitle, emptyDetail, emptyAction) {
@@ -1054,12 +1177,24 @@ async function runs() {
     const d = document.createElement('div');
     d.className = 'run';
     const b = document.createElement('button');
+    b.className = 'run-open';
     b.textContent = x.id;
-    const location = x.channelId ? ' — ' + channelName(x.channelId) : '';
-    const label = document.createElement('span');
-    label.textContent = x.state + ' — ' + x.origin + location + ' — ' + x.updatedAt + (x.usage ? ' — ' + x.usage.inputTokens + ' in / ' + x.usage.outputTokens + ' out' : '');
+    b.title = '查看執行詳細資料';
+    b.setAttribute('aria-label', '查看執行詳細資料 ' + x.id);
+    const summary = document.createElement('div'); summary.className = 'item-summary';
+    const heading = document.createElement('div'); heading.className = 'item-heading';
+    const state = document.createElement('span');
+    const stateLabel = { succeeded: '完成', failed: '失敗', running: '執行中', queued: '排隊中', cancelled: '已取消' }[x.state] || x.state;
+    state.className = 'badge ' + (x.state === 'succeeded' ? 'badge-success' : x.state === 'failed' ? 'badge-danger' : x.state === 'running' || x.state === 'queued' ? 'badge-warning' : 'badge-off');
+    state.textContent = stateLabel;
+    const detail = document.createElement('small'); detail.className = 'item-detail';
+    detail.textContent = [x.origin, x.channelId ? channelName(x.channelId) : '', x.updatedAt].filter(Boolean).join(' · ');
+    const usage = document.createElement('small'); usage.className = 'item-detail';
+    if (x.usage) usage.textContent = x.usage.inputTokens + ' 輸入 · ' + x.usage.outputTokens + ' 輸出';
+    heading.append(state); summary.append(heading, detail);
+    if (x.usage) summary.append(usage);
     b.onclick = () => withBusy(b, async () => { $('runDetail').textContent = JSON.stringify(await api('/api/runs/' + encodeURIComponent(x.id)), null, 2); }).catch(reportError);
-    d.append(b, label);
+    d.append(b, summary);
     return d;
   }));
 }
@@ -1080,6 +1215,7 @@ async function connect() {
   renderRuntime(runtime);
   $('files').replaceChildren(...names.map(n => {
     const b = document.createElement('button');
+    b.dataset.filename = n;
     b.textContent = n;
     b.onclick = () => withBusy(b, () => load(n), '載入中…').catch(reportError);
     return b;
@@ -1090,6 +1226,7 @@ async function connect() {
   clearInterval(channelRefreshTimer);
   channelRefreshTimer = setInterval(() => channels().catch(() => {}), 60000);
   $('state').textContent = '已連線';
+  $('state').classList.add('connected');
   showPage();
 }
 
@@ -1097,8 +1234,16 @@ async function load(name) {
   if (workspaceDirty && !await confirmAction('捨棄文件變更', '目前文件有未儲存變更，確定切換檔案？', '捨棄變更')) return;
   const x = await api('/api/workspace/' + encodeURIComponent(name));
   file = name;
+  for (const button of document.querySelectorAll('#files button')) button.classList.toggle('active', button.dataset.filename === name);
+  $('workspaceEmptyState').hidden = true;
   $('filename').textContent = name;
   $('document').value = x.content;
+  $('document').disabled = false;
+  $('document').hidden = false;
+  $('togglePreview').disabled = false;
+  $('togglePreview').textContent = '預覽 Markdown';
+  $('saveDocument').disabled = false;
+  $('documentPreview').hidden = true;
   workspaceDirty = false; workspaceSavedAt = undefined;
   $('workspaceSaveState').textContent = '已載入'; $('workspaceSaveState').className = 'save-state';
   renderMarkdownPreview();
@@ -1128,22 +1273,40 @@ function pluginViewMessage(view, message, type = 'info') {
   const state = view.querySelector('[data-plugin-view-state]');
   if (state) { state.textContent = message; state.className = 'plugin-view-state ' + type; }
 }
+function setPluginDocumentEditing(page, editing) {
+  const content = page.querySelector('[data-plugin-document-content]');
+  const editor = page.querySelector('[data-plugin-editor]');
+  const edit = page.querySelector('[data-plugin-document-edit]');
+  if (content) content.hidden = editing;
+  if (editor) editor.hidden = !editing;
+  if (edit) edit.hidden = editing || page.dataset.pluginWritable !== 'true';
+}
 function createPluginViewPage(metadata) {
-  if (!metadata || typeof metadata !== 'object' || !pluginViewIdPattern.test(metadata.id) || typeof metadata.title !== 'string' || !metadata.title.trim() || metadata.kind !== 'read-only-markdown-collection') return undefined;
+  if (!metadata || typeof metadata !== 'object' || !pluginViewIdPattern.test(metadata.id) || typeof metadata.title !== 'string' || !metadata.title.trim() || metadata.kind !== 'markdown-collection' || typeof metadata.writable !== 'boolean') return undefined;
   const viewId = metadata.id;
-  const page = document.createElement('section'); page.id = pluginPageId(viewId); page.className = 'page'; page.dataset.pluginViewId = viewId;
-  const heading = document.createElement('div'); heading.className = 'page-heading';
-  const title = document.createElement('h2'); title.textContent = metadata.title.trim();
+  const page = document.createElement('section'); page.id = pluginPageId(viewId); page.className = 'page'; page.dataset.pluginViewId = viewId; page.dataset.pluginWritable = String(metadata.writable); page.dataset.title = metadata.title.trim();
+  const heading = document.createElement('div'); heading.className = 'page-actions';
   const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = '重新整理'; refresh.dataset.pluginRefresh = viewId;
-  heading.append(title, refresh); page.append(heading);
-  if (typeof metadata.description === 'string' && metadata.description.trim()) { const description = document.createElement('p'); description.textContent = metadata.description.trim(); page.append(description); }
+  heading.append(refresh); page.append(heading);
   const state = document.createElement('p'); state.dataset.pluginViewState = 'true'; state.className = 'plugin-view-state'; state.textContent = '尚未載入'; page.append(state);
   const layout = document.createElement('div'); layout.className = 'plugin-view-layout';
   const list = document.createElement('div'); list.className = 'plugin-document-list'; list.dataset.pluginDocumentList = viewId;
   const article = document.createElement('article'); article.className = 'plugin-document';
+  const documentHeading = document.createElement('div'); documentHeading.className = 'plugin-document-heading';
   const articleTitle = document.createElement('h3'); articleTitle.dataset.pluginDocumentTitle = viewId; articleTitle.textContent = '尚未選擇文件';
+  const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = '編輯'; edit.dataset.pluginDocumentEdit = viewId; edit.hidden = true;
+  documentHeading.append(articleTitle, edit);
   const content = document.createElement('div'); content.className = 'markdown-preview'; content.dataset.pluginDocumentContent = viewId;
-  article.append(articleTitle, content); layout.append(list, article); page.append(layout);
+  article.append(documentHeading, content);
+  const editor = document.createElement('div'); editor.className = 'plugin-editor'; editor.dataset.pluginEditor = viewId; editor.hidden = true;
+  const textarea = document.createElement('textarea'); textarea.dataset.pluginDocumentEditor = viewId; textarea.setAttribute('aria-label', metadata.title + '內容');
+  const editorActions = document.createElement('div'); editorActions.className = 'plugin-editor-actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
+  const save = document.createElement('button'); save.type = 'button'; save.textContent = '儲存'; save.dataset.pluginDocumentSave = viewId;
+  edit.onclick = () => { setPluginDocumentEditing(page, true); textarea.focus(); };
+  cancel.onclick = () => { const selected = pluginViewSelection.get(viewId); if (selected) selectPluginDocument(viewId, selected).catch(error => pluginViewMessage(page, errorMessage(error), 'error')); };
+  save.onclick = () => withBusy(save, async () => { const selected = pluginViewSelection.get(viewId); if (!selected) return; await api(pluginApiPath(viewId, selected), { method: 'PUT', body: JSON.stringify({ content: textarea.value }) }); await selectPluginDocument(viewId, selected); pluginViewMessage(page, '已儲存', 'success'); }, '儲存中…').catch(error => pluginViewMessage(page, errorMessage(error), 'error'));
+  editorActions.append(cancel, save); editor.append(textarea, editorActions); article.append(editor); layout.append(list, article); page.append(layout);
   refresh.onclick = () => loadPluginView(viewId).catch(error => pluginViewMessage(page, errorMessage(error), 'error'));
   return page;
 }
@@ -1177,13 +1340,15 @@ async function selectPluginDocument(viewId, documentId) {
   pluginViewSelection.set(viewId, documentId);
   entry.page.querySelector('[data-plugin-document-title]').textContent = document.title;
   renderMarkdown(entry.page.querySelector('[data-plugin-document-content]'), document.content);
+  const editor = entry.page.querySelector('[data-plugin-document-editor]'); if (editor) editor.value = document.content;
+  setPluginDocumentEditing(entry.page, false);
   for (const button of entry.page.querySelectorAll('[data-document-id]')) button.classList.toggle('active', button.dataset.documentId === documentId);
 }
 function rebuildPluginViews(metadata) {
   const navSection = $('pluginNavSection'); const nav = $('pluginNavLinks');
   for (const entry of pluginViews.values()) { entry.page.remove(); entry.link.remove(); }
   pluginViews.clear(); nav.replaceChildren();
-  const safe = Array.isArray(metadata) ? metadata.filter(item => item && typeof item === 'object' && pluginViewIdPattern.test(item.id) && typeof item.title === 'string' && item.kind === 'read-only-markdown-collection') : [];
+  const safe = Array.isArray(metadata) ? metadata.filter(item => item && typeof item === 'object' && pluginViewIdPattern.test(item.id) && typeof item.title === 'string' && item.kind === 'markdown-collection' && typeof item.writable === 'boolean') : [];
   for (const item of safe) {
     const page = createPluginViewPage(item); if (!page) continue;
     const link = document.createElement('a'); link.href = '#' + pluginHashId(item.id); link.dataset.page = pluginHashId(item.id); link.textContent = item.title.trim(); link.className = 'nav-subitem'; link.onclick = event => guardNavigation(event, link);
@@ -1194,7 +1359,7 @@ function rebuildPluginViews(metadata) {
 }
 async function discoverPluginViews() { rebuildPluginViews(await api('/api/plugin-views')); showPage(); }
 
-$('connect').onclick = () => withBusy($('connect'), connect, '連線中…').catch(error => { $('state').textContent = errorMessage(error); reportError(error); });
+$('connect').onclick = () => withBusy($('connect'), connect, '連線中…').catch(error => { $('state').textContent = errorMessage(error); $('state').classList.remove('connected'); reportError(error); });
 $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
   try {
     const next = readConfigForm();
@@ -1325,6 +1490,10 @@ function showPage() {
   const name = currentPageName();
   for (const page of pages()) page.hidden = page.id !== 'page-' + name;
   for (const link of navLinks()) link.classList.toggle('active', link.dataset.page === name);
+  const activePage = document.getElementById('page-' + name);
+  const title = activePage?.dataset.title || activePage?.querySelector('.page-heading h2')?.textContent || '外掛檢視';
+  $('currentPageTitle').textContent = title;
+  document.title = 'ümiro 控制台 · ' + title;
   if ($('state').textContent === '已連線') {
     const loader = pageLoaders[name] ?? (name.startsWith('plugin-view-') ? () => loadPluginView(name.slice('plugin-view-'.length)) : undefined);
     if (loader) loader().catch(() => {});

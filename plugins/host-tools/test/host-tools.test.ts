@@ -20,7 +20,9 @@ test("host-tools confines file and shell operations to the configured workspace"
     const write = await tools.get("write_file")!.execute({ path: "output.txt", content: "saved" }, execution); assert.equal(write.ok, true); assert.equal(write.effectStatus, "confirmed"); assert.equal(await readFile(join(root, "output.txt"), "utf8"), "saved");
     const shell = await tools.get("bash")!.execute({ command: "pwd" }, execution); assert.equal(shell.ok, true); assert.equal((shell.ok && shell.output as { stdout: string }).stdout.trim(), root);
     assert.equal((await tools.get("read_file")!.execute({ path: "escape/private.txt" }, execution)).ok, false);
-    assert.equal((await tools.get("web_fetch")!.execute({ url: "http://127.0.0.1/private" }, execution)).ok, false);
+    const webFetch = tools.get("web_fetch")!;
+    assert.equal((await webFetch.execute({ url: "http://127.0.0.1/private" }, execution)).ok, false);
+    assert.match(webFetch.description, /\[Official status page\]\(https:\/\/status\.example\/\) \| \[Incident page\]\(https:\/\/status\.example\/incidents\/123\)/);
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 

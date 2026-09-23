@@ -167,18 +167,20 @@ test("health and readiness probes are public and report component state", async 
   } finally { await server.stop(); }
 });
 
-test("plugin view routes are authenticated, read-only, and bounded to IDs", async () => {
+test("plugin view routes are authenticated, writable, and bounded to IDs", async () => {
   const calls: string[] = [];
+  let updatedContent = "";
   const server = new ControlPanelServer({ host: "127.0.0.1", port: 0, token: "secret", configFile: "/tmp/no", workspace: "/tmp", pluginViews: {
-    list: () => [{ pluginId: "diary", id: "diary", title: "日記", kind: "read-only-markdown-collection" as const }],
+    list: () => [{ pluginId: "diary", id: "diary", title: "日記", kind: "markdown-collection" as const, writable: true }],
     async listDocuments(viewId) { calls.push(`list:${viewId}`); return [{ id: "2026-09-21", title: "2026-09-21" }]; },
     async readDocument(viewId, documentId) { calls.push(`read:${viewId}:${documentId}`); if (documentId === "missing") return undefined; if (documentId === "explode") throw new Error("/private/diary/secret.md"); return { id: documentId, title: documentId, content: "# safe" }; },
+    async updateDocument(viewId, documentId, content) { if (content.length > 100_000) throw new TypeError("content too large"); calls.push(`update:${viewId}:${documentId}`); updatedContent = content; return { id: documentId, title: documentId, content }; },
   } });
   await server.start(); const endpoint = `http://127.0.0.1:${server.port()}`; const headers = { authorization: "Bearer secret" };
   try {
     assert.equal((await fetch(`${endpoint}/api/plugin-views`)).status, 401);
     assert.equal((await fetch(`${endpoint}/api/plugin-views/diary/documents`)).status, 401);
-    assert.deepEqual(await (await fetch(`${endpoint}/api/plugin-views`, { headers })).json(), [{ pluginId: "diary", id: "diary", title: "日記", kind: "read-only-markdown-collection" }]);
+    assert.deepEqual(await (await fetch(`${endpoint}/api/plugin-views`, { headers })).json(), [{ pluginId: "diary", id: "diary", title: "日記", kind: "markdown-collection", writable: true }]);
     assert.deepEqual(await (await fetch(`${endpoint}/api/plugin-views/diary/documents`, { headers })).json(), [{ id: "2026-09-21", title: "2026-09-21" }]);
     assert.deepEqual(await (await fetch(`${endpoint}/api/plugin-views/diary/documents/2026-09-21`, { headers })).json(), { id: "2026-09-21", title: "2026-09-21", content: "# safe" });
     assert.equal((await fetch(`${endpoint}/api/plugin-views/missing/documents`, { headers })).status, 404);
@@ -187,8 +189,13 @@ test("plugin view routes are authenticated, read-only, and bounded to IDs", asyn
     assert.equal(failed.status, 500);
     assert.deepEqual(await failed.json(), { error: "plugin view unavailable" });
     assert.equal((await fetch(`${endpoint}/api/plugin-views/diary/documents/%2E%2E`, { headers })).status, 400);
-    assert.equal((await fetch(`${endpoint}/api/plugin-views/diary/documents/2026-09-21`, { method: "PUT", headers })).status, 404);
+    const updated = await fetch(`${endpoint}/api/plugin-views/diary/documents/2026-09-21`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ content: "# updated" }) });
+    assert.equal(updated.status, 200);
+    assert.deepEqual(await updated.json(), { id: "2026-09-21", title: "2026-09-21", content: "# updated" });
+    assert.equal(updatedContent, "# updated");
+    const oversized = await fetch(`${endpoint}/api/plugin-views/diary/documents/2026-09-21`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ content: "x".repeat(100_001) }) });
+    assert.equal(oversized.status, 500);
     assert.equal((await fetch(`${endpoint}/api/plugin-views/diary/documents`, { method: "DELETE", headers })).status, 404);
-    assert.deepEqual(calls, ["list:diary", "read:diary:2026-09-21", "read:diary:missing", "read:diary:explode"]);
+    assert.deepEqual(calls, ["list:diary", "read:diary:2026-09-21", "read:diary:missing", "read:diary:explode", "update:diary:2026-09-21"]);
   } finally { await server.stop(); }
 });

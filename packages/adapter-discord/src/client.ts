@@ -48,6 +48,24 @@ export function commandReplyEmbeds(result: Record<string, unknown>): readonly Re
   return result.embed && typeof result.embed === "object" && !Array.isArray(result.embed) ? [result.embed as Record<string, unknown>] : [];
 }
 
+function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError")));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    operation.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+  });
+}
+
 export class DiscordJsAdapter implements DiscordTextTransport {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent], partials: [] });
   private listener?: (message: DiscordMessageEnvelope) => Promise<void>;
@@ -235,13 +253,14 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, content: extractDiscordMessageText(message), createdAt: message.createdAt.toISOString(), ...(message.reference?.messageId ? { replyToMessageId: message.reference.messageId } : {}), ...(message.reference?.channelId ? { referenceChannelId: message.reference.channelId } : {}) };
   }
 
-  async fetchThreadStarter(input: { readonly threadId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly authorName: string; readonly content: string; readonly threadName: string; readonly createdAt: string } | undefined> {
+  async fetchThreadStarter(input: { readonly threadId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly authorName: string; readonly authorBot: boolean; readonly content: string; readonly threadName: string; readonly createdAt: string; readonly attachmentCount: number } | undefined> {
     if (input.signal?.aborted) throw input.signal.reason;
-    const channel = await this.client.channels.fetch(input.threadId);
+    const channel = await awaitWithAbort(this.client.channels.fetch(input.threadId), input.signal);
     if (!channel?.isThread() || !("messages" in channel)) return undefined;
-    const message = await channel.messages.fetch(input.threadId);
+    const message = await awaitWithAbort(Promise.resolve().then(() => channel.fetchStarterMessage()), input.signal);
+    if (!message) return undefined;
     if (input.signal?.aborted) throw input.signal.reason;
-    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, authorName: message.author.displayName, content: extractDiscordMessageText(message), threadName: channel.name, createdAt: message.createdAt.toISOString() };
+    return { messageId: message.id, channelId: message.channelId, authorId: message.author.id, authorName: message.author.displayName, authorBot: message.author.bot, content: extractDiscordMessageText(message), threadName: channel.name, createdAt: message.createdAt.toISOString(), attachmentCount: message.attachments.size };
   }
 
   async createThread(input: { readonly channelId: string; readonly name: string; readonly messageId?: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }> {
@@ -258,6 +277,24 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     if (!channel || !channel.isThreadOnly() || !("threads" in channel)) throw new Error(`Discord channel is not a forum: ${input.channelId}`);
     const thread = await channel.threads.create({ name: input.title.slice(0, 100), message: { content: this.prepareText(input.content).slice(0, 2_000) } });
     return { threadId: thread.id };
+  }
+
+  async renameThread(input: { readonly threadId: string; readonly name: string; readonly signal?: AbortSignal }): Promise<void> {
+    if ([...input.name].length < 1 || [...input.name].length > 100) throw new TypeError("Discord thread name must contain 1 to 100 characters");
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.threadId);
+    if (!channel?.isThread()) throw new Error(`Discord channel is not a thread: ${input.threadId}`);
+    if (input.signal?.aborted) throw input.signal.reason;
+    await channel.setName(input.name);
+  }
+
+  async renameForum(input: { readonly channelId: string; readonly name: string; readonly signal?: AbortSignal }): Promise<void> {
+    if ([...input.name].length < 1 || [...input.name].length > 100) throw new TypeError("Discord Forum name must contain 1 to 100 characters");
+    if (input.signal?.aborted) throw input.signal.reason;
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel?.isThreadOnly()) throw new Error(`Discord channel is not a Forum: ${input.channelId}`);
+    if (input.signal?.aborted) throw input.signal.reason;
+    await channel.setName(input.name);
   }
 
   async archiveThread(input: { readonly channelId: string; readonly threadId: string; readonly signal?: AbortSignal }): Promise<void> {
@@ -335,8 +372,9 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     return {
       messageId: message.id,
       channelId: message.channelId,
+      ...("name" in message.channel && typeof message.channel.name === "string" ? { channelName: message.channel.name } : {}),
       ...(message.guildId ? { guildId: message.guildId } : {}),
-      ...(thread ? { threadId: thread.id, ...(thread.parentId ? { threadParentId: thread.parentId } : {}), ...(thread.parent?.name ? { threadParentName: thread.parent.name } : {}), ...(thread.parent ? { threadParentKind: thread.parent.isThreadOnly() ? "forum" as const : "channel" as const } : {}) } : {}),
+      ...(thread ? { threadId: thread.id, threadName: thread.name, ...(thread.parentId ? { threadParentId: thread.parentId } : {}), ...(thread.parent?.name ? { threadParentName: thread.parent.name } : {}), ...(thread.parent ? { threadParentKind: thread.parent.isThreadOnly() ? "forum" as const : "channel" as const } : {}) } : {}),
       authorId: message.author.id,
       authorBot: message.author.bot,
       botMentioned: this.client.user ? message.mentions.users.has(this.client.user.id) : false,

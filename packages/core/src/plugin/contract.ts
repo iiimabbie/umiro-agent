@@ -135,6 +135,8 @@ export interface DiscordPluginService {
   fetchMessage(input: { readonly channelId: string; readonly messageId: string; readonly signal?: AbortSignal }): Promise<{ readonly messageId: string; readonly channelId: string; readonly authorId: string; readonly content: string; readonly createdAt: string; readonly replyToMessageId?: string; readonly referenceChannelId?: string }>;
   createThread(input: { readonly channelId: string; readonly name: string; readonly messageId?: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }>;
   createForumPost(input: { readonly channelId: string; readonly title: string; readonly content: string; readonly signal?: AbortSignal }): Promise<{ readonly threadId: string }>;
+  renameThread(input: { readonly threadId: string; readonly name: string; readonly signal?: AbortSignal }): Promise<void>;
+  renameForum(input: { readonly channelId: string; readonly name: string; readonly signal?: AbortSignal }): Promise<void>;
   archiveThread(input: { readonly channelId: string; readonly threadId: string; readonly signal?: AbortSignal }): Promise<void>;
   deleteThread(input: { readonly channelId: string; readonly threadId: string; readonly signal?: AbortSignal }): Promise<void>;
   editMessage(input: { readonly channelId: string; readonly messageId: string; readonly content: string; readonly signal?: AbortSignal }): Promise<void>;
@@ -173,7 +175,7 @@ export interface PluginContributions {
   readonly controlPanelViews?: readonly PluginControlPanelViewDefinition[];
 }
 
-/** A safe, declarative read-only Markdown collection exposed by a plugin. */
+/** A safe Markdown collection exposed by a plugin. Writes remain plugin-owned. */
 export interface PluginControlPanelDocumentSummary {
   readonly id: string;
   readonly title: string;
@@ -191,9 +193,11 @@ export interface PluginControlPanelViewDefinition {
   readonly id: string;
   readonly title: string;
   readonly description?: string;
-  readonly kind: "read-only-markdown-collection";
+  readonly kind: "markdown-collection";
+  readonly writable?: boolean;
   list(): Promise<readonly PluginControlPanelDocumentSummary[]>;
   read(id: string): Promise<PluginControlPanelDocument | undefined>;
+  readonly update?: (id: string, content: string) => Promise<PluginControlPanelDocument | undefined>;
 }
 
 export interface TurnToolCandidate {
