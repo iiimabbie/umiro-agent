@@ -12,7 +12,7 @@ test("wraps bare Discord URLs without changing their query, fragment, or punctua
 
 test("preserves angle-bracket URLs, Markdown links, and Markdown images", () => {
   const input = "<https://example.com> [官網](https://example.org/path) ![圖](https://example.net/image.png)";
-  assert.equal(suppressDiscordLinkEmbeds(input), input);
+  assert.equal(suppressDiscordLinkEmbeds(input), "<https://example.com> [官網](<https://example.org/path>) ![圖](<https://example.net/image.png>)");
 });
 
 test("preserves URLs in inline and fenced code", () => {

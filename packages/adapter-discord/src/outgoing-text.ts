@@ -1,4 +1,4 @@
-const INLINE_MARKDOWN_LINK = /!?\[[^\]\n]*\]\(\s*(?:<[^>\n]+>|[^)\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
+const INLINE_MARKDOWN_LINK = /(!?\[[^\]\n]*\]\(\s*)(<[^>\n]+>|[^)\s]+)((?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\))/g;
 const BARE_URL = /https?:\/\/[^\s<>\uFF0C\u3002\uFF01\uFF1F\uFF1B\uFF1A'"\u2019\u201D]+/giu;
 const TRAILING_PUNCTUATION = /[.,!?;:\uFF0C\u3002\uFF01\uFF1F\uFF1B\uFF1A'"\u2019\u201D]$/u;
 
@@ -68,7 +68,8 @@ function preserveMarkdownLinks(value: string): string {
   let cursor = 0;
   for (const match of value.matchAll(INLINE_MARKDOWN_LINK)) {
     output += wrapBareUrls(value.slice(cursor, match.index));
-    output += match[0];
+    const destination = match[2]!;
+    output += `${match[1]}${destination.startsWith("<") ? destination : wrapBareUrls(destination)}${match[3]}`;
     cursor = match.index + match[0].length;
   }
   return output + wrapBareUrls(value.slice(cursor));
