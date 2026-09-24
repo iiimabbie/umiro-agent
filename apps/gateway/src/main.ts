@@ -551,11 +551,13 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   );
   if (capabilitiesChanged) restartRequired.push("modelCapabilities");
   if (modelsChanged && !capabilitiesChanged && !unsupportedHostedCapability) {
+    if (changed(defaultModelProfile.model, nextModels.defaultProfile.model)) applied.push("model");
+    if (changed(defaultProtocol, nextModels.defaultProtocol)) applied.push("protocol");
+    if (changed(configuredProfiles, nextModels.profiles)) applied.push("profiles");
     defaultProtocol = nextModels.defaultProtocol;
     defaultModelProfile = nextModels.defaultProfile;
     configuredProfiles = nextModels.profiles;
     modelPort.configure(modelProtocolMap([defaultModelProfile, ...Object.values(configuredProfiles)].map(profile => ({ model: profile.model, protocol: profile.protocol }))), defaultProtocol);
-    applied.push("model", "protocol", "profiles");
     refreshConfigurationRequirements();
   }
 

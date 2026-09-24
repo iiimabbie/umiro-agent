@@ -201,6 +201,49 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.plugin-view-layout \{ grid-template-columns: 1fr; \}/);
 });
 
+test("settings save only reads edited config fields and secrets", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+  const tracking = script.slice(script.indexOf("function trackEditedConfigField("), script.indexOf("function markWorkspaceDirty("));
+  const pathHelpers = script.slice(script.indexOf("function getPath("), script.indexOf("function option("));
+  const readers = script.slice(script.indexOf("function readConfigForm("), script.indexOf("const headers ="));
+  const loadedConfig = { model: "old-model", embedding: { provider: "openai-compatible", model: "embed-model" } };
+  const fields = [
+    { path: "model", type: "model" },
+    { path: "protocol", type: "select" },
+    { path: "profiles", type: "json" },
+    { path: "embedding.baseUrl", type: "secret", secretName: "UMIRO_EMBEDDING_BASE_URL" },
+  ];
+  const controls: Record<string, { value: string; checkValidity: () => boolean }> = {
+    "config-model": { value: "new-model", checkValidity: () => true },
+    "config-protocol": { value: "openai_responses", checkValidity: () => true },
+    "config-profiles": { value: "", checkValidity: () => true },
+    "config-embedding-baseUrl": { value: "https://embed.example/v1", checkValidity: () => true },
+  };
+  const editedConfigPaths = new Set(["model"]);
+  const result = runInNewContext(`${pathHelpers}\n${readers}\n({ config: readConfigForm(), secrets: readEditedSecretValues() })`, {
+    loadedConfig, editedConfigPaths, configFields: () => fields,
+    fieldId: (path: string) => "config-" + path.replace(/[^A-Za-z0-9_-]/g, "-"),
+    $: (id: string) => controls[id], structuredClone,
+  }) as { config: unknown; secrets: unknown };
+  assert.deepEqual(JSON.parse(JSON.stringify(result.config)), { ...loadedConfig, model: "new-model" });
+  assert.deepEqual(JSON.parse(JSON.stringify(result.secrets)), {});
+  assert.match(script, /wrapper\.dataset\.configPath = field\.secretName \|\| field\.path/);
+  assert.match(script, /function renderConfigForm\(schema, config, models\) \{\s*loadedConfig = structuredClone\(config\);\s*editedConfigPaths\.clear\(\)/);
+  assert.match(script, /loadedConfig = next; editedConfigPaths\.clear\(\); markConfigSaved\(\)/);
+  runInNewContext(`${tracking}\ntrackEditedConfigField(target)`, {
+    editedConfigPaths,
+    target: { closest: () => ({ dataset: { configPath: "UMIRO_EMBEDDING_BASE_URL" } }) },
+  });
+  const secret = runInNewContext(`${readers}\nreadEditedSecretValues()`, {
+    editedConfigPaths, configFields: () => fields,
+    fieldId: (path: string) => "config-" + path.replace(/[^A-Za-z0-9_-]/g, "-"),
+    $: (id: string) => controls[id],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(secret)), { UMIRO_EMBEDDING_BASE_URL: "https://embed.example/v1" });
+  const main = await readFile(mainUrl, "utf8");
+  assert.match(main, /if \(changed\(defaultModelProfile\.model, nextModels\.defaultProfile\.model\)\) applied\.push\("model"\)/);
+});
+
 test("user schedule rows render with a summary and actions", async () => {
   const script = await readFile(scriptUrl, "utf8");
   const source = script.slice(script.indexOf("function scheduleSummary(x, owner)"), script.indexOf("function renderManagedSchedule(x, plugin)"));

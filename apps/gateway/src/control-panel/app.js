@@ -8,6 +8,7 @@ let selectedChannelId;
 let loadedConfig;
 let configSchema;
 let configDirty = false;
+const editedConfigPaths = new Set();
 let workspaceDirty = false;
 let workspaceSavedAt;
 let modalResolve;
@@ -54,6 +55,11 @@ function markConfigSaved(message = '設定已儲存') {
   configDirty = false;
   $('configSaveState').textContent = message;
   $('configSaveState').className = 'save-state saved';
+}
+
+function trackEditedConfigField(target) {
+  const path = target.closest('.config-field')?.dataset.configPath;
+  if (path) editedConfigPaths.add(path);
 }
 
 function markWorkspaceDirty() {
@@ -260,6 +266,7 @@ function configControl(field, value, models) {
 
 function renderConfigForm(schema, config, models) {
   loadedConfig = structuredClone(config);
+  editedConfigPaths.clear();
   configSchema = schema;
   const nav = $('configNav');
   nav.replaceChildren(...CONFIG_GROUPS.map((group, index) => {
@@ -339,8 +346,12 @@ function renderConfigForm(schema, config, models) {
     }
     for (const subgroup of document.querySelectorAll('[data-conditional-group]')) subgroup.hidden = ![...subgroup.children].some(child => !child.hidden);
   };
-  $('configForm').oninput = () => { updateConditionalFields(); markConfigDirty(); };
-  $('configForm').onchange = () => { updateConditionalFields(); markConfigDirty(); };
+  const markEdited = event => {
+    trackEditedConfigField(event.target);
+    updateConditionalFields(); markConfigDirty();
+  };
+  $('configForm').oninput = markEdited;
+  $('configForm').onchange = markEdited;
   updateConditionalFields();
 }
 
@@ -358,7 +369,7 @@ async function discoverModels() {
   if (!field || !wrapper || !previous) throw new Error('找不到主要模型欄位');
   const next = configControl(field, current, models);
   previous.replaceWith(next);
-  if (next.value !== current) markConfigDirty();
+  if (next.value !== current) { editedConfigPaths.add('model'); markConfigDirty(); }
   showToast('連接成功，共取得 ' + models.length + ' 個模型', 'success');
 }
 
@@ -372,7 +383,7 @@ function filterConfigFields() {
 
 function readConfigForm() {
   const next = structuredClone(loadedConfig);
-  if ($('config-embedding-provider')?.value === 'disabled') {
+  if (editedConfigPaths.has('embedding.provider') && $('config-embedding-provider')?.value === 'disabled') {
     deletePath(next, 'embedding.separateQueryModel');
     deletePath(next, 'embedding.queryModel');
     deletePath(next, 'embedding.dimensions');
@@ -380,12 +391,14 @@ function readConfigForm() {
   for (const field of configFields()) {
     if (field.type === 'secret') continue;
     if (field.type === 'warning') continue;
+    const edited = editedConfigPaths.has(field.path);
     if (field.dependsOn) {
       const dependency = $(fieldId(field.dependsOn.path));
       const actual = dependency?.type === 'checkbox' ? dependency.checked : dependency?.value;
       const visible = field.dependsOn.value === undefined ? actual !== field.dependsOn.not : actual === field.dependsOn.value;
-      if (!visible) { if (!field.preserveWhenHidden) deletePath(next, field.path); continue; }
+      if (!visible) { if (!field.preserveWhenHidden && (edited || editedConfigPaths.has(field.dependsOn.path))) deletePath(next, field.path); continue; }
     }
+    if (!edited) continue;
     if (field.type === 'checkbox') {
       const control = $(fieldId(field.path));
       setPath(next, field.path, Boolean(control?.checked));
@@ -422,6 +435,10 @@ function readConfigForm() {
     else setPath(next, field.path, field.type === 'select' && /^\d+$/.test(raw) && field.options?.every(([value]) => value === '' || /^\d+$/.test(value)) ? Number(raw) : raw);
   }
   return next;
+}
+
+function readEditedSecretValues() {
+  return Object.fromEntries(configFields().filter(field => field.type === 'secret' && editedConfigPaths.has(field.secretName)).map(field => [field.secretName, $(fieldId(field.path))?.value.trim()]).filter(([, value]) => value));
 }
 
 const headers = () => ({
@@ -1365,7 +1382,7 @@ $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
     const next = readConfigForm();
     const result = await api('/api/config', { method: 'PUT', body: JSON.stringify(next) });
     const secretFields = configFields().filter(field => field.type === 'secret');
-    const secretValues = Object.fromEntries(secretFields.map(field => [field.secretName, $(fieldId(field.path))?.value.trim()]).filter(([, value]) => value));
+    const secretValues = readEditedSecretValues();
     let secretResult = { restartRequired: [] };
     if (Object.keys(secretValues).length) {
       secretResult = await api('/api/secrets', { method: 'PUT', body: JSON.stringify(secretValues) });
@@ -1376,7 +1393,7 @@ $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
         control.placeholder = '已設定；留空不變';
       }
     }
-    loadedConfig = next; markConfigSaved();
+    loadedConfig = next; editedConfigPaths.clear(); markConfigSaved();
     const restartRequired = [...new Set([...(result.restartRequired ?? []), ...(secretResult.restartRequired ?? [])])];
     $('restartGateway').hidden = !restartRequired.length;
     const messages = [...(result.applied?.length ? ['即時套用：' + result.applied.join('、')] : []), ...(restartRequired.length ? ['需重啟：' + restartRequired.join('、')] : [])];
