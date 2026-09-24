@@ -12,6 +12,8 @@
 
 </div>
 
+最後更新：2026-09-24 09:49（Asia/Taipei）
+
 ümiro 在你的 Discord 伺服器裡以同一個人格運作。每一段對話、每一次工具呼叫與回覆都記錄在 SQLite，所以 agent 在任務中途重啟也能接續、記得說過的話、事後可以稽核——而模型端點、資料與權限都由你掌控。
 
 > [!WARNING]
@@ -34,7 +36,7 @@
 
 - Linux，Node.js 24 以上，pnpm（經 Corepack）
 - Discord bot token 與你的 Discord 使用者 ID
-- OpenAI 相容的模型端點（Responses 或 Chat Completions）
+- OpenAI 相容的模型端點（Responses 或 Chat Completions）；所有模型 profile 共用同一端點與 API key。尚未提供原生 Anthropic 或 Google 對話模型 adapter。
 
 ## 快速開始
 
@@ -190,7 +192,7 @@ umo web status
 
 內掛隨 release 出貨，可停用但不可移除：`context-files`、`memory`、`scheduler`、`subagent`、`host-tools`、`discord-tools`。不裝任何外掛，ümiro 已是完整的 agent。
 
-外掛另行安裝，官方集合在 [umiro-plugins](https://github.com/iiimabbie/umiro-plugins)：
+外掛另行安裝，官方集合在 [umiro-plugins](https://github.com/iiimabbie/umiro-plugins)。`diary` 是外部外掛；預計的 `journal` 內掛是另一個尚未實作的套件。`daily-report` 目前仍用舊 manifest，V2 Gateway 無法載入：
 
 | 外掛 | 功能 |
 |---|---|
@@ -199,7 +201,7 @@ umo web status
 | `coder` | 寫程式用的子代理 profile |
 | `google` | Gmail、Calendar、Tasks、Drive 工具，OAuth 授權 |
 | `tool-activity` | Run 使用工具時，在 Discord 即時顯示她正在做什麼 |
-| `daily-report` | 排程的每日摘要 |
+| `daily-report` | 舊套件仍使用舊 manifest 格式，目前 V2 Gateway 無法載入 |
 | `diary` | 從 canonical conversation history 重建 agent 自己第一人稱的每日日記 |
 | `intent-analyzer` | 可選的回應意圖與模型可見工具分析 |
 
@@ -211,7 +213,7 @@ umo plugin remove <source> [--workspace <name>] --remove-secrets
 umo plugin configure <source> --config '{"key":"value"}'
 ```
 
-內掛與外掛共用同一套 manifest、權限、生命週期與 runtime。外掛宣告需要的 capability，host 會把它限制在呼叫者本身被允許的範圍內。
+內掛與外掛使用同一套 V2 manifest 與生命週期。Tool contribution 會經 Tool Runtime 授權；部分注入的 Host service 尚未一致套用 manifest capability 或建立 durable Tool Operation。外掛是同程序受信任程式，manifest 不是安全沙盒，完整邊界見 Plugin 架構與問題冊。
 
 安裝、更新、啟用、停用、設定或移除外掛都不會自動重啟 Gateway。操作只會儲存變更並讓目前程序繼續運行；何時套用待生效的 runtime 變更，由使用者自行透過 Discord `/restart`、控制台的重啟按鈕或 `umo restart` 決定。Agent 的 shell 工具不得啟動、停止或重啟 Umiro；Owner 專用的 Discord slash command 與控制台按鈕仍屬於使用者明確操作，不會被阻擋。
 

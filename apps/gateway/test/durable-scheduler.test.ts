@@ -95,6 +95,8 @@ test("Plugin-owned schedules are preserved, lifecycle-disabled, restored, or rem
   current = new Map((await scheduler.list()).map(trigger => [trigger.id, trigger]));
   assert.equal(current.get(disabled.id)?.enabled, true);
   assert.equal(current.get(disabled.id)?.input._umiroPluginLifecycleDisabled, undefined);
+  await reconcilePluginSchedules(scheduler, new Map([["diary", "failed"]]), new Map());
+  assert.equal((await scheduler.list()).find(trigger => trigger.id === kept.id)?.enabled, false);
   store.close();
 });
 
@@ -109,6 +111,74 @@ test("Plugin job schedules use the same three-state lifecycle without re-enablin
   assert.equal((await scheduler.list())[0]?.enabled, false);
   await reconcilePluginSchedules(scheduler, new Map([["guardian", "disabled"]]), new Map([["guardian.check", "disabled"]]));
   await reconcilePluginSchedules(scheduler, new Map([["guardian", "enabled"]]), new Map([["guardian.check", "enabled"]]));
-  assert.equal((await scheduler.list())[0]?.enabled, true);
+  assert.equal((await scheduler.list())[0]?.enabled, false);
+  await reconcilePluginSchedules(scheduler, new Map([["guardian", "enabled"]]), new Map([["guardian.check", "failed"]]));
+  assert.equal((await scheduler.list())[0]?.enabled, false);
+  store.close();
+});
+
+test("Plugin job schedules retain and disable when manifest job state is unavailable but owner failed", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "0 1 * * *", async run() {} }], new Map([["guardian.check", "guardian"]]));
+  const trigger = (await scheduler.list())[0]!;
+  const result = await reconcilePluginSchedules(scheduler, new Map([["guardian", "failed"]]), new Map());
+  assert.deepEqual(result, { disabled: 1, enabled: 0, removed: 0 });
+  const persisted = (await scheduler.list())[0];
+  assert.equal(persisted?.id, trigger.id);
+  assert.equal(persisted?.enabled, false);
+  assert.equal(persisted?.input._umiroPluginLifecycleDisabled, true);
+  store.close();
+});
+
+test("Plugin job schedules without a known owner remain removable orphans", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  await scheduler.syncPluginJobs([{ id: "removed.check", schedule: "0 1 * * *", async run() {} }], new Map([["removed.check", "removed"]]));
+  const result = await reconcilePluginSchedules(scheduler, new Map(), new Map());
+  assert.deepEqual(result, { disabled: 0, enabled: 0, removed: 1 });
+  assert.deepEqual(await scheduler.list(), []);
+  store.close();
+});
+
+test("unknown Plugin schedules are disabled and retained while a configured manifest is unavailable", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  await scheduler.syncPluginJobs([{ id: "unknown.check", schedule: "0 1 * * *", async run() {} }], new Map([["unknown.check", "unknown"]]));
+  const result = await reconcilePluginSchedules(scheduler, new Map(), new Map(), { preserveUnknownPluginSchedules: true });
+  assert.deepEqual(result, { disabled: 1, enabled: 0, removed: 0 });
+  const saved = (await scheduler.list())[0];
+  assert.equal(saved?.enabled, false);
+  assert.equal(saved?.input._umiroPluginLifecycleDisabled, true);
+  store.close();
+});
+
+test("unknown Plugin schedules are removed after manifest loading recovers", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  await scheduler.syncPluginJobs([{ id: "unknown.check", schedule: "0 1 * * *", async run() {} }], new Map([["unknown.check", "unknown"]]));
+  await reconcilePluginSchedules(scheduler, new Map(), new Map(), { preserveUnknownPluginSchedules: true });
+  const result = await reconcilePluginSchedules(scheduler, new Map(), new Map());
+  assert.deepEqual(result, { disabled: 0, enabled: 0, removed: 1 });
+  assert.deepEqual(await scheduler.list(), []);
+  store.close();
+});
+
+test("Plugin recovery preserves a schedule that was manually disabled before the failure", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const scheduler = new DurableScheduler(store, 1000, () => new Date("2026-09-18T00:00:00Z"));
+  await scheduler.syncPluginJobs([{ id: "guardian.check", schedule: "0 1 * * *", async run() {} }], new Map([["guardian.check", "guardian"]]));
+  const triggerId = (await scheduler.list())[0]!.id;
+  await scheduler.setEnabled(triggerId, false);
+
+  await reconcilePluginSchedules(scheduler, new Map([["guardian", "failed"]]), new Map());
+  let trigger = (await scheduler.list())[0]!;
+  assert.equal(trigger.enabled, false);
+  assert.equal(trigger.input._umiroPluginLifecycleDisabled, undefined);
+
+  await reconcilePluginSchedules(scheduler, new Map([["guardian", "enabled"]]), new Map([["guardian.check", "enabled"]]));
+  trigger = (await scheduler.list())[0]!;
+  assert.equal(trigger.enabled, false);
+  assert.equal(trigger.input._umiroPluginLifecycleDisabled, undefined);
   store.close();
 });

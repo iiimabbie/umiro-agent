@@ -1,13 +1,14 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { openSync } from "node:fs";
+import { basename } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { capabilities, ChildRunService, ContextEngine, ContextProviderRegistry, ExecutionStoreConflictError, HeadlessRecoveryCoordinator, HeadlessRunEngine, InteractiveIngress, PluginHookRegistry, PluginHost, ToolRegistry, intersectAuthority, type ConversationLocation, type ConversationPreferences, type ConversationSeedTurn, type JsonObject, type ModelCapability, type PluginManifestV0, type ReasoningEffort } from "@umiro/core";
 import { decideDiscordIngress, DiscordDeliveryWorker, DiscordIdentityResolver, DiscordJsAdapter, parseDiscordTriggerPolicy, toInputEvent, type DiscordAdapterErrorContext, type DiscordButtonInteraction, type DiscordInteractionContext, type DiscordMessageEnvelope, type DiscordTriggerPolicyConfig } from "@umiro/adapter-discord";
 import { OpenAIChatCompletionsModel, OpenAIModelCatalog, OpenAIResponsesModel, callResponsesImageGeneration, callResponsesWebSearch } from "@umiro/model-openai";
 import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { loadPluginManifest, loadPluginModule } from "./plugin-loader.js";
-import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "./plugin-composition.js";
+import { composePluginRuntimeStatus, orderPluginEnableEntriesIsolated, pluginSecretsFromEnvironment } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedders, EMBEDDING_API_KEY_SECRET, EMBEDDING_BASE_URL_SECRET, type EmbeddingConfig } from "./embedding-config.js";
@@ -33,7 +34,7 @@ import { safeErrorMessage } from "./safe-error.js";
 import { configurationRequirements, modelEndpoint } from "./setup-mode.js";
 import { describeImageArtifacts } from "./image-description.js";
 import { analyzeDiscordIngress, buildDiscordAnalysisText } from "./ingress-analysis.js";
-import { assertRequiredBuiltins, validateManagedPluginEntries } from "./required-builtins.js";
+import { assertRequiredBuiltins, REQUIRED_BUILTIN_PLUGIN_IDS, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
 import { ConversationAutoArchiveCoordinator, parseConversationAutoArchiveConfig, syncConversationAutoArchiveSchedule, CONVERSATION_AUTO_ARCHIVE_JOB_REF } from "./conversation-auto-archive.js";
@@ -70,25 +71,52 @@ const managed = managedRaw.filter(item => item.enabled);
 const byPath = new Map<string, { path: string; config?: JsonObject }>();
 for (const item of managed) byPath.set(item.path, { path: item.path, ...(item.config ? { config: item.config } : {}) });
 for (const item of config.plugins ?? []) byPath.set(item.path, item);
-const pluginEntries = orderPluginEnableEntries(await Promise.all([...byPath.values()].map(async configured => {
-  const module = await loadPluginModule(configured.path);
-  if (module.manifest.id !== "context-files") return { configured, module };
-  return { configured: { ...configured, config: { ...(configured.config ?? {}), configFile: paths.configFile, ...(config.skills === undefined ? {} : { skills: [...config.skills] }) } }, module };
-})));
-const configured = pluginEntries.map(entry => entry.configured);
+const requiredBuiltinPaths = new Set(managedRaw.filter(item => REQUIRED_BUILTIN_PLUGIN_IDS.some(id => item.source === `builtin:${id}`)).map(item => item.path));
+const pluginStartupFailures: Array<{ id: string; state: "failed"; error: string; phase: "load" | "dependency" | "enable"; jobs?: readonly string[]; manifestUnavailable?: boolean }> = [];
+const loadedEntries: Array<{ configured: { path: string; config?: JsonObject }; module: Awaited<ReturnType<typeof loadPluginModule>> }> = [];
+for (const configured of byPath.values()) {
+  let manifest: PluginManifestV0 | undefined;
+  try {
+    manifest = await loadPluginManifest(configured.path);
+    const module = await loadPluginModule(configured.path);
+    loadedEntries.push({ configured: module.manifest.id === "context-files" ? { ...configured, config: { ...(configured.config ?? {}), configFile: paths.configFile, ...(config.skills === undefined ? {} : { skills: [...config.skills] }) } } : configured, module });
+  } catch (error) {
+    const required = requiredBuiltinPaths.has(configured.path) || (manifest !== undefined && REQUIRED_BUILTIN_PLUGIN_IDS.includes(manifest.id as typeof REQUIRED_BUILTIN_PLUGIN_IDS[number]));
+    const id = manifest?.id ?? basename(configured.path);
+    const errorName = error instanceof Error ? error.name : "NonErrorThrown";
+    if (required) throw new Error(`required built-in plugin failed to load: ${id} (${errorName})`);
+    pluginStartupFailures.push({ id, state: "failed", error: errorName, phase: "load", ...(manifest?.contributes.jobs ? { jobs: manifest.contributes.jobs } : {}), ...(manifest ? {} : { manifestUnavailable: true }) });
+  }
+}
+const dependencyOrder = orderPluginEnableEntriesIsolated(loadedEntries);
+for (const failure of dependencyOrder.failed) {
+  const id = failure.entry.module.manifest.id;
+  if (REQUIRED_BUILTIN_PLUGIN_IDS.includes(id as typeof REQUIRED_BUILTIN_PLUGIN_IDS[number]) || requiredBuiltinPaths.has(failure.entry.configured.path)) {
+    throw new Error(`required built-in plugin dependency failed: ${id}`);
+  }
+  pluginStartupFailures.push({ id, state: "failed", error: failure.error.name, phase: "dependency", jobs: failure.entry.module.manifest.contributes.jobs ?? [] });
+}
+const pluginEntries = dependencyOrder.ordered;
 const modules = pluginEntries.map(entry => entry.module);
 const disabledManifests: PluginManifestV0[] = [];
 for (const entry of managedRaw.filter(item => !item.enabled)) {
   try { disabledManifests.push(await loadPluginManifest(entry.path)); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      pluginStartupFailures.push({ id: basename(entry.path), state: "failed", error: "ManifestUnavailable", phase: "load", manifestUnavailable: true });
+      continue;
+    }
+    const id = basename(entry.path);
+    pluginStartupFailures.push({ id, state: "failed", error: error instanceof Error ? error.name : "NonErrorThrown", phase: "load", manifestUnavailable: true });
+  }
 }
 const pluginStates = new Map<string, PluginRuntimeState>();
 for (const manifest of disabledManifests) pluginStates.set(manifest.id, "disabled");
-for (const module of modules) pluginStates.set(module.manifest.id, "enabled");
+for (const failure of pluginStartupFailures) pluginStates.set(failure.id, "failed");
 const pluginJobStates = new Map<string, PluginRuntimeState>();
 const pluginJobOwners = new Map<string, string>();
 for (const manifest of disabledManifests) for (const jobId of manifest.contributes.jobs ?? []) pluginJobStates.set(jobId, "disabled");
-for (const module of modules) for (const jobId of module.manifest.contributes.jobs ?? []) { pluginJobStates.set(jobId, "enabled"); pluginJobOwners.set(jobId, module.manifest.id); }
+for (const failure of pluginStartupFailures) for (const jobId of failure.jobs ?? []) pluginJobStates.set(jobId, "failed");
 const hostedWebSearch = allModelCapabilities.includes("hosted_web_search");
 const hostedImageGeneration = allModelCapabilities.includes("hosted_image_generation");
 const hostedImageGenerationTimeoutMs = 10 * 60_000;
@@ -103,6 +131,7 @@ providers.register(discordRuntimeContextProvider);
 providers.register(discordOutputPolicyProvider);
 providers.register(createDiscordApplicationEmojiContextProvider(() => discord.applicationEmojis()));
 const logger = new JsonLineLogger();
+for (const failure of pluginStartupFailures) logger.write({ level: "error", event: "plugin.startup.failed", message: "Optional plugin failed during startup", occurredAt: new Date().toISOString(), data: { pluginId: failure.id, phase: failure.phase, errorName: failure.error } });
 
 const reportImageRenditionFailure = (artifact: { readonly id: string }, error: unknown): void => {
   logger.write({ level: "warn", event: "discord.model_image.rendition_failed", message: "Bounded Discord image rendition could not be loaded; the original image was not sent to the model", occurredAt: new Date().toISOString(), data: { artifactId: artifact.id, errorName: error instanceof Error ? error.name : "NonErrorThrown" } });
@@ -629,15 +658,29 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
     logger.write({ level: "info", event: "conversation.scope.untracked", message: "Discord conversation scope was untracked", occurredAt: new Date().toISOString(), data: { transport: "discord", externalId, tracked: result.tracked, archived: result.archivedConversationId !== undefined } });
     return result;
   }),
-}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: host?.list().map(item => ({ id: item.id, state: item.state })) ?? [] }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; return { ...readiness, plugins: readiness.plugins && (await host.health()).every(item => item.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
+}, logs: limit => logger.list(limit), usage: async () => { const runs = await store.listRuns(200); const calls = (await Promise.all(runs.map(run => store.listModelCalls(run.id)))).flat(); return { sampledRuns: runs.length, ...summarizeModelUsage(calls, runtimePricing) }; }, runtime: () => ({ status: "running", pid: process.pid, startedAt: processStart, release: releaseIdentity, ready: readiness.storage && readiness.plugins && readiness.discord && readiness.scheduler && !readiness.shuttingDown, readiness, bot: discord.identity(), plugins: composePluginRuntimeStatus(host?.list().map(item => ({ id: item.id, state: item.state })) ?? [], pluginStartupFailures).plugins }), readiness: async () => { if (restartRequested) return { ...readiness, shuttingDown: true }; const status = composePluginRuntimeStatus(host.list().map(item => ({ id: item.id, state: item.state })), pluginStartupFailures); return { ...readiness, plugins: readiness.plugins && (await host.health()).filter(plugin => !status.failedStartupIds.has(plugin.id)).every(plugin => plugin.status === "ok") }; }, restart: () => { setTimeout(() => { if (shutdown) void shutdown(0, true); else restartRequested = true; }, 150); }, processId: process.pid });
 host = new PluginHost(tools, providers, ownerAuthority, namespace => store.pluginState(namespace), pluginHooks, undefined, undefined, { conversationSearch: search, conversationHistory, searchDocumentProjection: store, scheduler, childRuns, replies, artifacts, discord: discordPluginService }, undefined, undefined, { has: id => id === "default" || Object.hasOwn(configuredProfiles, id) }, logger);
-for (let index = 0; index < modules.length; index++) {
-  const module = modules[index]!;
-  const secrets = pluginSecretsFromEnvironment(module.manifest, process.env);
-  await host.enable(module, { config: configured[index]!.config ?? {}, secrets });
+for (const entry of pluginEntries) {
+  const { module } = entry;
+  try {
+    const secrets = pluginSecretsFromEnvironment(module.manifest, process.env);
+    await host.enable(module, { config: entry.configured.config ?? {}, secrets });
+    pluginStates.set(module.manifest.id, "enabled");
+    for (const jobId of module.manifest.contributes.jobs ?? []) { pluginJobStates.set(jobId, "enabled"); pluginJobOwners.set(jobId, module.manifest.id); }
+  } catch (error) {
+    const id = module.manifest.id;
+    const errorName = error instanceof Error ? error.name : "NonErrorThrown";
+    if (REQUIRED_BUILTIN_PLUGIN_IDS.includes(id as typeof REQUIRED_BUILTIN_PLUGIN_IDS[number])) throw new Error(`required built-in plugin failed to start: ${id} (${errorName})`);
+    if (host.get(id)?.state !== "enabled") {
+      pluginStates.set(id, "failed");
+      for (const jobId of module.manifest.contributes.jobs ?? []) pluginJobStates.set(jobId, "failed");
+    }
+    pluginStartupFailures.push({ id, state: "failed", error: errorName, phase: "enable" });
+    logger.write({ level: "error", event: "plugin.startup.failed", message: "Optional plugin failed during activation", occurredAt: new Date().toISOString(), data: { pluginId: id, phase: "enable", errorName } });
+  }
 }
 emitPluginEvent = (event, payload) => host.emitHook(event, payload);
-await reconcilePluginSchedules(scheduler, pluginStates, pluginJobStates);
+await reconcilePluginSchedules(scheduler, pluginStates, pluginJobStates, { preserveUnknownPluginSchedules: pluginStartupFailures.some(failure => failure.manifestUnavailable) });
 await scheduler.syncPluginJobs(host.listJobs(), pluginJobOwners);
 await syncConversationAutoArchiveSchedule(scheduler, conversationAutoArchiveConfig);
 const enabledSearchNamespaces = new Set(host.list().filter(plugin => plugin.state === "enabled").map(plugin => plugin.manifest.namespace));

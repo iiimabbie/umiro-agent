@@ -13,8 +13,9 @@ function nextFire(schedule: TriggerSchedule, timezone: string, after: Date): str
 
 export function previewNextFire(schedule: TriggerSchedule, timezone: string, after = new Date()): string | null { return nextFire(schedule, timezone, after); }
 
-export type PluginRuntimeState = "enabled" | "disabled";
+export type PluginRuntimeState = "enabled" | "disabled" | "failed";
 export interface PluginScheduleReconciliation { readonly disabled: number; readonly enabled: number; readonly removed: number }
+export interface PluginScheduleReconciliationOptions { readonly preserveUnknownPluginSchedules?: boolean }
 const LIFECYCLE_DISABLED = "_umiroPluginLifecycleDisabled";
 
 function schedulePatch(trigger: ScheduledTrigger, input: JsonObject) {
@@ -22,17 +23,27 @@ function schedulePatch(trigger: ScheduledTrigger, input: JsonObject) {
 }
 
 /** Reconcile all durable schedules owned by Plugins without touching user-owned schedules. */
-export async function reconcilePluginSchedules(scheduler: SchedulerControl, pluginStates: ReadonlyMap<string, PluginRuntimeState>, pluginJobStates: ReadonlyMap<string, PluginRuntimeState>): Promise<PluginScheduleReconciliation> {
+export async function reconcilePluginSchedules(scheduler: SchedulerControl, pluginStates: ReadonlyMap<string, PluginRuntimeState>, pluginJobStates: ReadonlyMap<string, PluginRuntimeState>, options: PluginScheduleReconciliationOptions = {}): Promise<PluginScheduleReconciliation> {
   let disabled = 0; let enabled = 0; let removed = 0;
   for (const trigger of await scheduler.list()) {
     const promptPluginId = trigger.jobRef === "agent.prompt" && typeof trigger.input.pluginId === "string" ? trigger.input.pluginId : undefined;
     const jobId = trigger.jobRef.startsWith("plugin:") ? trigger.jobRef.slice("plugin:".length) : undefined;
-    const state = promptPluginId ? pluginStates.get(promptPluginId) : jobId ? pluginJobStates.get(jobId) : undefined;
+    const jobPluginId = jobId && typeof trigger.input.pluginId === "string" ? trigger.input.pluginId : undefined;
+    const state = promptPluginId ? pluginStates.get(promptPluginId) : jobId ? pluginJobStates.get(jobId) ?? (jobPluginId ? pluginStates.get(jobPluginId) : undefined) : undefined;
     if (!promptPluginId && !jobId) continue;
-    if (!state) { if (await scheduler.remove(trigger.id)) removed += 1; continue; }
-    if (state === "disabled") {
-      if (trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
-      if (trigger.enabled) { await scheduler.setEnabled(trigger.id, false); disabled += 1; }
+    if (!state) {
+      if (!options.preserveUnknownPluginSchedules) { if (await scheduler.remove(trigger.id)) removed += 1; continue; }
+      if (trigger.enabled) {
+        if (trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
+        await scheduler.setEnabled(trigger.id, false); disabled += 1;
+      }
+      continue;
+    }
+    if (state !== "enabled") {
+      if (trigger.enabled) {
+        if (trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
+        await scheduler.setEnabled(trigger.id, false); disabled += 1;
+      }
       continue;
     }
     if (trigger.input[LIFECYCLE_DISABLED] === true) {

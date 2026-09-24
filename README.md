@@ -12,6 +12,8 @@
 
 </div>
 
+Last updated: 2026-09-24 09:49 (Asia/Taipei)
+
 ümiro runs one agent with one personality across your Discord server. Every conversation, tool call and reply is recorded in SQLite, so the agent survives restarts mid-task, remembers what was said, and can be audited afterwards — while the model endpoint, the data and the permissions stay under your control.
 
 > [!WARNING]
@@ -34,7 +36,7 @@
 
 - Linux with Node.js 24 or newer and pnpm (via Corepack)
 - A Discord bot token and your Discord user ID
-- An OpenAI-compatible model endpoint (Responses or Chat Completions)
+- An OpenAI-compatible model endpoint (Responses or Chat Completions); all model profiles share one endpoint and API key. Native Anthropic and Google conversation adapters are not available.
 
 ## Quick start
 
@@ -190,7 +192,7 @@ The channel list also provides **Stop tracking**. This archives the current conv
 
 Internal plugins ship with each release and can be disabled but not removed: `context-files`, `memory`, `scheduler`, `subagent`, `host-tools`, `discord-tools`. Without any external plugin, ümiro is a complete agent.
 
-External plugins add capabilities and are installed separately. The official collection lives at [umiro-plugins](https://github.com/iiimabbie/umiro-plugins):
+External plugins add capabilities and are installed separately. The official collection lives at [umiro-plugins](https://github.com/iiimabbie/umiro-plugins). `diary` is an external plugin; the planned `journal` built-in plugin is a separate, unimplemented package. `daily-report` currently uses the old manifest and cannot be loaded by the V2 Gateway:
 
 | Plugin | What it adds |
 |---|---|
@@ -199,7 +201,7 @@ External plugins add capabilities and are installed separately. The official col
 | `coder` | A subagent profile for coding tasks |
 | `google` | Gmail, Calendar, Tasks and Drive tools with OAuth |
 | `tool-activity` | A live "what the agent is doing" message in Discord while a run uses tools |
-| `daily-report` | Scheduled daily summary |
+| `daily-report` | Legacy package currently uses the old manifest format and cannot be loaded by the V2 Gateway |
 | `diary` | Reconstructs the agent's first-person daily journal from canonical conversation history |
 | `intent-analyzer` | Optional reply-intent and model-visible-tool analysis |
 
@@ -211,7 +213,7 @@ umo plugin remove <source> [--workspace <name>] --remove-secrets
 umo plugin configure <source> --config '{"key":"value"}'
 ```
 
-Both kinds share the same manifest, permissions, lifecycle and runtime. A plugin declares the capabilities it needs; the host caps them at what the calling principal is allowed to do.
+Both kinds use the same V2 manifest and lifecycle. Tool contributions go through Tool Runtime authorization. Some injected host services are not yet uniformly covered by manifest capability checks or durable Tool Operations; plugins are trusted in-process code, not sandboxed by their manifest. See the Plugin architecture and issue tracker for current boundaries.
 
 Plugin install, update, enable, disable, configure and remove operations never restart the Gateway automatically. They save the requested change and leave the current process running; the user decides when to apply pending runtime changes with Discord `/restart`, the control panel restart button, or `umo restart`. Agent shell tools are not allowed to start, stop or restart Umiro; the owner-only Discord slash command and the control panel button remain explicit user actions and are not blocked.
 

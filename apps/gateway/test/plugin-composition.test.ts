@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PluginModule } from "@umiro/core/plugin";
-import { orderPluginEnableEntries, pluginSecretsFromEnvironment } from "../src/plugin-composition.js";
+import { composePluginRuntimeStatus, orderPluginEnableEntries, orderPluginEnableEntriesIsolated, pluginSecretsFromEnvironment } from "../src/plugin-composition.js";
 
 function plugin(id: string, tools: readonly string[] = [], requiredTools: readonly string[] = []): PluginModule {
   return {
@@ -37,6 +37,28 @@ test("plugin enable order rejects cyclic tool dependencies", () => {
     { configured: "b", module: plugin("b", ["tool_b"], ["tool_a"]) },
   ];
   assert.throws(() => orderPluginEnableEntries(entries), /cyclic plugin tool dependencies: a, b/);
+});
+
+test("plugin enable order isolates cyclic plugins and keeps independent entries", () => {
+  const entries = [
+    { configured: "a", module: plugin("a", ["tool_a"], ["tool_b"]) },
+    { configured: "b", module: plugin("b", ["tool_b"], ["tool_a"]) },
+    { configured: "dependent", module: plugin("dependent", [], ["tool_a"]) },
+    { configured: "healthy", module: plugin("healthy") },
+  ];
+  const result = orderPluginEnableEntriesIsolated(entries);
+  assert.deepEqual(result.ordered.map(entry => entry.configured), ["healthy"]);
+  assert.deepEqual(result.failed.map(({ entry }) => entry.configured), ["a", "b", "dependent"]);
+  assert.ok(result.failed.every(({ error }) => /cyclic plugin tool dependencies: a, b, dependent/.test(error.message)));
+});
+
+test("an enabled Host plugin remains authoritative over a duplicate startup failure", () => {
+  const status = composePluginRuntimeStatus(
+    [{ id: "shared-id", state: "enabled" }],
+    [{ id: "shared-id", state: "failed", error: "TypeError" }],
+  );
+  assert.deepEqual(status.plugins, [{ id: "shared-id", state: "enabled" }]);
+  assert.equal(status.failedStartupIds.has("shared-id"), false);
 });
 
 test("plugin secret injection includes only declared non-blank environment values", () => {

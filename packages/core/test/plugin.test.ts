@@ -136,6 +136,7 @@ test("skill activation fails closed when a required tool is unavailable", async 
   const host = new PluginHost(new ToolRegistry(), new ContextProviderRegistry(), authority);
   await assert.rejects(host.enable(module), /unavailable tool/);
   assert.equal(host.get("broken-skill")?.state, "failed");
+  assert.equal(host.get("broken-skill")?.error, "TypeError");
 });
 
 test("manifest policy is scoped static context and disappears when the plugin is disabled", async () => {

@@ -274,7 +274,7 @@ export class PluginHost {
         // Preserve the original startup failure. Operational logging belongs to composition.
       }
       active.state = "failed";
-      active.error = error instanceof Error ? error.message : String(error);
+      active.error = error instanceof Error ? error.name.slice(0, 80) : "NonErrorThrown";
       throw error;
     }
   }
@@ -303,7 +303,7 @@ export class PluginHost {
     catch (error) { stopError ??= error; }
     if (stopError) {
       active.state = "failed";
-      active.error = stopError instanceof Error ? stopError.message : String(stopError);
+      active.error = stopError instanceof Error ? stopError.name.slice(0, 80) : "NonErrorThrown";
       throw stopError;
     }
     active.state = "disabled";
