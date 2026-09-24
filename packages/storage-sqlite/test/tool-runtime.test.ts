@@ -103,6 +103,16 @@ test("registry validates schemas, names, duplicates, and model definitions", () 
   assert.throws(() => registry.register({ ...tool, name: "BAD NAME" }), /invalid tool name/);
 });
 
+test("catalog remains visible through tool filtering and is excluded from analysis", () => {
+  const registry = new ToolRegistry();
+  const tool = echoTool(async input => ({ ok: true, output: input, effectStatus: "not_applicable" }));
+  registry.register(tool);
+  registry.register({ ...tool, name: "tool_catalog", description: "Explore tools", inputSchema: { type: "object", additionalProperties: false } });
+  assert.deepEqual(registry.modelDefinitions([tool.name]).map(item => item.name), ["test.echo", "tool_catalog"]);
+  assert.deepEqual(registry.modelDefinitions([]).map(item => item.name), ["tool_catalog"]);
+  assert.deepEqual(registry.analysisCandidates().map(item => item.name), ["test.echo"]);
+});
+
 test("persists authorization and executing state before calling the executor", async () => {
   let fixtureRef: ReturnType<typeof fixture>;
   const database = fixture(undefined, echoTool(async (input, execution) => {

@@ -63,7 +63,7 @@ export class ToolRegistry {
   modelDefinitions(visibleNames?: readonly string[]): readonly ModelFunctionTool[] {
     const visible = visibleNames === undefined ? undefined : new Set(visibleNames);
     return [...this.tools.values()]
-      .filter(({ definition }) => visible === undefined || visible.has(definition.name))
+      .filter(({ definition }) => definition.name === "tool_catalog" || visible === undefined || visible.has(definition.name))
       .map(({ definition }) => ({
         name: definition.name,
         description: definition.description,
@@ -73,7 +73,7 @@ export class ToolRegistry {
   }
 
   analysisCandidates(): readonly { readonly name: string; readonly description: string; readonly parameters: Record<string, unknown> }[] {
-    return this.modelDefinitions().map(definition => ({ name: definition.name, description: definition.description, parameters: structuredClone(definition.parameters) as Record<string, unknown> }));
+    return this.modelDefinitions().filter(definition => definition.name !== "tool_catalog").map(definition => ({ name: definition.name, description: definition.description, parameters: structuredClone(definition.parameters) as Record<string, unknown> }));
   }
 
   list(): readonly ToolDefinition[] {

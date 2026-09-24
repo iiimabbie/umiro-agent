@@ -354,15 +354,16 @@ test("reconciles a durable final model response without calling the model again"
   }
 });
 
-test("retries an interrupted idempotent tool and continues the same Run", async () => {
+async function resumeInterruptedIdempotentOperation(viaCatalog: boolean): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "umiro-tool-resume-"));
   const filename = join(directory, "execution.db");
   const beforeCrash = new SQLiteExecutionStore(filename);
   const runId = "run-tool-resume";
   const stepId = "step-tool-resume";
+  const resumeContext: ExecutionContext = { ...context, authority: { ...context.authority, capabilities: capabilities("tool.catalog", "test.recover") } };
   try {
     const run: Run = {
-      id: runId, revision: 0, state: "queued", context, resumeEligibility: "eligible", createdAt: at, updatedAt: at,
+      id: runId, revision: 0, state: "queued", context: resumeContext, resumeEligibility: "eligible", createdAt: at, updatedAt: at,
     };
     const step: Step = {
       id: stepId, runId, revision: 0, sequence: 0, kind: "operation", state: "pending", createdAt: at, updatedAt: at,
@@ -387,7 +388,9 @@ test("retries an interrupted idempotent tool and continues the same Run", async 
             {
               role: "assistant",
               content: null,
-              toolCalls: [{ id: "call-1", name: "test.recover", input: { value: "once" } }],
+              toolCalls: [viaCatalog
+                ? { id: "call-1", name: "tool_catalog", input: { action: "call", tool_name: "test.recover", arguments: { value: "once" } } }
+                : { id: "call-1", name: "test.recover", input: { value: "once" } }],
             },
           ],
           usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 },
@@ -395,7 +398,7 @@ test("retries an interrupted idempotent tool and continues the same Run", async 
         updatedAt: at,
       },
     });
-    const baseDecision = authorize({ context, capability: "test.recover", tier: "common" });
+    const baseDecision = authorize({ context: resumeContext, capability: "test.recover", tier: "common" });
     const decision: AuthorizationDecisionRecord = {
       ...baseDecision,
       id: "authorization-tool-resume",
@@ -447,6 +450,7 @@ test("retries an interrupted idempotent tool and continues the same Run", async 
         },
       };
       const registry = new ToolRegistry();
+      if (viaCatalog) registry.register({ name: "tool_catalog", description: "Explore tools", inputSchema: { type: "object", properties: { action: { type: "string" }, tool_name: { type: "string" }, arguments: { type: "object" } }, required: ["action"], additionalProperties: true }, policy: { capability: "tool.catalog", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true, output: null, effectStatus: "not_applicable" }; } });
       registry.register(tool);
       const model: ModelPort = {
         async generate(request) {
@@ -482,7 +486,10 @@ test("retries an interrupted idempotent tool and continues the same Run", async 
     try { beforeCrash.close(); } catch { /* already closed */ }
     rmSync(directory, { recursive: true, force: true });
   }
-});
+}
+
+test("retries an interrupted idempotent tool and continues the same Run", () => resumeInterruptedIdempotentOperation(false));
+test("retries an interrupted idempotent catalog call against the same target Operation", () => resumeInterruptedIdempotentOperation(true));
 
 test("continues from a durable tool result without executing the tool again", async () => {
   const directory = mkdtempSync(join(tmpdir(), "umiro-tool-result-resume-"));

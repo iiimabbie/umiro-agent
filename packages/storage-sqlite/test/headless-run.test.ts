@@ -190,6 +190,66 @@ test("keeps analyzer-selected tools visible across model turns and rejects hidde
   } finally { store.close(); }
 });
 
+test("catalog calls run the hidden target policy and persist the target Operation", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let targetExecutions = 0;
+  let modelCalls = 0;
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["tool_catalog"]);
+    if (modelCalls === 1) {
+      const call = { id: "catalog-call", name: "tool_catalog", input: { action: "call", tool_name: "test.hidden", arguments: { value: "works" } } };
+      return response({ toolCalls: [call], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [call] } });
+    }
+    const toolMessage = request.messages.at(-1);
+    assert.equal(toolMessage?.role, "tool");
+    if (toolMessage?.role === "tool") assert.match(toolMessage.content, /permission_denied/);
+    return response({ text: "denied", assistantMessage: { role: "assistant", content: "denied" } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "tool_catalog", description: "Explore tools", inputSchema: { type: "object", properties: { action: { type: "string" }, tool_name: { type: "string" }, arguments: { type: "object" } }, required: ["action"], additionalProperties: true }, policy: { capability: "tool.catalog", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true as const, output: null, effectStatus: "not_applicable" as const }; } });
+  registry.register({ name: "test.hidden", description: "Hidden target", inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false }, policy: { capability: "test.hidden", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { targetExecutions += 1; return { ok: true as const, output: null, effectStatus: "not_applicable" as const }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() }).run({ context: ownerContext("tool.catalog"), model: "fake-model", prompt: "call hidden", visibleToolNames: [] });
+    assert.equal(result.status, "succeeded");
+    assert.equal(targetExecutions, 0);
+    const operation = await store.getOperation("operation-1");
+    assert.equal(operation?.kind, "tool:test.hidden");
+    assert.deepEqual(operation?.input, { value: "works" });
+    assert.equal(operation?.state, "denied");
+  } finally { store.close(); }
+});
+
+test("catalog call executes a hidden target when its own capability is granted", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let targetExecutions = 0;
+  let modelCalls = 0;
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    if (modelCalls === 1) {
+      assert.deepEqual(request.tools?.map(tool => tool.name), ["tool_catalog"]);
+      const call = { id: "catalog-call", name: "tool_catalog", input: { action: "call", tool_name: "test.hidden", arguments: { value: "works" } } };
+      return response({ toolCalls: [call], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [call] } });
+    }
+    const toolMessage = request.messages.at(-1);
+    assert.equal(toolMessage?.role, "tool");
+    if (toolMessage?.role === "tool") assert.match(toolMessage.content, /"ok":true,"output":\{"value":"works"\}/);
+    return response({ text: "done", assistantMessage: { role: "assistant", content: "done" } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "tool_catalog", description: "Explore tools", inputSchema: { type: "object", properties: { action: { type: "string" }, tool_name: { type: "string" }, arguments: { type: "object" } }, required: ["action"], additionalProperties: true }, policy: { capability: "tool.catalog", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute() { return { ok: true as const, output: null, effectStatus: "not_applicable" as const }; } });
+  registry.register({ name: "test.hidden", description: "Hidden target", inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false }, policy: { capability: "test.hidden", tier: "common", interactionRequirement: "not_required", sideEffect: "none" }, async execute(input) { targetExecutions += 1; return { ok: true as const, output: input, effectStatus: "not_applicable" as const }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() }).run({ context: ownerContext("tool.catalog", "test.hidden"), model: "fake-model", prompt: "call hidden", visibleToolNames: [] });
+    assert.equal(result.status, "succeeded");
+    assert.equal(targetExecutions, 1);
+    const operation = await store.getOperation("operation-1");
+    assert.equal(operation?.kind, "tool:test.hidden");
+    assert.deepEqual(operation?.input, { value: "works" });
+    assert.equal(operation?.state, "succeeded");
+  } finally { store.close(); }
+});
+
 test("bounds every model request while keeping the full tool result durable", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   const requests: Parameters<ModelPort["generate"]>[0][] = [];

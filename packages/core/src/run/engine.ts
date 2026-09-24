@@ -5,6 +5,7 @@ import type { JsonObject, JsonValue } from "../ports/json.js";
 import { ToolRegistry, ToolRuntime } from "../tool/index.js";
 import type { ExecutionContext } from "../identity/execution-context.js";
 import { intersectAuthority } from "../authorization/authority.js";
+import { authorize } from "../authorization/authorize.js";
 import { renderContextAssembly, type ContextAssembly } from "../context/index.js";
 import type { Run, Step } from "./entities.js";
 import { RunNotRecoverableError, type RecoveryClaim } from "./recovery.js";
@@ -72,6 +73,15 @@ export interface HeadlessRunEngineOptions {
 
 const ZERO_USAGE: ModelUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 const DEFAULT_MAX_MODEL_TURNS = 50;
+
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(item => canonicalJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as { readonly [key: string]: JsonValue };
+    return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(object[key]!)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 function finalModelTurnReminder(maxModelTurns: number): ModelMessage {
   return {
@@ -665,12 +675,23 @@ export class HeadlessRunEngine {
     const persisted = existing ? await this.store.getOperationResult(existing.id) : undefined;
     const retryInterruptedPure = existing?.sideEffect === "none"
       && persisted?.error?.code === "process_interrupted";
-    const toolResult = !this.isVisibleTool(call.name, checkpoint.visibleToolNames)
+    const routed = this.resolveCatalogCall(call, claim.run.context);
+    const invocationName = routed?.toolName ?? call.name;
+    const invocationInput = routed?.input ?? call.input;
+    const mismatch = routed && !routed.error && existing && (existing.kind !== `tool:${invocationName}` || canonicalJson(existing.input) !== canonicalJson(invocationInput as JsonObject) || existing.stepId !== operationStep.id);
+    const toolResult = mismatch
+      ? { status: "invalid_input" as const, error: { code: "operation_mismatch", message: "stored operation does not match the pending catalog call", retryable: false } }
+      : !routed && !this.isVisibleTool(call.name, checkpoint.visibleToolNames)
       ? this.hiddenToolResult(call.name)
+      : routed?.error
+        ? { status: "invalid_input" as const, error: { code: routed.error, message: routed.message!, retryable: false } }
+      : persisted?.outcome === "outcome_unknown" && existing?.sideEffect !== "none"
+        && !(existing?.sideEffect === "idempotent" && existing.idempotencyKey?.trim())
+        ? this.projectOperationResult(persisted)
       : persisted && !retryInterruptedPure && persisted.outcome !== "outcome_unknown"
       ? this.projectOperationResult(persisted)
       : existing?.state === "authorized"
-        ? await this.toolRuntime.resume(existing.id, { toolName: call.name, input: call.input, stepId: operationStep.id, context: claim.run.context, runId: claim.run.id, ...(request.signal ? { signal: request.signal } : {}) })
+        ? await this.toolRuntime.resume(existing.id, { toolName: invocationName, input: invocationInput, stepId: operationStep.id, context: claim.run.context, runId: claim.run.id, ...(request.signal ? { signal: request.signal } : {}) })
         : await this.invokeTool(call, claim.run.id, operationStep.id, claim.run.context, request.signal, checkpoint.visibleToolNames);
 
     if (toolResult.status === "outcome_unknown") {
@@ -843,7 +864,7 @@ export class HeadlessRunEngine {
   }
 
   private isVisibleTool(name: string, visibleToolNames?: readonly string[]): boolean {
-    return visibleToolNames === undefined || visibleToolNames.includes(name);
+    return (name === "tool_catalog" && this.tools.get(name) !== undefined) || visibleToolNames === undefined || visibleToolNames.includes(name);
   }
 
   private hiddenToolResult(name: string) {
@@ -854,13 +875,16 @@ export class HeadlessRunEngine {
   }
 
   private invokeTool(call: ModelToolCall, runId: string, stepId: string, context: ExecutionContext, signal?: AbortSignal, visibleToolNames?: readonly string[]) {
-    if (!this.isVisibleTool(call.name, visibleToolNames)) return Promise.resolve(this.hiddenToolResult(call.name));
+    const routed = this.resolveCatalogCall(call, context);
+    if (!routed && !this.isVisibleTool(call.name, visibleToolNames)) return Promise.resolve(this.hiddenToolResult(call.name));
     if (call.argumentError) {
       return Promise.resolve({
         status: "invalid_input" as const,
         error: { code: "malformed_tool_arguments", message: call.argumentError, retryable: false },
       });
     }
+    if (routed?.error) return Promise.resolve({ status: "invalid_input" as const, error: { code: routed.error, message: routed.message!, retryable: false } });
+    if (routed) call = { ...call, name: routed.toolName, input: routed.input };
     return this.toolRuntime.execute({
       toolName: call.name,
       input: call.input,
@@ -872,6 +896,24 @@ export class HeadlessRunEngine {
         : {}),
       ...(signal ? { signal } : {}),
     });
+  }
+
+  private resolveCatalogCall(call: ModelToolCall, context: ExecutionContext): { toolName: string; input: Record<string, unknown>; error?: string; message?: string } | undefined {
+    if (call.name !== "tool_catalog" || call.input.action !== "call") return undefined;
+    const catalogValidation = this.tools.validateInput("tool_catalog", call.input);
+    if (!catalogValidation.valid) return { toolName: call.name, input: call.input, error: "invalid_catalog_input", message: catalogValidation.errors.join("; ") };
+    const toolName = call.input.tool_name;
+    const input = call.input.arguments;
+    if (typeof toolName !== "string" || !toolName || toolName === "tool_catalog" || !input || typeof input !== "object" || Array.isArray(input)) {
+      return { toolName: call.name, input: call.input, error: "invalid_catalog_call", message: "catalog call requires a non-catalog tool_name and object arguments" };
+    }
+    const catalog = this.tools.get("tool_catalog");
+    if (!catalog) return { toolName: call.name, input: call.input, error: "tool_not_found", message: "tool catalog is unavailable" };
+    const catalogDecision = authorize({ context, capability: catalog.policy.capability, tier: catalog.policy.tier, interactionRequirement: catalog.policy.interactionRequirement });
+    if (!catalogDecision.allow) return { toolName: call.name, input: call.input, error: "permission_denied", message: catalogDecision.reason };
+    const target = this.tools.get(toolName);
+    if (!target) return { toolName: call.name, input: call.input, error: "tool_not_found", message: `unknown tool: ${toolName}` };
+    return { toolName, input: input as Record<string, unknown> };
   }
 
   private async execute(request: HeadlessRunRequest, restored?: RestoredExecution): Promise<HeadlessRunResult> {

@@ -40,6 +40,7 @@ import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
 import { ConversationAutoArchiveCoordinator, parseConversationAutoArchiveConfig, syncConversationAutoArchiveSchedule, CONVERSATION_AUTO_ARCHIVE_JOB_REF } from "./conversation-auto-archive.js";
 import { ConversationScopeLifecycleCoordinator } from "./conversation-scope-lifecycle.js";
 import { assertUserManagedSchedule, toControlPanelScheduleView } from "./control-panel-schedules.js";
+import { createToolCatalogDefinition } from "./tool-catalog.js";
 
 const paths = umiroPaths();
 const pendingRestartFile = `${paths.state}/pending-restart.json`;
@@ -189,16 +190,7 @@ const refreshModelConnection = (): void => {
   modelPort.configureConnection(modelConnection);
   modelCatalog.configure(modelConnection);
 };
-tools.register({
-  name: "tool_catalog",
-  description: "List registered tools and whether the current Principal has their declared capability.",
-  inputSchema: { type: "object", additionalProperties: false },
-  policy: { capability: "tool.catalog", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
-  async execute(_input, context) {
-    const profile = context.execution.modelProfile ?? defaultModelProfile;
-    return { ok: true, effectStatus: "not_applicable", output: tools.list().map(tool => ({ name: tool.name, description: tool.description, capability: tool.policy.capability, tier: tool.policy.tier, sideEffect: tool.policy.sideEffect, available: context.execution.authority.capabilities.includes(tool.policy.capability) && (!tool.policy.capability.startsWith("model.") || profile.capabilities.includes(tool.policy.capability.slice("model.".length) as ModelCapability)) })) };
-  },
-});
+tools.register(createToolCatalogDefinition(tools, context => (context.execution.modelProfile ?? defaultModelProfile).capabilities));
 if (hostedWebSearch) tools.register({
   name: "web_search",
   description: `Search the public web through the active model's hosted web search capability. ${PUBLIC_WEB_SOURCE_INSTRUCTION}`,
