@@ -493,7 +493,7 @@ const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPane
   listDocuments: (viewId: string) => host.listControlPanelDocuments(viewId),
   readDocument: (viewId: string, documentId: string) => host.readControlPanelDocument(viewId, documentId),
   updateDocument: (viewId: string, documentId: string, content: string) => host.updateControlPanelDocument(viewId, documentId, content),
-}, workspaceFiles: ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"], secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), publicSecrets: () => Object.fromEntries(["LLM_BASE_URL", EMBEDDING_BASE_URL_SECRET].flatMap(name => process.env[name]?.trim() ? [[name, process.env[name]!.trim()]] : [])), updateSecrets: async values => {
+}, secrets: () => Object.fromEntries([...editableSecretNames].sort().map(name => [name, Boolean(process.env[name]?.trim())])), publicSecrets: () => Object.fromEntries(["LLM_BASE_URL", EMBEDDING_BASE_URL_SECRET].flatMap(name => process.env[name]?.trim() ? [[name, process.env[name]!.trim()]] : [])), updateSecrets: async values => {
   const unexpected = Object.keys(values).find(name => !editableSecretNames.has(name));
   if (unexpected) throw new TypeError(`secret is not editable here: ${unexpected}`);
   await persistSecrets(values);

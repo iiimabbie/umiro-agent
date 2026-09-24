@@ -16,7 +16,7 @@ const THEME_JS = readFileSync(new URL("./control-panel/theme.js", import.meta.ur
 const CSS = readFileSync(new URL("./control-panel/app.css", import.meta.url), "utf8");
 const FAVICON = readFileSync(new URL("./control-panel/favicon.png", import.meta.url));
 
-const BASE_EDITABLE_FILES = ["SOUL.md", "AGENT.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"] as const;
+const BASE_EDITABLE_FILES = ["AGENT.md", "SOUL.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"] as const;
 const KNOWN_EDITABLE_FILES: ReadonlySet<string> = new Set(BASE_EDITABLE_FILES);
 const MAX_BODY = 1024 * 1024;
 
