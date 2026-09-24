@@ -188,8 +188,7 @@ pre:empty { display: none; }
 .details-panel { margin: 18px 0 0; border-top: 1px solid var(--border); }
 .details-panel summary { padding: 10px 0; color: var(--muted); cursor: pointer; font-size: 13px; }
 .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 4px 0 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.stat-card { min-width: 0; padding: 15px 16px 14px 0; border-right: 1px solid var(--border); background: transparent; }
-.stat-card:not(:first-child) { padding-left: 16px; }
+.stat-card { min-width: 0; padding: 15px 16px 14px; border-right: 1px solid var(--border); background: transparent; }
 .stat-card:nth-child(3n) { border-right: 0; }
 .stat-card:nth-child(n+4) { border-top: 1px solid var(--border); }
 .stat-card strong { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--text); font-size: 18px; line-height: 1.3; }
@@ -445,8 +444,7 @@ pre:empty { display: none; }
   .content { padding-right: 12px; padding-left: 12px; }
   .app-header { margin-right: -12px; margin-left: -12px; padding-right: 12px; padding-left: 12px; }
   .page-actions { margin-bottom: 12px; }
-  .stat-card { padding: 11px 8px 11px 0; }
-  .stat-card:not(:first-child) { padding-left: 8px; }
+  .stat-card { padding: 11px 8px; }
   .stat-card strong { font-size: 16px; }
   .files { grid-template-columns: 1fr; }
   .workspace-toolbar { align-items: flex-start; }
