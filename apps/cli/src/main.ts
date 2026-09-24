@@ -246,7 +246,7 @@ async function checkLinger(): Promise<{ state: LingerState; detail?: string }> {
 
 async function installService(): Promise<ServiceInstallResult> {
   const gatewayEntry = join(currentRelease, "gateway", "dist", "src", "main.js");
-  const unit = `[Unit]\nDescription=Umiro Discord Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`UMIRO_HOME=${home}`)}\nEnvironmentFile=-${systemdPath(secretsFile)}\nWorkingDirectory=${systemdPath(workspace)}\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(gatewayEntry)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`;
+  const unit = `[Unit]\nDescription=Umiro Discord Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`UMIRO_HOME=${home}`)}\nEnvironment=${systemdQuote("UMIRO_SERVICE_MANAGER=systemd")}\nEnvironmentFile=-${systemdPath(secretsFile)}\nWorkingDirectory=${systemdPath(workspace)}\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(gatewayEntry)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(join(home, "state"), { recursive: true, mode: 0o700 }); await writeFile(unitPath, unit, { mode: 0o600 });
   if (process.env.UMIRO_NO_SYSTEMD === "1") return { enabled: false, reason: "disabled by UMIRO_NO_SYSTEMD=1", linger: "not-checked" };
   try {
@@ -409,7 +409,8 @@ async function start(): Promise<void> {
     if (startedBySystemd) { const state = await waitForReady(); console.log(`started (systemd, ${state})`); await printWebUiAccess(); return; }
   }
   const entry = resolve(process.env.UMIRO_GATEWAY_ENTRY?.trim() || join(currentRelease, "gateway", "dist", "src", "main.js")); const logPath = join(home, "state", "gateway.log"); const log = openSync(logPath, "a", 0o600);
-  const child = spawn(process.execPath, [entry], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, UMIRO_HOME: home } }); child.unref(); if (!child.pid) throw new Error("gateway failed to start");
+  const { INVOCATION_ID: _invocationId, ...fallbackEnvironment } = process.env;
+  const child = spawn(process.execPath, [entry], { detached: true, stdio: ["ignore", log, log], env: { ...fallbackEnvironment, UMIRO_HOME: home, UMIRO_SERVICE_MANAGER: "fallback" } }); child.unref(); if (!child.pid) throw new Error("gateway failed to start");
   await writeFile(pidFile, `${JSON.stringify({ pid: child.pid, entry, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 }); await new Promise(resolveWait => setTimeout(resolveWait, 500));
   try { process.kill(child.pid, 0); } catch { throw new Error(`gateway exited during startup; inspect ${logPath}`); }
   const state = await waitForReady(child.pid); console.log(`started ${child.pid} (${state})`); await printWebUiAccess();

@@ -49,6 +49,7 @@ test("install enables systemd without starting it and records absolute Node plus
     const unit = await readFile(join(root.home, "state", "umiro.service"), "utf8");
     assert.match(unit, new RegExp(`ExecStart=\"${regexEscape(process.execPath)}\" \"${regexEscape(join(root.home, "app", "current", "gateway", "dist", "src", "main.js"))}\"`));
     assert.match(unit, new RegExp(`Environment=\"UMIRO_HOME=${regexEscape(root.home)}\"`));
+    assert.match(unit, /Environment=\"UMIRO_SERVICE_MANAGER=systemd\"/);
     assert.match(unit, new RegExp(`EnvironmentFile=-${regexEscape(systemdPath(join(root.home, "config", "secrets.env")))}`));
     assert.match(unit, new RegExp(`WorkingDirectory=${regexEscape(systemdPath(join(root.home, "workspace")))}`));
     assert.match(result.stdout, /systemd user service enabled \(not started/);

@@ -10,6 +10,7 @@ import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { loadPluginManifest, loadPluginModule } from "./plugin-loader.js";
 import { composePluginRuntimeStatus, orderPluginEnableEntriesIsolated, pluginSecretsFromEnvironment } from "./plugin-composition.js";
 import { umiroPaths } from "./paths.js";
+import { fallbackRestartEnvironment, isSystemdManaged } from "./supervisor.js";
 import { EmbeddingWorker, HybridConversationSearch } from "./embedding-worker.js";
 import { createConfiguredEmbedders, EMBEDDING_API_KEY_SECRET, EMBEDDING_BASE_URL_SECRET, type EmbeddingConfig } from "./embedding-config.js";
 import { reconcilePluginSchedules, DurableScheduler, previewNextFire, type PluginRuntimeState } from "./durable-scheduler.js";
@@ -1039,16 +1040,16 @@ shutdown = async (exitCode = 0, restart = false) => {
   if (drain.drained) store.close();
   await rm(`${paths.state}/gateway.ready`, { force: true });
   await releaseSingletonLock();
-  if (restart && !process.env.INVOCATION_ID) {
+  if (restart && !isSystemdManaged()) {
     const entry = process.argv[1];
     if (!entry) throw new Error("gateway entry is unavailable for restart");
     const log = openSync(`${paths.state}/gateway.log`, "a", 0o600);
-    const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], { detached: true, stdio: ["ignore", log, log], env: process.env });
+    const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], { detached: true, stdio: ["ignore", log, log], env: fallbackRestartEnvironment() });
     child.unref();
     if (!child.pid) throw new Error("gateway restart failed to spawn");
     await writeFile(`${paths.state}/gateway.pid.json`, `${JSON.stringify({ pid: child.pid, entry, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
   }
-  process.exit(restart && process.env.INVOCATION_ID ? 1 : exitCode);
+  process.exit(restart && isSystemdManaged() ? 1 : exitCode);
 };
 if (restartRequested) void shutdown(0, true);
 const fatal = (event: "unhandledRejection" | "uncaughtException", error: unknown) => {

@@ -13,7 +13,7 @@ const fixture = new URL("../../test/fixture-gateway.mjs", import.meta.url).pathn
 test("fallback daemon start waits for readiness and status reports it", async () => {
   const root = await mkdtemp(join(tmpdir(), "umiro-daemon-lifecycle-"));
   const home = join(root, "home");
-  const env = { ...process.env, UMIRO_HOME: home, UMIRO_NO_SYSTEMD: "1", UMIRO_GATEWAY_ENTRY: fixture };
+  const env = { ...process.env, INVOCATION_ID: "inherited-parent-invocation", UMIRO_HOME: home, UMIRO_NO_SYSTEMD: "1", UMIRO_GATEWAY_ENTRY: fixture, UMIRO_TEST_ENV_CAPTURE: join(root, "fallback-env.json") };
   try {
     await exec(process.execPath, [cli, "init"], { env });
     const configFile = join(home, "config", "umiro.json");
@@ -24,6 +24,9 @@ test("fallback daemon start waits for readiness and status reports it", async ()
 
     const started = await exec(process.execPath, [cli, "start"], { env });
     assert.match(started.stdout, /started \d+ \(ready\)/);
+    const childEnvironment = JSON.parse(await readFile(join(root, "fallback-env.json"), "utf8")) as NodeJS.ProcessEnv;
+    assert.equal(childEnvironment.UMIRO_SERVICE_MANAGER, "fallback");
+    assert.equal(childEnvironment.INVOCATION_ID, undefined);
     const status = await exec(process.execPath, [cli, "status"], { env });
     assert.match(status.stdout, /running \d+ \(ready\)/);
     const restarted = await exec(process.execPath, [cli, "restart"], { env });
