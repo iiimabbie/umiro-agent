@@ -8,6 +8,7 @@ import type { ExecutionStore } from "../ports/execution-store.js";
 import { inputText, type InputEvent } from "./event.js";
 import type { ModelCapability, ModelContent, ReasoningEffort } from "../model/contract.js";
 import { conversationHistoryToMessages } from "../conversation/history.js";
+import { recentToolEvidenceBlock } from "../conversation/tool-evidence.js";
 import { partitionContextTokenBudget } from "./budget.js";
 import type { ContextBlock } from "../context/contract.js";
 
@@ -20,6 +21,8 @@ export interface InteractiveIngressRequest {
   readonly userContent?: ModelContent;
   readonly maxContextCharacters: number;
   readonly maxContextTokens?: number;
+  readonly maxToolCalls?: number;
+  readonly maxDurationMs?: number;
   readonly deliveryDestination: JsonObject;
   readonly signal?: AbortSignal;
   readonly onTextDelta?: (delta: string) => void | Promise<void>;
@@ -121,6 +124,7 @@ export class InteractiveIngress {
       : undefined;
     const recentHistory = await this.conversations.listRecentHistory(ingested.conversation.id, ingested.turn.sequence, historyLimit);
     const history = conversationHistoryToMessages(recentHistory);
+    const toolEvidenceBlock = recentToolEvidenceBlock(recentHistory, ingested.conversation.id, authority.visibility);
     const currentMessage = { role: "user" as const, content: request.userContent ?? prompt };
     const contextBudget = request.maxContextTokens === undefined ? undefined : partitionContextTokenBudget(request.maxContextTokens, history, currentMessage);
     const assembledContext = await this.contexts.assemble({
@@ -132,7 +136,9 @@ export class InteractiveIngress {
       recentHistory,
       ...(replyTarget ? { replyTarget } : {}),
       ...(conversationCompaction ? { conversationCompaction } : {}),
-      ...(request.precomputedBlocks ? { precomputedBlocks: request.precomputedBlocks } : {}),
+      ...(request.precomputedBlocks || toolEvidenceBlock
+        ? { precomputedBlocks: [...(request.precomputedBlocks ?? []), ...(toolEvidenceBlock ? [toolEvidenceBlock] : [])] }
+        : {}),
       maxCharacters: request.maxContextCharacters,
       ...(contextBudget ? { maxTokens: contextBudget.contextMaxTokens } : {}),
       ...(request.signal ? { signal: request.signal } : {}),
@@ -149,6 +155,8 @@ export class InteractiveIngress {
       ...(request.userContent ? { userContent: request.userContent } : {}),
       history,
       ...(request.maxContextTokens !== undefined ? { maxContextTokens: request.maxContextTokens } : {}),
+      ...(request.maxToolCalls !== undefined ? { maxToolCalls: request.maxToolCalls } : {}),
+      ...(request.maxDurationMs !== undefined ? { maxDurationMs: request.maxDurationMs } : {}),
       ...(request.onContextOmission ? { onContextOmission: request.onContextOmission } : {}),
       assembledContext,
       ...(request.visibleToolNames !== undefined ? { visibleToolNames: request.visibleToolNames } : {}),

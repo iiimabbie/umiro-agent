@@ -5,6 +5,7 @@ import {
   OpenAIRequestError,
   OpenAIResponsesModel,
   buildOpenAIResponsesBody,
+  callResponsesWebSearch,
   callResponsesImageGeneration,
   normalizeResponsesFinishReason,
   normalizeResponsesToolCalls,
@@ -112,6 +113,19 @@ test("responses supports unauthenticated endpoints and caller cancellation", asy
   controller.abort(new Error("cancelled by test"));
   await assert.rejects(pending, /cancelled by test/);
   assert.equal(calls, 2);
+});
+
+test("hosted web search forwards cancellation to the HTTP request", async (t) => {
+  let requestSignal: AbortSignal | undefined;
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+    requestSignal = init?.signal ?? undefined;
+    return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
+  });
+  const controller = new AbortController();
+  const pending = callResponsesWebSearch({ config: { ...config, timeoutMs: 120_000 }, model: "test-model", query: "example", signal: controller.signal });
+  controller.abort(new Error("search cancelled"));
+  await assert.rejects(pending, /search cancelled/);
+  assert.equal(requestSignal?.aborted, true);
 });
 
 test("responses rejects API errors and empty output with structured categories", async (t) => {

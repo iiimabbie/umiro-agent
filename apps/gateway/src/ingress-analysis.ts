@@ -23,6 +23,18 @@ export function buildDiscordAnalysisText(currentText: string, history: readonly 
   return `${header}${context}${suffix}`;
 }
 
+export function includeSubagentWaitForSelectedDelegate(
+  selectedToolNames: readonly string[],
+  waitToolRegistered: boolean,
+): readonly string[] {
+  if (!selectedToolNames?.includes("subagent_delegate") || !waitToolRegistered) return selectedToolNames;
+  const selected = [...new Set(selectedToolNames)];
+  if (!selected.includes("subagent_wait")) {
+    selected.splice(selected.indexOf("subagent_delegate") + 1, 0, "subagent_wait");
+  }
+  return selected;
+}
+
 export type DiscordIngressRoute =
   | { readonly kind: "ignore" }
   | { readonly kind: "observe"; readonly analysis?: TurnAnalysis }

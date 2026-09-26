@@ -34,7 +34,7 @@ import { importDiscordAttachments, mapDiscordAttachmentRenditions } from "./disc
 import { safeErrorMessage } from "./safe-error.js";
 import { configurationRequirements, modelEndpoint } from "./setup-mode.js";
 import { describeImageArtifacts } from "./image-description.js";
-import { analyzeDiscordIngress, buildDiscordAnalysisText } from "./ingress-analysis.js";
+import { analyzeDiscordIngress, buildDiscordAnalysisText, includeSubagentWaitForSelectedDelegate } from "./ingress-analysis.js";
 import { assertRequiredBuiltins, REQUIRED_BUILTIN_PLUGIN_IDS, validateManagedPluginEntries } from "./required-builtins.js";
 import { completePendingRestart, savePendingRestart } from "./restart-notification.js";
 import { duplicateDiscordSendEvidence } from "./discord-delivery-dedup.js";
@@ -42,6 +42,7 @@ import { ConversationAutoArchiveCoordinator, parseConversationAutoArchiveConfig,
 import { ConversationScopeLifecycleCoordinator } from "./conversation-scope-lifecycle.js";
 import { assertUserManagedSchedule, toControlPanelScheduleView } from "./control-panel-schedules.js";
 import { createToolCatalogDefinition } from "./tool-catalog.js";
+import { hostedWebSearchPolicy } from "./web-search-policy.js";
 
 const paths = umiroPaths();
 const pendingRestartFile = `${paths.state}/pending-restart.json`;
@@ -196,7 +197,7 @@ if (hostedWebSearch) tools.register({
   name: "web_search",
   description: `Search the public web through the active model's hosted web search capability. ${PUBLIC_WEB_SOURCE_INSTRUCTION}`,
   inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 2, maxLength: 2_000 } } },
-  policy: { capability: "model.hosted_web_search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+  policy: hostedWebSearchPolicy,
   async execute(input, context) {
     const profile = context.execution.modelProfile ?? defaultModelProfile;
     if (!profile.capabilities.includes("hosted_web_search")) return { ok: false, effectStatus: "not_applicable", error: { code: "model_capability_unavailable", message: `model profile ${profile.id} does not provide hosted web search`, retryable: false } };
@@ -898,7 +899,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   initialTurns.push(...await threadStarterTurns(message, event));
   let runKey = event.id;
   const active = { controller, userId: message.authorId };
-  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, protocol: profile.protocol, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: analysis.selectedToolNames } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
+  const execution = ingress.handle({ event, model: profile.model, modelProfile: { id: profile.id, model: profile.model, protocol: profile.protocol, capabilities: profile.capabilities, reasoningEffort: profile.reasoningEffort }, reasoningEffort: profile.reasoningEffort, ...(modelContent.length ? { userContent: modelContent } : {}), ...(initialTurns.length ? { initialTurns } : {}), ...(analysis?.contextBlocks ? { precomputedBlocks: analysis.contextBlocks } : {}), ...(analysis ? { visibleToolNames: includeSubagentWaitForSelectedDelegate(analysis.selectedToolNames, tools.get("subagent_wait") !== undefined) } : {}), maxContextCharacters: 100_000, maxContextTokens: contextMaxTokens, maxToolCalls: 15, deliveryDestination: { kind: "discord", channelId: message.channelId }, signal: controller.signal, steerControl: gate, onRunCreated: id => { runKey = id; activeRuns.set(id, active); activeSessions.set(event.conversation.externalId, { runId: id, gate }); }, onContextOmission: details => logger.write({ level: "warn", event: "context.history_omitted", message: "Conversation history was reduced to fit the model context budget", occurredAt: new Date().toISOString(), runId: runKey, data: { channelId: message.channelId, omittedHistoryMessages: details.omittedHistoryMessages, retainedHistoryMessages: details.retainedHistoryMessages, truncatedHistoryMessages: details.truncatedHistoryMessages } }) });
   activeRuns.set(runKey, active);
   let result;
   try { result = await execution; } finally {

@@ -35,6 +35,47 @@ const context: ExecutionContext = {
   },
 };
 
+test("startup resumes a Discord Run created more than three minutes earlier", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const runId = "expired-discord-run";
+  const run: Run = {
+    id: runId,
+    revision: 0,
+    state: "queued",
+    context: { ...context, origin: { kind: "interactive", transport: "discord", conversationId: "conversation" } },
+    resumeEligibility: "eligible",
+    createdAt: at,
+    updatedAt: at,
+  };
+  const step: Step = { id: "expired-step", runId, revision: 0, sequence: 0, kind: "model_call", state: "pending", createdAt: at, updatedAt: at };
+  try {
+    await store.createRunWithStep(run, step);
+    await store.updateExecutionProgress({
+      runId,
+      expectedRunRevision: 0,
+      expectedRunState: "queued",
+      runState: "running",
+      resumeEligibility: "eligible",
+      runUpdatedAt: at,
+      step: { id: step.id, expectedRevision: 0, expectedState: "pending", state: "running", updatedAt: at },
+      checkpoint: { runId, version: 1, data: { version: 2, model: "fake-model", messages: [], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, deliveryDestination: { kind: "discord", channelId: "123" } }, updatedAt: at },
+    });
+    const model: ModelPort = { async generate() { return { text: "Recovered answer", toolCalls: [], finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }, assistantMessage: { role: "assistant", content: "Recovered answer" } }; } };
+    const engine = new HeadlessRunEngine(model, new ToolRegistry(), store);
+    const coordinator = new HeadlessRecoveryCoordinator(store, engine, { now: () => recoveredAt });
+    const [outcome] = await coordinator.recoverAll();
+    assert.equal(outcome?.runId, runId);
+    assert.equal(outcome?.status, "resumed");
+    if (outcome?.status === "resumed") assert.equal(outcome.result.status, "succeeded");
+    assert.equal((await store.getRun(runId))?.state, "succeeded");
+    assert.equal((await store.listSteps(runId))[0]?.state, "succeeded");
+    assert.equal(await store.getCheckpoint(runId), undefined);
+    const [delivery] = await store.listPendingDeliveries();
+    assert.deepEqual(delivery?.destination, { kind: "discord", channelId: "123" });
+    assert.equal(delivery?.payload.text, "Recovered answer");
+  } finally { store.close(); }
+});
+
 async function createExecutingOperation(
   store: SQLiteExecutionStore,
   suffix: string,

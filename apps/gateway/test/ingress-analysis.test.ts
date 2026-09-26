@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeDiscordIngress, buildDiscordAnalysisText } from "../src/ingress-analysis.js";
+import { analyzeDiscordIngress, buildDiscordAnalysisText, includeSubagentWaitForSelectedDelegate } from "../src/ingress-analysis.js";
 
 const analysis = (shouldReply: boolean) => ({ shouldReply, selectedToolNames: [], contextBlocks: [] });
 
@@ -16,6 +16,14 @@ test("analysis text includes bounded recent context before the current message",
 
 test("analysis text remains unchanged without conversation history", () => {
   assert.equal(buildDiscordAnalysisText("  hello  ", []), "  hello  ");
+});
+
+test("selected delegation includes the registered wait tool without changing existing order", () => {
+  assert.deepEqual(includeSubagentWaitForSelectedDelegate(["reply_now", "subagent_delegate", "web_search"], true), ["reply_now", "subagent_delegate", "subagent_wait", "web_search"]);
+  assert.deepEqual(includeSubagentWaitForSelectedDelegate(["reply_now", "subagent_delegate", "subagent_wait", "web_search"], true), ["reply_now", "subagent_delegate", "subagent_wait", "web_search"]);
+  assert.deepEqual(includeSubagentWaitForSelectedDelegate(["reply_now", "subagent_delegate", "reply_now"], true), ["reply_now", "subagent_delegate", "subagent_wait"]);
+  assert.deepEqual(includeSubagentWaitForSelectedDelegate(["reply_now", "web_search"], true), ["reply_now", "web_search"]);
+  assert.deepEqual(includeSubagentWaitForSelectedDelegate(["reply_now", "subagent_delegate"], false), ["reply_now", "subagent_delegate"]);
 });
 
 test("hard-ignore does not call the analyzer", async () => {

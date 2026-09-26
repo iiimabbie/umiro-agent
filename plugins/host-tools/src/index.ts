@@ -6,6 +6,7 @@ import { basename, dirname, relative, resolve, sep } from "node:path";
 import type { JsonObject } from "@umiro/core/ports";
 import type { PluginInstance, PluginSetupContext } from "@umiro/core/plugin";
 import type { ToolDefinition, ToolExecutionContext, ToolExecutionResult } from "@umiro/core/tool";
+import { boundedText, readableHtml } from "./web-content.js";
 
 interface Config { readonly workspacePath: string; readonly maxReadBytes?: number; readonly maxWebBytes?: number; readonly allowedWebHosts?: readonly string[] }
 interface ModelToolValue { readonly output: unknown; readonly modelInputArtifactIds: readonly string[] }
@@ -51,7 +52,7 @@ function execute(command: string, cwd: string, signal: AbortSignal): Promise<{ s
   });
 }
 
-async function boundedResponseBytes(response: Response, limit: number): Promise<Uint8Array> {
+async function boundedResponseBytes(response: Response, limit: number, subject = "download"): Promise<Uint8Array> {
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -63,7 +64,7 @@ async function boundedResponseBytes(response: Response, limit: number): Promise<
       total += next.value.byteLength;
       if (total > limit) {
         await reader.cancel();
-        throw new Error(`download exceeds ${limit} bytes`);
+        throw new Error(`${subject} exceeds ${limit} bytes`);
       }
       chunks.push(next.value);
     }
@@ -129,9 +130,21 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
       for (let redirect = 0; redirect <= 5; redirect++) {
         const response = await fetch(url, { method: input.method === "HEAD" ? "HEAD" : "GET", redirect: "manual", signal: context.signal, headers: { "user-agent": "umiro-v2/0" } });
         if (response.status >= 300 && response.status < 400) { const location = response.headers.get("location"); if (!location || redirect === 5) throw new Error("web_fetch redirect limit exceeded"); url = await safeUrl(new URL(location, url).href, config.allowedWebHosts); continue; }
-        const declared = Number(response.headers.get("content-length")); if (Number.isFinite(declared) && declared > limit) throw new Error(`web response exceeds ${limit} bytes`);
-        const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > limit) throw new Error(`web response exceeds ${limit} bytes`);
-        return { url: url.href, status: response.status, contentType: response.headers.get("content-type"), body: new TextDecoder().decode(bytes) };
+        const contentType = response.headers.get("content-type");
+        const declaredHeader = response.headers.get("content-length");
+        const declared = declaredHeader === null ? undefined : Number(declaredHeader);
+        const metadata = { url: url.href, status: response.status, contentType, ...(declared !== undefined && Number.isFinite(declared) ? { declaredBytes: declared } : {}) };
+        if (input.method === "HEAD") return metadata;
+        const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+        if (!(mediaType.startsWith("text/") || mediaType === "application/json" || mediaType.endsWith("+json") || mediaType === "application/xml" || mediaType.endsWith("+xml"))) {
+          await response.body?.cancel();
+          return { ...metadata, body: "", truncated: false, extraction: "non_text", note: "Non-text response; use download_file to inspect this resource." };
+        }
+        if (declared !== undefined && Number.isFinite(declared) && declared > limit) throw new Error(`web response exceeds ${limit} bytes`);
+        const bytes = await boundedResponseBytes(response, limit, "web response");
+        const source = new TextDecoder().decode(bytes);
+        const content = mediaType === "text/html" || mediaType === "application/xhtml+xml" ? readableHtml(source) : boundedText(source);
+        return { ...metadata, bodyBytes: bytes.byteLength, sourceCharacters: source.length, ...content };
       }
       throw new Error("web_fetch redirect loop");
     } }),

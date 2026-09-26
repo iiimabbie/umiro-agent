@@ -9,6 +9,7 @@ test("subagent plugin delegates an explicit task package", async () => {
   const plugin = createPlugin({ pluginId: "subagent", namespace: "subagent", config: {}, permissionCeiling: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "none" }, getSecret: () => undefined, services: { childRuns: { async start(input: ExecuteChildRunRequest) { request = input; return { status: "active", childRunId: "child" }; }, async waitForAny(parentRunId: string, childRunIds: readonly string[]) { return { status: "succeeded", childRunId: childRunIds[0] ?? "child", text: parentRunId, reused: false }; }, async cancel(parentRunId: string, childRunId: string) { cancellation = [parentRunId, childRunId]; return { cancelled: true, childRunId }; } } as never, replies: { async send(runId, text) { reply = [runId, text]; return { deliveryId: "delivery-middle" }; } } } });
   const tool = plugin.contributions.tools?.[0]!;
   assert.match(tool.description, /complete actual model ID/);
+  assert.match(tool.description, /call subagent_wait/);
   assert.match(String((tool.inputSchema.properties as Record<string, { description?: string }>).model?.description), /gpt-5\.6-terra/);
   assert.match(String((tool.inputSchema.properties as Record<string, { description?: string }>).profile?.description), /Registered Subagent role\/profile ID/);
   const profilesTool = plugin.contributions.tools?.find(item => item.name === "subagent_profiles")!;
@@ -17,9 +18,11 @@ test("subagent plugin delegates an explicit task package", async () => {
   assert.deepEqual(emptyCatalog.ok && emptyCatalog.output, []);
   const result = await tool.execute({ objective: "check", prompt: "check it", idempotencyKey: "k", model: "test-model", constraints: ["bounded"] }, { execution: { origin: { kind: "interactive", transport: "test", conversationId: "run-parent" }, actor: { id: "p", kind: "human", roles: ["owner"] }, authority: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "full" } }, runId: "run-parent", operationId: "op", idempotencyKey: "k", signal: new AbortController().signal });
   assert.equal(result.ok, true); assert.equal((request as { parentRunId: string }).parentRunId, "run-parent");
+  assert.match(JSON.stringify(result.output), /subagent_wait[\s\S]*childRunId/);
   const waitTool = plugin.contributions.tools?.[1]; assert.ok(waitTool);
+  assert.equal(waitTool.policy.timeoutMs, 600_000);
   const waited = await waitTool.execute({ childRunIds: ["child"] }, { execution: { origin: { kind: "interactive", transport: "test", conversationId: "run-parent" }, actor: { id: "p", kind: "human", roles: ["owner"] }, authority: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "full" } }, runId: "run-parent", operationId: "op-wait", signal: new AbortController().signal });
-  assert.equal(waited.ok, true);
+  assert.equal(waited.ok, true); assert.deepEqual(waited.output, { status: "succeeded", childRunId: "child", text: "run-parent", reused: false });
   const cancelTool = plugin.contributions.tools?.[2]; assert.ok(cancelTool);
   const cancelled = await cancelTool.execute({ childRunId: "child" }, { execution: { origin: { kind: "interactive", transport: "test", conversationId: "run-parent" }, actor: { id: "p", kind: "human", roles: ["owner"] }, authority: { capabilities: ["subagent.delegate"], visibility: { kind: "all" }, instructionAuthority: "full" } }, runId: "run-parent", operationId: "op-cancel", signal: new AbortController().signal });
   assert.equal(cancelled.ok, true); assert.deepEqual(cancellation, ["run-parent", "child"]);

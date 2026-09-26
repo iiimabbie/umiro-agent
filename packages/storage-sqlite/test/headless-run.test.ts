@@ -363,8 +363,10 @@ test("still enforces a configured model-turn limit when the final reminder is ig
   const store = new SQLiteExecutionStore(":memory:");
   const maxModelTurns = 3;
   const finalMessages: Array<Parameters<ModelPort["generate"]>[0]["messages"][number] | undefined> = [];
+  const visibleToolCounts: number[] = [];
   const model: ModelPort = { async generate(request) {
     finalMessages.push(structuredClone(request.messages.at(-1)));
+    visibleToolCounts.push(request.tools?.length ?? 0);
     const toolCall = { id: `call-${finalMessages.length}`, name: "test.continue", input: {} };
     return response({ toolCalls: [toolCall], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [toolCall] } });
   } };
@@ -383,6 +385,8 @@ test("still enforces a configured model-turn limit when the final reminder is ig
     const finalReminder = finalMessages.at(-1);
     assert.equal(finalReminder?.role, "system");
     assert.match(finalReminder?.content ?? "", /final allowed model turn \(3 of 3\)/);
+    assert.deepEqual(visibleToolCounts, [1, 1, 0]);
+    assert.equal((await store.listOperations("run-1")).length, 2);
   } finally { store.close(); }
 });
 
@@ -503,6 +507,8 @@ test("durably steers another participant into the active Run at a safe boundary"
     assert.equal(requests[1]?.messages.some(message => message.role === "assistant" && message.content === "stale draft"), false);
     assert.equal(requests[1]?.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("bob adds context")), true);
     assert.equal((await store.listPendingSteeredInputs("run-steer")).length, 0);
+    assert.equal((await store.getRun("run-steer"))?.state, "succeeded");
+    assert.equal((await store.listPendingDeliveries()).length, 1);
     assert.equal((await store.listTurns("conversation")).length, 3);
     assert.equal(privilegedExecutions, 0);
     assert.deepEqual((await store.getRun("run-steer"))?.context.authority, {
@@ -519,6 +525,54 @@ test("durably steers another participant into the active Run at a safe boundary"
     try { store.close(); } catch {}
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("a progress steer asks for an immediate answer without more tools", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const event = { id: "event-initial", occurredAt: at, identity: { transport: "discord", externalId: "alice", principalId: null }, conversation: { transport: "discord", externalId: "channel", kind: "channel" as const }, content: [{ type: "text" as const, text: "research" }] };
+  const ingested = await store.ingestInputEvent({ event, actorPrincipalId: "alice", newConversationId: "conversation", newTurnId: "turn-initial", newRunId: "run-progress", createdAt: at });
+  let modelStarted!: () => void;
+  let releaseModel!: () => void;
+  const started = new Promise<void>(resolve => { modelStarted = resolve; });
+  const release = new Promise<void>(resolve => { releaseModel = resolve; });
+  let calls = 0;
+  const model: ModelPort = { async generate(request) {
+    calls += 1;
+    if (calls === 1) { modelStarted(); await release; return response({ text: "stale", assistantMessage: { role: "assistant", content: "stale" } }); }
+    assert.equal(request.tools?.length ?? 0, 0);
+    assert.ok(request.messages.some(message => message.role === "system" && message.content.includes("immediate progress update")));
+    return response({ text: "Current findings", assistantMessage: { role: "assistant", content: "Current findings" } });
+  } };
+  try {
+    const running = new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() }).run({ runId: "run-progress", context: ownerContext(), conversationId: ingested.conversation.id, turnId: ingested.turn.id, model: "fake", prompt: "research", steerControl: { flush: async () => {}, seal: async () => {} } });
+    await started;
+    await store.steerInputEvent({ event: { ...event, id: "event-progress", content: [{ type: "text", text: "？" }] }, actorPrincipalId: "alice", actorRoles: ["owner"], authority: ownerContext().authority, runId: "run-progress", newTurnId: "turn-progress", modelContent: [{ type: "text", text: "[steer] <@alice>: ？" }], createdAt: at });
+    releaseModel();
+    const result = await running;
+    assert.equal(result.status, "succeeded");
+    assert.equal((await store.getRun("run-progress"))?.state, "succeeded");
+    assert.equal(calls, 2);
+  } finally { store.close(); }
+});
+
+test("a new progress question answers without starting another search", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "test.search", description: "Search", inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    policy: { capability: "test.search", tier: "common", interactionRequirement: "not_required", sideEffect: "none" },
+    async execute() { throw new Error("progress question must not start a search"); },
+  });
+  const model: ModelPort = { async generate(request) {
+    assert.deepEqual(request.tools, []);
+    assert.ok(request.messages.some(message => message.role === "system" && message.content.includes("immediate progress update")));
+    return response({ text: "Here is the current status", assistantMessage: { role: "assistant", content: "Here is the current status" } });
+  } };
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() })
+      .run({ context: ownerContext("test.search"), model: "fake", prompt: "？" });
+    assert.equal(result.status, "succeeded");
+  } finally { store.close(); }
 });
 
 test("returns malformed model tool arguments to the model without executing them", async () => {
@@ -618,6 +672,78 @@ test("does not execute tool calls beyond the Run ceiling", async () => {
   } finally { store.close(); }
 });
 
+test("uses one remaining tool call from a parallel response and then answers", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let executed = 0;
+  let modelCalls = 0;
+  const calls = Array.from({ length: 5 }, (_, index) => ({ id: `call-${index}`, name: "test.count", input: {} }));
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    if (modelCalls === 1) return response({ toolCalls: calls, finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: calls } });
+    assert.equal(request.tools?.length ?? 0, 0);
+    assert.equal(request.messages.filter(message => message.role === "tool").length, 5);
+    return response({ text: "One result verified; four were not checked.", assistantMessage: { role: "assistant", content: "One result verified; four were not checked." } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "test.count", description: "Count", inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.count", tier: "common", interactionRequirement: "not_required", sideEffect: "none", concurrency: "parallel_safe" }, async execute() { executed += 1; return { ok: true, output: { verified: true }, effectStatus: "not_applicable" }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, createId: deterministicIds() }).run({ context: ownerContext("test.count"), model: "fake-model", prompt: "five", maxToolCalls: 1 });
+    assert.equal(result.status, "succeeded");
+    assert.equal(executed, 1);
+    assert.equal((await store.listOperations("run-1")).length, 1);
+  } finally { store.close(); }
+});
+
+test("allows a tool with enough time remaining before the configured deadline", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let clockMs = Date.now();
+  let executed = 0;
+  let modelCalls = 0;
+  const call = { id: "late-search", name: "test.search", input: {} };
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    if (modelCalls === 1) {
+      clockMs += 29_950; // Just over 30 seconds remain after this model response.
+      return response({ toolCalls: [call], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [call] } });
+    }
+    return response({ text: "已有三家官方頁資料，其他資訊尚未查證。", assistantMessage: { role: "assistant", content: "已有三家官方頁資料，其他資訊尚未查證。" } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "test.search", description: "Search", inputSchema: { type: "object", properties: {}, additionalProperties: false }, policy: { capability: "test.search", tier: "common", interactionRequirement: "not_required", sideEffect: "none", timeoutMs: 30_000 }, async execute() { executed += 1; return { ok: true, output: {}, effectStatus: "not_applicable" }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, nowMs: () => clockMs, createId: deterministicIds() }).run({ context: ownerContext("test.search"), model: "fake-model", prompt: "continue", maxDurationMs: 60_000 });
+    assert.equal(result.status, "succeeded", JSON.stringify(result));
+    if (result.status === "succeeded") assert.match(result.text, /官方頁資料/);
+    assert.equal(executed, 1);
+    assert.equal(modelCalls, 2);
+    assert.equal((await store.listOperations("run-1")).length, 1);
+  } finally { store.close(); }
+});
+
+test("allows a 120-second search before the configured Run deadline", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  let clockMs = Date.now();
+  let executed = 0;
+  let modelCalls = 0;
+  const call = { id: "search-call", name: "web_search", input: { query: "product" } };
+  const model: ModelPort = { async generate(request) {
+    modelCalls += 1;
+    if (modelCalls === 1) {
+      clockMs += 35_000; // 145 seconds remain; search timeout plus reply reserve requires 150.
+      return response({ toolCalls: [call], finishReason: "tool_calls", assistantMessage: { role: "assistant", content: null, toolCalls: [call] } });
+    }
+    return response({ text: "Here is the verified information so far.", assistantMessage: { role: "assistant", content: "Here is the verified information so far." } });
+  } };
+  const registry = new ToolRegistry();
+  registry.register({ name: "web_search", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } } }, policy: { capability: "web.search", tier: "common", interactionRequirement: "not_required", sideEffect: "none", timeoutMs: 120_000 }, async execute() { executed += 1; return { ok: true, output: {}, effectStatus: "not_applicable" }; } });
+  try {
+    const result = await new HeadlessRunEngine(model, registry, store, { now: () => at, nowMs: () => clockMs, createId: deterministicIds() }).run({ context: ownerContext("web.search"), model: "fake-model", prompt: "research", maxDurationMs: 180_000 });
+    assert.equal(result.status, "succeeded");
+    assert.equal(executed, 1);
+    assert.equal(modelCalls, 2);
+  } finally { store.close(); }
+});
+
 test("aborts an in-flight model call at the Run duration ceiling", async () => {
   const store = new SQLiteExecutionStore(":memory:");
   const model: ModelPort = {
@@ -633,6 +759,17 @@ test("aborts an in-flight model call at the Run duration ceiling", async () => {
     const result = await engine.run({ context: ownerContext(), model: "fake-model", prompt: "wait", maxDurationMs: 20 });
     assert.equal(result.status, "failed");
     if (result.status === "failed") assert.match(result.error, /run duration budget exceeded: 20ms/);
+  } finally { store.close(); }
+});
+
+test("ends at the duration ceiling when the model ignores abort", async () => {
+  const store = new SQLiteExecutionStore(":memory:");
+  const model: ModelPort = { async generate() { return await new Promise<ModelResponse>(() => {}); } };
+  try {
+    const result = await new HeadlessRunEngine(model, new ToolRegistry(), store, { now: () => at, createId: deterministicIds() }).run({ context: ownerContext(), model: "fake-model", prompt: "wait", maxDurationMs: 20 });
+    assert.equal(result.status, "failed");
+    assert.equal((await store.getRun("run-1"))?.state, "failed");
+    assert.equal((await store.listPendingDeliveries()).length, 1);
   } finally { store.close(); }
 });
 
