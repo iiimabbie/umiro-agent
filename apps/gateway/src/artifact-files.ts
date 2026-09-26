@@ -68,6 +68,14 @@ export class ArtifactFileService {
     if (!Number.isSafeInteger(attachment.size) || attachment.size < 0 || attachment.size > this.maxBytes) throw new Error(`attachment exceeds ${this.maxBytes} byte limit`);
     const response = await fetch(url, { signal: AbortSignal.timeout(30_000) }); if (!response.ok) throw new Error(`attachment download failed: HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > this.maxBytes) throw new Error(`attachment exceeds ${this.maxBytes} byte limit`); const mediaType = response.headers.get("content-type") ?? attachment.mediaType;
+    const hash = hashBytes(bytes);
+    const existing = (await this.store.listArtifacts()).find(artifact => artifact.state !== "deleted" && artifact.sha256 === hash && artifact.size === bytes.byteLength && this.store.canAccessArtifact(artifact, ownerPrincipalId, artifact.visibility));
+    if (existing) {
+      try { await this.resolveArtifactFile(existing); return existing; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof Error && error.message === "artifact bytes are unavailable")) throw error;
+      }
+    }
     return this.createFromBytes({ bytes, ownerPrincipalId, filename: attachment.filename, ...(mediaType ? { mediaType } : {}), parentSource: { kind: "discord_message", id: sourceMessageId }, workspaceRelativePath: join("attachments", "inbox", safeArtifactFilename(attachment.filename, `attachment-${randomUUID().slice(0, 8)}`)) });
   }
 
