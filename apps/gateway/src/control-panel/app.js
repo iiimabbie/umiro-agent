@@ -553,6 +553,11 @@ async function channels() {
     const name = document.createElement('span');
     name.textContent = labelOverride || channelName(x.id);
     select.append(name);
+    const model = document.createElement('span');
+    model.className = 'channel-model';
+    const source = x.modelSource === 'session' ? '頻道設定' : x.modelSource === 'global' ? '全域預設' : x.modelSource;
+    model.textContent = [x.model, x.reasoningEffort, source].filter(Boolean).join(' · ');
+    if (model.textContent) select.append(model);
     select.onclick = () => selectChannel(x.id, d).catch(reportError);
     const stop = document.createElement('button');
     stop.type = 'button';

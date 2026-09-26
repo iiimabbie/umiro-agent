@@ -237,7 +237,9 @@ pre:empty { display: none; }
 #page-channels .conversation-nav .channel { display: flex; align-items: center; gap: 6px; padding: 3px 5px 3px 9px; border-top: 0; border-radius: 4px; }
 #page-channels .conversation-nav .channel:hover { background: var(--surface-hover); }
 #page-channels .conversation-nav .channel.active { background: var(--accent-soft); box-shadow: inset 2px 0 var(--accent); color: var(--text); }
-#page-channels .channel-select { flex: 1 1 auto; min-width: 0; margin: 0; border: 0; padding: 3px 0; background: transparent; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#page-channels .channel-select { display: flex; flex-direction: column; align-items: flex-start; flex: 1 1 auto; min-width: 0; margin: 0; border: 0; padding: 3px 0; background: transparent; text-align: left; overflow: hidden; }
+#page-channels .channel-select > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#page-channels .channel-select > .channel-model { color: var(--muted); font-size: 11px; font-weight: 400; }
 #page-channels .channel-select:hover { background: transparent; }
 #page-channels .channel-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #page-channels .channel-untrack { flex: 0 0 auto; border: 0; border-radius: 4px; padding: 3px 6px; color: var(--danger); background: transparent; font-size: 11px; opacity: 0; }
