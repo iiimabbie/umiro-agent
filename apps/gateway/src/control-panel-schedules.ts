@@ -23,11 +23,9 @@ export interface ControlPanelScheduleView {
   };
 }
 
-export type ScheduleMutation = "toggle" | "edit" | "delete";
-
 export class ManagedScheduleMutationError extends Error {
   readonly statusCode = 409;
-  constructor(readonly schedule: ControlPanelScheduleView, readonly action: ScheduleMutation) {
+  constructor(readonly schedule: ControlPanelScheduleView) {
     const owner = schedule.owner.kind === "plugin"
       ? `plugin ${schedule.owner.pluginId}`
       : schedule.owner.kind === "system" ? `system ${schedule.owner.systemId}` : "managed owner";
@@ -70,6 +68,6 @@ export function toControlPanelScheduleView(trigger: ScheduledTrigger, pluginJobO
   };
 }
 
-export function assertUserManagedSchedule(schedule: ControlPanelScheduleView, action: ScheduleMutation): void {
-  if (schedule.owner.kind !== "user") throw new ManagedScheduleMutationError(schedule, action);
+export function assertUserManagedSchedule(schedule: ControlPanelScheduleView): void {
+  if (schedule.owner.kind !== "user") throw new ManagedScheduleMutationError(schedule);
 }

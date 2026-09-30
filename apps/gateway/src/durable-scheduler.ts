@@ -31,14 +31,7 @@ export async function reconcilePluginSchedules(scheduler: SchedulerControl, plug
     const jobPluginId = jobId && typeof trigger.input.pluginId === "string" ? trigger.input.pluginId : undefined;
     const state = promptPluginId ? pluginStates.get(promptPluginId) : jobId ? pluginJobStates.get(jobId) ?? (jobPluginId ? pluginStates.get(jobPluginId) : undefined) : undefined;
     if (!promptPluginId && !jobId) continue;
-    if (!state) {
-      if (!options.preserveUnknownPluginSchedules) { if (await scheduler.remove(trigger.id)) removed += 1; continue; }
-      if (trigger.enabled) {
-        if (trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));
-        await scheduler.setEnabled(trigger.id, false); disabled += 1;
-      }
-      continue;
-    }
+    if (!state && !options.preserveUnknownPluginSchedules) { if (await scheduler.remove(trigger.id)) removed += 1; continue; }
     if (state !== "enabled") {
       if (trigger.enabled) {
         if (trigger.input[LIFECYCLE_DISABLED] !== true) await scheduler.update(trigger.id, schedulePatch(trigger, { ...trigger.input, [LIFECYCLE_DISABLED]: true }));

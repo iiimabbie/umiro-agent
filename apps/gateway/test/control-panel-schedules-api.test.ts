@@ -17,12 +17,12 @@ test("control-panel schedule API exposes ownership and rejects managed mutations
   const workspace = join(root, "workspace"); const configFile = join(root, "umiro.json");
   await mkdir(workspace, { recursive: true }); await writeFile(configFile, JSON.stringify({ model: "test" }));
   const views = [base("user", { kind: "user" }), base("tool:diary", { kind: "plugin", pluginId: "diary" }), base("tool:conversation-auto-archive", { kind: "system", systemId: "conversation-auto-archive" })];
-  let mutationCalls = 0; let created: unknown;
+  let mutationCalls = 0; let created: unknown; let updated: unknown;
   const schedules: ControlPanelSchedules = {
     async list() { return views; },
     async create(input) { created = input; return input; },
     async setEnabled() { mutationCalls += 1; return views[0]; },
-    async update() { mutationCalls += 1; return views[0]; },
+    async update(_id, input) { mutationCalls += 1; updated = input; return input; },
     async remove() { mutationCalls += 1; return true; },
     async preview() { return null; },
   };
@@ -34,11 +34,16 @@ test("control-panel schedule API exposes ownership and rejects managed mutations
     for (const id of ["tool:diary", "tool:conversation-auto-archive"]) {
       assert.equal((await fetch(`${endpoint}/api/schedules/${id}`, { method: "PATCH", headers, body: JSON.stringify({ enabled: false }) })).status, 409);
       assert.equal((await fetch(`${endpoint}/api/schedules/${id}`, { method: "PATCH", headers, body: JSON.stringify({ name: "changed", kind: "cron", expression: "0 9 * * *", timezone: "UTC", prompt: "changed" }) })).status, 409);
+      assert.equal((await fetch(`${endpoint}/api/schedules/${id}`, { method: "PATCH", headers, body: JSON.stringify({ name: "", kind: "cron", expression: "0 9 * * *", timezone: "UTC", prompt: "changed" }) })).status, 400);
       assert.equal((await fetch(`${endpoint}/api/schedules/${id}`, { method: "DELETE", headers })).status, 409);
     }
     assert.equal(mutationCalls, 0);
     assert.equal((await fetch(`${endpoint}/api/schedules/missing`, { method: "DELETE", headers })).status, 404);
+    assert.equal((await fetch(`${endpoint}/api/schedules/user`, { method: "PATCH", headers, body: JSON.stringify({ enabled: false }) })).status, 200);
     assert.equal((await fetch(`${endpoint}/api/schedules`, { method: "POST", headers, body: JSON.stringify({ name: "new", kind: "cron", expression: "0 9 * * *", timezone: "UTC", prompt: "hello", owner: { kind: "system" }, jobRef: "system:bad", pluginId: "diary" }) })).status, 201);
     assert.deepEqual(created, { name: "new", kind: "cron", expression: "0 9 * * *", timezone: "UTC", prompt: "hello" });
+    assert.equal((await fetch(`${endpoint}/api/schedules/user`, { method: "PATCH", headers, body: JSON.stringify({ name: " changed ", kind: "once", at: "2026-09-28T08:00:00.000Z", timezone: "UTC", prompt: "once prompt" }) })).status, 200);
+    assert.deepEqual(updated, { name: "changed", kind: "once", at: "2026-09-28T08:00:00.000Z", timezone: "UTC", prompt: "once prompt" });
+    assert.equal(mutationCalls, 2);
   } finally { await server.stop(); await rm(root, { recursive: true, force: true }); }
 });
