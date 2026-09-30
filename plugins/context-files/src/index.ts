@@ -19,7 +19,6 @@ const FILES: Readonly<Record<"soul" | "agent" | "owner" | "bootstrap", string>> 
   bootstrap: "BOOTSTRAP.md",
 };
 const MEMORY_FILES = ["PREFERENCES", "LESSONS", "WORKFLOWS", "ONGOING", "FACTS"] as const;
-export const TOOL_EVIDENCE_LIMIT = 6_000;
 
 const PRIORITY: Readonly<Record<"soul" | "agent" | "owner" | "memory", number>> = {
   soul: 100,
@@ -33,25 +32,6 @@ const OWNER_TEMPLATE = `# OWNER\n\nThe person this agent serves. Read on every t
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
-}
-
-export function renderToolEvidenceLedger(items: readonly { readonly turn: { readonly inputEventId: string }; readonly toolEvidence?: string }[]): string {
-  let remaining = TOOL_EVIDENCE_LIMIT;
-  const entries: string[] = [];
-  for (const item of items.slice().reverse()) {
-    if (!item.toolEvidence || remaining <= 0) continue;
-    const entry = `[msg:${item.turn.inputEventId}]\n${item.toolEvidence}`;
-    if (entry.length <= remaining) {
-      entries.push(entry);
-      remaining -= entry.length + 2;
-      continue;
-    }
-    const marker = "\n… latest tool evidence truncated …";
-    const head = Math.max(0, remaining - marker.length);
-    if (head > 0) entries.push(`${entry.slice(0, head)}${marker}`);
-    break;
-  }
-  return entries.join("\n\n").slice(0, TOOL_EVIDENCE_LIMIT);
 }
 
 function skillsProvider(enabled: ReadonlySet<string>, getRoot: () => string): ContextProvider {
@@ -85,7 +65,6 @@ function skillsProvider(enabled: ReadonlySet<string>, getRoot: () => string): Co
 
 function provider(
   role: "soul" | "agent" | "owner",
-  config: ContextFilesConfig,
   getRoot: () => string,
 ): ContextProvider {
   const id = `context.${role}`;
@@ -93,7 +72,7 @@ function provider(
     id,
     role: role satisfies ContextRole,
     priority: PRIORITY[role],
-    async load(request) {
+    async load() {
       const path = join(getRoot(), FILES[role]);
       try {
         const stat = await lstat(path);
@@ -152,7 +131,7 @@ function memoryProvider(getRoot: () => string): ContextProvider {
   };
 }
 
-function bootstrapProvider(config: ContextFilesConfig, getRoot: () => string): ContextProvider {
+function bootstrapProvider(getRoot: () => string): ContextProvider {
   return {
     id: "context.bootstrap",
     role: "bootstrap",
@@ -213,14 +192,6 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
     const blocks = [];
     const compacted = request.conversationCompaction;
     if (compacted) blocks.push({ id: "context.conversation_history:compacted", providerId: "context.conversation_history", role: "conversation-history", content: `<conversation-history-compaction through-sequence="${compacted.throughSequence}" trust="untrusted-data">\n${compacted.summary}\n</conversation-history-compaction>`, source: { kind: "conversation-compaction", ref: compacted.conversationId, metadata: { throughSequence: compacted.throughSequence, sourceHash: compacted.sourceHash } }, influence: "information" as const, instructionAuthority: "none" as const, parentSourceRef: compacted.sourceHash });
-    const items = request.recentHistory ?? [];
-    // Recent user/assistant turns are native model messages supplied by core.
-    // Keep only a small, global evidence ledger here; never repeat a 12K
-    // tool payload once per turn or pretend old calls are provider tool roles.
-    const evidence = renderToolEvidenceLedger(items);
-    if (evidence) {
-      blocks.push({ id: "context.conversation_history:tool-evidence", providerId: "context.conversation_history", role: "conversation-history", content: `<tool-evidence-ledger trust="untrusted-data">\n${evidence}\n</tool-evidence-ledger>`, source: { kind: "conversation-tool-evidence", ref: items[0]!.turn.conversationId }, influence: "information" as const, instructionAuthority: "none" as const });
-    }
     const reply = request.replyTarget;
     if (reply) { const user = reply.turn.content.filter(block => block.type === "text").map(block => block.text).join("\n"); blocks.push({ id: "context.conversation_history:reply-target", providerId: "context.conversation_history", role: "conversation-history", content: `<discord-reply-target trust="untrusted-data" turn-id="${reply.turn.id}">\n${user}${reply.assistantText ? `\nAssistant reply: ${reply.assistantText}` : ""}${reply.toolEvidence ? `\n<tool-evidence trust="untrusted-data">\n${reply.toolEvidence}\n</tool-evidence>` : ""}\n</discord-reply-target>`, source: { kind: "conversation-turn", ref: reply.turn.id }, influence: "information" as const, instructionAuthority: "none" as const }); }
     else {
@@ -237,10 +208,10 @@ export function createPlugin(context: PluginSetupContext): PluginInstance {
   return {
     contributions: {
       contextProviders: [
-        bootstrapProvider(config, () => workspaceRoot),
-        provider("soul", config, () => workspaceRoot),
-        provider("agent", config, () => workspaceRoot),
-        provider("owner", config, () => workspaceRoot),
+        bootstrapProvider(() => workspaceRoot),
+        provider("soul", () => workspaceRoot),
+        provider("agent", () => workspaceRoot),
+        provider("owner", () => workspaceRoot),
         memoryProvider(() => workspaceRoot),
         skillsProvider(enabledSkills, () => workspaceRoot),
         history,
