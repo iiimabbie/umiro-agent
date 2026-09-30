@@ -28,30 +28,13 @@ export type ChildRunStartResult = ChildRunExecutionResult | { readonly status: "
 export interface ChildRunServiceOptions {
   readonly now?: () => string;
   readonly createId?: (kind: "delegation" | "run" | "step") => string;
-  readonly maxDepth?: number;
   readonly maxActiveChildrenPerPrincipal?: number;
   readonly resolveModel?: (selection: string) => string;
-}
-
-const BUDGET_KEYS = ["maxModelTurns", "maxToolCalls", "maxInputTokens", "maxOutputTokens", "maxDurationMs"] as const;
-
-function narrowedBudget(parent: BudgetCeiling | undefined, requested: BudgetCeiling | undefined): BudgetCeiling | undefined {
-  if (!parent) return requested;
-  const effective: Partial<Record<(typeof BUDGET_KEYS)[number], number>> = {};
-  for (const key of BUDGET_KEYS) {
-    const ceiling = parent[key];
-    const value = requested?.[key];
-    if (ceiling !== undefined && value !== undefined && value > ceiling) throw new Error(`delegation budget ${key} exceeds Parent ceiling ${ceiling}`);
-    if (value !== undefined) effective[key] = value;
-    else if (ceiling !== undefined) effective[key] = ceiling;
-  }
-  return effective as BudgetCeiling;
 }
 
 export class ChildRunService {
   private readonly now: () => string;
   private readonly createId: NonNullable<ChildRunServiceOptions["createId"]>;
-  private readonly maxDepth: number;
   private maxActiveChildrenPerPrincipal: number;
   private readonly resolveModel: (selection: string) => string;
   private readonly activeChildren = new Map<string, AbortController>();
@@ -64,8 +47,6 @@ export class ChildRunService {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? (() => crypto.randomUUID());
-    this.maxDepth = options.maxDepth ?? 1;
-    if (this.maxDepth !== 1) throw new TypeError("Subagent delegation depth is fixed at one level");
     this.maxActiveChildrenPerPrincipal = options.maxActiveChildrenPerPrincipal ?? 2;
     this.resolveModel = options.resolveModel ?? (selection => selection);
     if (!Number.isSafeInteger(this.maxActiveChildrenPerPrincipal) || this.maxActiveChildrenPerPrincipal <= 0) throw new TypeError("maxActiveChildrenPerPrincipal must be a positive safe integer");
@@ -86,11 +67,6 @@ export class ChildRunService {
       throw new Error(`Parent Run is unavailable for delegation: ${request.parentRunId}`);
     }
     if (parent.parentRunId) throw new Error("Child Runs cannot delegate another Subagent");
-    let depth = 1; let ancestor = parent;
-    while (ancestor.parentRunId) { depth += 1; if (depth > this.maxDepth) throw new Error(`delegation depth exceeds ${this.maxDepth}`); const next = await this.store.getRun(ancestor.parentRunId); if (!next) throw new Error(`delegation ancestor is missing: ${ancestor.parentRunId}`); ancestor = next; }
-    const parentDelegation = parent.parentRunId ? await this.store.getDelegationByChildRunId(parent.id) : undefined;
-    if (parent.parentRunId && !parentDelegation) throw new Error(`Parent Run delegation record is missing: ${parent.id}`);
-    const budgetCeiling = narrowedBudget(parentDelegation?.budgetCeiling, request.budgetCeiling);
 
     const createdAt = this.now();
     const childRunId = this.createId("run");
@@ -127,7 +103,7 @@ export class ChildRunService {
       childRunId,
       idempotencyKey: request.idempotencyKey,
       task: structuredClone(request.task),
-      ...(budgetCeiling ? { budgetCeiling: structuredClone(budgetCeiling) } : {}),
+      ...(request.budgetCeiling ? { budgetCeiling: structuredClone(request.budgetCeiling) } : {}),
       createdAt,
     };
     await this.store.createChildRunWithStep(delegation, run, firstStep, { principalId: parent.context.actor.id, maxActiveChildren: this.maxActiveChildrenPerPrincipal });

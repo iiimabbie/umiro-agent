@@ -16,7 +16,7 @@ const failed = (error: unknown, effectStatus: "not_applicable" | "unknown" = "no
 
 function inside(root: string, path: string): boolean { const rel = relative(root, path); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`)); }
 function attachmentPath(root: string, requested: string): string {
-  const workspaceRelative = requested === "workspace" ? "" : requested.startsWith(`workspace${sep}`) ? requested.slice(`workspace${sep}`.length) : requested;
+  const workspaceRelative = requested.startsWith(`workspace${sep}`) ? requested.slice(`workspace${sep}`.length) : requested;
   const attachmentRoot = resolve(root, "attachments");
   const path = resolve(root, workspaceRelative);
   if (!inside(attachmentRoot, path)) throw new HostToolInputError("path must be inside workspace attachments");
@@ -123,7 +123,6 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
         if (!path) throw new Error("downloaded file is unavailable");
         return { url: url.href.split("?")[0], path, artifactId: artifact.id, filename: basename(path), mediaType: artifact.mediaType, size: artifact.size, sha256: artifact.sha256 };
       }
-      throw new Error("download redirect loop");
     } }),
     define({ name: "web_fetch", description: "Fetch a public HTTP(S) URL with redirect, private-network and response-size guards. Every response based on public-web research cites its sources on one final line as descriptive Markdown links separated by ` | `, for example: `[Official status page](https://status.example/) | [Incident page](https://status.example/incidents/123)`.", inputSchema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", minLength: 1 }, method: { enum: ["GET", "HEAD"] } } }, policy: { capability: "web.fetch", tier: "sensitive", interactionRequirement: "not_required", sideEffect: "none", timeoutMs: 30_000, resource: input => ({ kind: "url", id: String(input.url), labels: ["public-web"] }) }, async execute(input, context) {
       let url = await safeUrl(String(input.url), config.allowedWebHosts); const limit = config.maxWebBytes ?? 2 * 1024 * 1024;
@@ -146,7 +145,6 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
         const content = mediaType === "text/html" || mediaType === "application/xhtml+xml" ? readableHtml(source) : boundedText(source);
         return { ...metadata, bodyBytes: bytes.byteLength, sourceCharacters: source.length, ...content };
       }
-      throw new Error("web_fetch redirect loop");
     } }),
   ];
   return { contributions: { tools }, async start() { const metadata = await lstat(config.workspacePath); if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error("host-tools workspace must be a regular directory"); root = await realpath(config.workspacePath); } };

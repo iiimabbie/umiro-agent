@@ -6,8 +6,7 @@ import type { ModelContent, ModelFunctionTool, ModelMessage } from "./contract.j
 export const MODEL_IMAGE_PART_TOKEN_COST = 256;
 export const MODEL_FILE_PART_TOKEN_COST = 512;
 
-function normalizedContent(content: ModelContent | null): { readonly value: unknown; readonly mediaTokens: number } {
-  if (content === null) return { value: null, mediaTokens: 0 };
+function normalizedContent(content: ModelContent): { readonly value: unknown; readonly mediaTokens: number } {
   if (typeof content === "string") return { value: content, mediaTokens: 0 };
   let mediaTokens = 0;
   const value = content.map(part => {
@@ -25,7 +24,7 @@ function normalizedContent(content: ModelContent | null): { readonly value: unkn
 /** Estimates a model message while excluding unbounded image/file payloads. */
 export function estimateModelMessageTokens(message: ModelMessage): number {
   if (message.role === "tool") return HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify(message));
-  if (message.role === "assistant" && message.content === null) return HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify(message));
+  if (message.content === null) return HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify(message));
   const normalized = normalizedContent(message.content);
   return HEURISTIC_CONTEXT_TOKEN_ESTIMATOR.estimate(JSON.stringify({ ...message, content: normalized.value })) + normalized.mediaTokens;
 }

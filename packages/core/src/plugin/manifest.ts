@@ -117,12 +117,8 @@ export function validatePluginManifest(manifest: unknown, hostCeiling?: Authorit
     const detail = validateShape.errors?.map(error => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
     throw new TypeError(`invalid plugin manifest: ${detail ?? "unknown schema violation"}`);
   }
-  if (manifest.schemaVersion !== 0) throw new TypeError("unsupported plugin manifest schema version");
   if (!ID.test(manifest.id)) throw new TypeError(`invalid plugin id: ${manifest.id}`);
   if (!VERSION.test(manifest.version)) throw new TypeError(`invalid plugin version: ${manifest.version}`);
-  if (manifest.coreApi !== PLUGIN_API_VERSION) {
-    throw new TypeError(`plugin ${manifest.id} requires unsupported Core API ${manifest.coreApi}`);
-  }
   if (!ENTRY.test(manifest.entry) || manifest.entry.includes("..")) {
     throw new TypeError(`plugin ${manifest.id} entry must be a relative JavaScript path inside the plugin`);
   }

@@ -95,7 +95,7 @@ export class DiscordIdentityResolver implements IdentityResolver {
   private ownerAuthority: Authority;
   private memberAuthority: Authority;
 
-  constructor(private readonly store: IdentityMappingStore, private readonly options: DiscordIdentityResolverOptions) {
+  constructor(private readonly store: IdentityMappingStore, options: DiscordIdentityResolverOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createPrincipalId = options.createPrincipalId ?? (() => crypto.randomUUID());
     this.ownerDiscordId = options.ownerDiscordId;

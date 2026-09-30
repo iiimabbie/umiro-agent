@@ -78,7 +78,6 @@ function renderDocument(document: MemoryDocument): string {
 
 export function createPlugin(setup: PluginSetupContext): PluginInstance {
   const config = setup.config as unknown as MemoryConfig;
-  let root = "";
   let memoryRoot = "";
   let queue = Promise.resolve();
   const limit = config.characterLimit ?? DEFAULT_CHARACTER_LIMIT;
@@ -154,8 +153,7 @@ export function createPlugin(setup: PluginSetupContext): PluginInstance {
     async start() {
       const workspace = await lstat(config.workspacePath);
       if (workspace.isSymbolicLink() || !workspace.isDirectory()) throw new Error(`memory workspace must be a regular directory: ${config.workspacePath}`);
-      root = await realpath(config.workspacePath);
-      memoryRoot = join(root, "memory");
+      memoryRoot = join(await realpath(config.workspacePath), "memory");
       try {
         const stat = await lstat(memoryRoot);
         if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`memory directory must be a regular non-symlink directory: ${memoryRoot}`);

@@ -204,7 +204,7 @@ export class ToolRuntime {
         }
         const persisted = await this.store.getOperationResult(existing.id);
         if (existing.state === "authorized") {
-          return this.resumeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
+          return this.executeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
         }
         if (existing.state === "outcome_unknown" && !invocation.signal?.aborted) {
           return this.executeAuthorizedTool(tool, existing, invocation, input, suppliedIdempotencyKey);
@@ -264,11 +264,7 @@ export class ToolRuntime {
     const persisted = await this.store.getOperationResult(operation.id);
     if (persisted) return projectResult(persisted);
     if (operation.state !== "authorized") return { status: "outcome_unknown", operationId, error: operationError("operation_not_resumable", `operation is ${operation.state}`, false) };
-    return this.resumeAuthorizedTool(tool, operation, invocation, operation.input, operation.idempotencyKey);
-  }
-
-  private async resumeAuthorizedTool(tool: ToolDefinition, operation: Operation, invocation: ToolInvocation, input: JsonObject, idempotencyKey: string | undefined): Promise<ToolInvocationResult> {
-    return this.executeAuthorizedTool(tool, operation, invocation, input, idempotencyKey);
+    return this.executeAuthorizedTool(tool, operation, invocation, operation.input, operation.idempotencyKey);
   }
 
   private async executeAuthorizedTool(

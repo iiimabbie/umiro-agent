@@ -28,9 +28,11 @@ interface ChatCompletionResponse {
 export function normalizeChatContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content.map(part => part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string"
-    ? String((part as Record<string, unknown>).text)
-    : "").join("");
+  return content.map(part => {
+    if (!part || typeof part !== "object") return "";
+    const text = (part as Record<string, unknown>).text;
+    return typeof text === "string" ? text : "";
+  }).join("");
 }
 
 export function normalizeChatFinishReason(value: unknown): ModelFinishReason {

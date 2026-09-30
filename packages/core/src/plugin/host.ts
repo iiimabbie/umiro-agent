@@ -238,17 +238,17 @@ export class PluginHost {
         this.hooks.register(manifest.id, hook);
         registeredHooks.push(hook.id);
       }
-      for (const job of active.instance.contributions.jobs ?? []) { this.jobs.register(manifest.id, job); registeredJobs.push(job.id); }
-      for (const command of active.instance.contributions.commands ?? []) { this.commands.register(manifest.id, command); registeredCommands.push(command.name); }
+      for (const job of active.instance.contributions.jobs ?? []) { this.jobs.register(job); registeredJobs.push(job.id); }
+      for (const command of active.instance.contributions.commands ?? []) { this.commands.register(command); registeredCommands.push(command.name); }
       for (const skill of active.instance.contributions.skills ?? []) {
         if (skill.requiredTools?.some(name => !this.tools.get(name))) throw new TypeError(`skill ${skill.id} requires an unavailable tool`);
         if (skill.requiredModels?.some(name => !this.modelProfiles.has(name))) throw new TypeError(`skill ${skill.id} requires an unavailable model profile`);
-        this.skills.register(manifest.id, skill); registeredSkills.push(skill.id);
+        this.skills.register(skill); registeredSkills.push(skill.id);
       }
       for (const profile of manifest.contributes.subagentProfiles ?? []) {
         if (profile.requiredTools?.some(name => !this.tools.get(name))) throw new TypeError(`subagent profile ${profile.id} requires an unavailable tool`);
         if (profile.model !== undefined && !this.modelProfiles.has(profile.model)) throw new TypeError(`subagent profile ${profile.id} requires an unknown model profile: ${profile.model}`);
-        this.subagentProfiles.register(manifest.id, profile); registeredSubagentProfiles.push(profile.id);
+        this.subagentProfiles.register(profile); registeredSubagentProfiles.push(profile.id);
       }
       for (const view of active.instance.contributions.controlPanelViews ?? []) { this.controlPanelViews.register(manifest.id, view); registeredControlPanelViews.push(view.id); }
       active.state = "enabled";

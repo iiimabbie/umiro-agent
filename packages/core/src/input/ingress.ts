@@ -142,7 +142,6 @@ export class InteractiveIngress {
       maxCharacters: request.maxContextCharacters,
       ...(contextBudget ? { maxTokens: contextBudget.contextMaxTokens } : {}),
       ...(request.signal ? { signal: request.signal } : {}),
-      ...(request.onTextDelta ? { onTextDelta: request.onTextDelta } : {}),
     });
     const result = await this.engine.run({
       runId: primaryRunId,

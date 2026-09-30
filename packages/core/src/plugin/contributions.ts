@@ -2,12 +2,12 @@ import type { JsonObject } from "../ports/json.js";
 import type { PluginCommandDefinition, PluginControlPanelDocument, PluginControlPanelDocumentSummary, PluginControlPanelViewDefinition, PluginJobDefinition, SkillDefinition, SubagentProfileDefinition } from "./contract.js";
 
 class ContributionRegistry<T extends { readonly id?: string; readonly name?: string }> {
-  private readonly items = new Map<string, { pluginId: string; value: T }>();
+  private readonly items = new Map<string, T>();
   constructor(private readonly key: (value: T) => string, private readonly label: string) {}
-  register(pluginId: string, value: T): void { const id = this.key(value); if (this.items.has(id)) throw new Error(`duplicate plugin ${this.label}: ${id}`); this.items.set(id, { pluginId, value }); }
+  register(value: T): void { const id = this.key(value); if (this.items.has(id)) throw new Error(`duplicate plugin ${this.label}: ${id}`); this.items.set(id, value); }
   unregister(id: string): boolean { return this.items.delete(id); }
-  list(): readonly T[] { return [...this.items.values()].map(item => item.value).sort((a, b) => this.key(a).localeCompare(this.key(b))); }
-  get(id: string): T | undefined { return this.items.get(id)?.value; }
+  list(): readonly T[] { return [...this.items.values()].sort((a, b) => this.key(a).localeCompare(this.key(b))); }
+  get(id: string): T | undefined { return this.items.get(id); }
 }
 
 export class PluginJobRegistry extends ContributionRegistry<PluginJobDefinition> {
@@ -17,11 +17,11 @@ export class PluginJobRegistry extends ContributionRegistry<PluginJobDefinition>
 
 export class PluginCommandRegistry extends ContributionRegistry<PluginCommandDefinition> {
   constructor() { super(value => value.name, "command"); }
-  override register(pluginId: string, command: PluginCommandDefinition): void {
+  override register(command: PluginCommandDefinition): void {
     const autocomplete = command.options?.filter(option => option.autocomplete) ?? [];
     if (autocomplete.some(option => option.type !== "string" || option.choices?.length)) throw new TypeError(`plugin command ${command.name} autocomplete requires a string option without static choices`);
     if (autocomplete.length > 0 && !command.autocomplete) throw new TypeError(`plugin command ${command.name} declares autocomplete without a handler`);
-    super.register(pluginId, command);
+    super.register(command);
   }
   async execute(name: string, input: JsonObject, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }): Promise<JsonObject> { const command = this.get(name); if (!command) throw new Error(`plugin command not found: ${name}`); return command.execute(input, context); }
   async complete(name: string, option: string, value: string, context?: { readonly userId: string; readonly channelId?: string; readonly guildId?: string; readonly signal?: AbortSignal }): Promise<readonly { readonly name: string; readonly value: string }[]> {
