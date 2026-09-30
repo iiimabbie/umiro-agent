@@ -5,8 +5,6 @@ import { SQLiteExecutionStore } from "@umiro/storage-sqlite";
 import { DurableScheduler } from "../src/durable-scheduler.js";
 import { ConversationAutoArchiveCoordinator, conversationAutoArchiveCron, parseConversationAutoArchiveConfig, syncConversationAutoArchiveSchedule, CONVERSATION_AUTO_ARCHIVE_JOB_REF } from "../src/conversation-auto-archive.js";
 
-const trigger = (enabled = true): ScheduledTrigger => ({ id: "tool:core.conversation-auto-archive", revision: 0, name: "Conversation auto archive", enabled, schedule: { kind: "cron", expression: "0 0 * * *" }, timezone: "UTC", jobRef: CONVERSATION_AUTO_ARCHIVE_JOB_REF, input: {}, creatorPrincipalId: "system", creatorRoles: ["system"], authority: { capabilities: [], visibility: { kind: "all" }, instructionAuthority: "none" }, misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000, nextFireAt: null, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" });
-
 test("auto archive config and cron are strict", () => {
   assert.equal(conversationAutoArchiveCron("09:05"), "5 9 * * *");
   assert.equal(conversationAutoArchiveCron("23:59"), "59 23 * * *");
