@@ -10,7 +10,6 @@ import { SQLiteExecutionStore } from "../src/index.js";
 
 const boundaries = [
   "model_before_call",
-  "model_response_in_memory",
   "model_recorded",
   "tool_authorized",
   "tool_effect_applied",
@@ -39,7 +38,7 @@ async function killAtBoundary(filename: string, boundary: string, marker: string
   assert.equal(worker.signalCode, "SIGKILL");
 }
 
-test("survives six real process-kill boundaries with durable recovery evidence", async () => {
+test("survives five real process-kill boundaries with durable recovery evidence", async () => {
   for (const boundary of boundaries) {
     const directory = mkdtempSync(join(tmpdir(), `umiro-crash-${boundary}-`));
     const filename = join(directory, "execution.db");

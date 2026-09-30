@@ -80,7 +80,7 @@ async function createExecutingOperation(
   store: SQLiteExecutionStore,
   suffix: string,
   sideEffect: SideEffectClass,
-): Promise<Operation> {
+): Promise<void> {
   const runId = `run-${suffix}`;
   const stepId = `step-${suffix}`;
   const run: Run = {
@@ -137,7 +137,6 @@ async function createExecutingOperation(
   };
   await store.recordOperationAuthorization(operation, decision);
   await store.markOperationExecuting(operation.id, at);
-  return operation;
 }
 
 test("startup recovery classifies interrupted external effects after reopening SQLite", async () => {
