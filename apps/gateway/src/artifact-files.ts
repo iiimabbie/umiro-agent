@@ -9,7 +9,7 @@ export interface ResolvedWorkspaceArtifact { readonly artifact: Artifact; readon
 const MAX_MODEL_INPUT_BYTES = 20 * 1024 * 1024;
 
 export function safeArtifactFilename(value: string | undefined, fallback: string): string {
-  const name = basename(value?.replace(/[\\/\0\x00-\x1f\x7f]/g, "") ?? "").trim().replace(/[. ]+$/g, "");
+  const name = basename(value?.replace(/[\\/\x00-\x1f\x7f]/g, "") ?? "").trim().replace(/[. ]+$/g, "");
   return name.slice(0, 120) || fallback;
 }
 function extensionOf(filename: string): string { return extname(filename).toLowerCase(); }
@@ -47,7 +47,7 @@ async function writeWorkspaceFileExclusive(target: string, bytes: Uint8Array, to
   const base = basename(target); const suffix = extname(base); const stem = suffix ? base.slice(0, -suffix.length) : base;
   for (let index = 1; index < 10_000; index++) {
     const candidate = index === 1 ? target : join(directory, `${stem} (${index})${suffix}`); const temporary = join(directory, `.${token}-${index}.tmp`);
-    try { await writeFile(temporary, bytes, { mode: 0o600, flag: "wx" }); try { await link(temporary, candidate); await rm(temporary, { force: true }); return candidate; } catch (error) { await rm(temporary, { force: true }); if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
+    try { await writeFile(temporary, bytes, { mode: 0o600, flag: "wx" }); await link(temporary, candidate); await rm(temporary, { force: true }); return candidate; }
     catch (error) { await rm(temporary, { force: true }); if ((error as NodeJS.ErrnoException).code === "EEXIST") continue; throw error; }
   }
   throw new Error("unable to allocate a workspace attachment filename");

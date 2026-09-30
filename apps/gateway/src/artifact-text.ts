@@ -1,7 +1,7 @@
 export const MAX_EXTRACTED_CHARACTERS = 200_000;
 
 const officeTypes = new Map<string, string>([
-  ["application/pdf", "pdf"], ["application/rtf", "rtf"], ["text/rtf", "rtf"],
+  ["application/pdf", "pdf"], ["application/rtf", "rtf"],
   ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"],
   ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"],
   ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"],

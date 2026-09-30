@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,7 +21,7 @@ test("imports Discord images and other files into the inbox", async () => {
   const rows = new Map<string, Artifact>();
   const service = new ArtifactFileService(workspace, store(rows));
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "application/octet-stream" } });
+  globalThis.fetch = async input => new Response(new Uint8Array(String(input).endsWith("photo.png") ? [1, 2, 3] : [4, 5, 6]), { headers: { "content-type": "application/octet-stream" } });
   try {
     const image = await service.importDiscord({ url: "https://cdn.discordapp.com/attachments/1/2/photo.png", filename: "photo.png", size: 3 }, "owner", "source-message");
     const document = await service.importDiscord({ url: "https://cdn.discordapp.com/attachments/1/3/data.csv", filename: "data.csv", size: 3 }, "owner", "source-message");
@@ -59,4 +59,16 @@ test("writes repeated identical bytes at each requested workspace target", async
   const workspace = await mkdtemp(join(tmpdir(), "umiro-workspace-single-copy-")); const rows = new Map<string, Artifact>(); const service = new ArtifactFileService(workspace, store(rows));
   try { const first = await service.createFromBytes({ bytes: new Uint8Array([9, 8]), ownerPrincipalId: "owner", filename: "one.bin", workspaceRelativePath: "attachments/one.bin" }); const second = await service.createFromBytes({ bytes: new Uint8Array([9, 8]), ownerPrincipalId: "owner", filename: "two.bin", workspaceRelativePath: "attachments/two.bin" }); assert.notEqual(first.location, second.location); assert.equal(await service.getWorkspaceRelativePath(second.id), "attachments/two.bin"); }
   finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("allocates a new filename on collision and cleans temporary files", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "umiro-workspace-collision-"));
+  const service = new ArtifactFileService(workspace, store(new Map()));
+  try {
+    const first = await service.createFromBytes({ bytes: new TextEncoder().encode("first"), ownerPrincipalId: "owner", filename: "note.txt", mediaType: "text/plain" });
+    const second = await service.createFromBytes({ bytes: new TextEncoder().encode("second"), ownerPrincipalId: "owner", filename: "note.txt", mediaType: "text/plain" });
+    assert.equal(await readFile(first.location, "utf8"), "first");
+    assert.equal(await readFile(second.location, "utf8"), "second");
+    assert.deepEqual((await readdir(join(workspace, "attachments/generated"))).sort(), ["note (2).txt", "note.txt"]);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
 });
