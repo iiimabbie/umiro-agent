@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { HumanReadableLogger, formatLogRecord } from "../src/structured-logger.js";
 
-test("human-readable logger formats valid timestamps in the host timezone", () => {
-  const record = { level: "info" as const, event: "event", message: "message", occurredAt: "2026-09-30T01:31:36.475Z" };
-  assert.equal(formatLogRecord(record), "2026-09-30 09:31:36 | INFO | event — message");
+test("human-readable logger formats valid timestamps in the configured timezone", () => {
+  const record = { level: "info", event: "event", message: "message", occurredAt: "2026-09-30T01:31:36.475Z" };
+  const moduleUrl = new URL("../src/structured-logger.js", import.meta.url).href;
+  const script = `import { formatLogRecord } from ${JSON.stringify(moduleUrl)};\nconst record = ${JSON.stringify(record)};\nprocess.stdout.write(formatLogRecord(record));`;
+
+  const formatInTimezone = (timezone: string) => execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, TZ: timezone },
+    encoding: "utf8",
+  });
+
+  assert.equal(formatInTimezone("UTC"), "2026-09-30 01:31:36 | INFO | event — message");
+  assert.equal(formatInTimezone("Asia/Taipei"), "2026-09-30 09:31:36 | INFO | event — message");
 });
 
 test("human-readable logger emits every field as one escaped line", () => {
