@@ -26,7 +26,6 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(css, /:root\[data-theme="dark"\]\s*\{[\s\S]*color-scheme: dark/);
   assert.match(script, /path: 'model', type: 'model'/);
   assert.match(script, /input\.type = 'radio'/);
-  assert.match(script, /path: 'embedding\.baseUrl', type: 'secret'/);
   assert.match(script, /path: 'embedding\.baseUrl', type: 'secret', inputType: 'url'/);
   assert.match(script, /title: '模型與 Context'[\s\S]*?secretName: 'LLM_BASE_URL'[\s\S]*?secretName: 'LLM_API_KEY'/);
   assert.match(script, /connectModels: true/);
@@ -68,20 +67,22 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(css, /--warning:\s*#faa731/);
   assert.match(css, /--success:\s*#3b9b61/);
   assert.match(css, /--danger:\s*#d86e74/);
-  assert.match(css, /:root\[data-theme="dark"\]/);
   assert.match(css, /:root\[data-theme="dark"\] \{[\s\S]*--bg: #222326/);
-  assert.match(css, /--danger-accent:\s*#fb9091/);
+  const fontSource = css.match(/src:\s*url\(["']([^"']+)["']\)\s*format\(["']woff2["']\)/)?.[1];
+  assert.equal(fontSource, "fonts/SpaceGrotesk-wght.woff2");
+  assert.equal(new URL(fontSource, cssUrl).pathname, new URL("../src/control-panel/fonts/SpaceGrotesk-wght.woff2", import.meta.url).pathname);
+  assert.equal(new URL("/fonts/SpaceGrotesk-wght.woff2", "http://localhost/").pathname, "/fonts/SpaceGrotesk-wght.woff2");
   assert.match(css, /\.schedule-actions #createSchedule \{[^}]*min-height: 42px/);
   assert.match(css, /\.workspace-empty-state/);
   assert.match(html, /<img class="brand-mark" src="favicon\.png"/);
   assert.match(html, /<details class="connection-panel">[\s\S]*id="token"[\s\S]*id="connect"/);
   assert.match(html, /id="currentPageTitle"/);
-  assert.match(html, /data-page="channels">Discord 頻道/);
-  assert.match(html, /data-page="schedules">排程與提醒/);
-  assert.match(html, /data-page="plugins">外掛管理/);
-  assert.match(html, /data-page="workspace">工作區/);
-  assert.match(html, /data-page="runs">執行紀錄/);
-  assert.match(html, /data-page="usage">用量與日誌/);
+  const sidebar = html.slice(html.indexOf('<aside class="sidebar">'), html.indexOf('</aside>'));
+  for (const label of ["Management", "Status", "Discord Channels", "Schedules &amp; Reminders", "Plugins", "Workspace", "Settings", "Plugin Views", "Diagnostics", "Runs", "Usage &amp; Logs", "Mobile Menu", "Connection", "Not connected", "Connect", "Theme", "Light", "System", "Dark"]) assert.ok(sidebar.includes(label), `sidebar should include ${label}`);
+  assert.doesNotMatch(sidebar, /管理|狀態|頻道|排程與提醒|外掛管理|工作區|設定|執行紀錄|用量與日誌|連線設定|未連線|外觀主題|淺色|深色/);
+  assert.match(html, /id="currentPageTitle">狀態/);
+  assert.match(html, /id="connectionBadge" class="badge badge-off">未連線/);
+  assert.match(html, /id="page-config" class="page" data-title="設定"/);
   assert.match(html, /id="page-config" class="page" data-title="設定"/);
   assert.match(html, /<label class="form-field">名稱<input id="scheduleName"/);
   assert.match(html, /<label class="form-field">時區<input id="scheduleTimezone"/);
@@ -109,7 +110,8 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(channelRow, /className = 'channel-select'/);
   assert.match(channelRow, /select\.onclick =/);
   assert.match(channelRow, /title = '停止追蹤 '/);
-  assert.doesNotMatch(channelRow, /未知模型|reasoningEffort|textContent = ' — '/);
+  assert.match(channelRow, /\[x\.model, x\.reasoningEffort, source\]\.filter\(Boolean\)\.join\(' · '\)/);
+  assert.doesNotMatch(channelRow, /未知模型|textContent = ' — '/);
   assert.match(script, /tree\.className = 'conversation-tree'/);
   assert.match(script, /const isThread = item\.kind === 'thread'/);
   assert.match(script, /const channelId = isThread \? \(item\.parentId/);
@@ -155,7 +157,6 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(scheduleReset, /updateScheduleControls\(\)/);
   assert.match(script, /resetScheduleForm\(\);\s*await schedules\(\)/);
   assert.match(script, /await pluginAction\('install',[\s\S]*?\$\('pluginSource'\)\.value = ''; \$\('pluginWorkspace'\)\.value = '';/);
-  assert.match(script, /configSchema/);
   assert.match(script, /requiredSecrets/);
   assert.match(script, /optionalSecrets/);
   assert.match(script, /data-plugin-secret-key/);
@@ -164,7 +165,6 @@ test("control-panel settings use typed controls instead of one raw config textar
   assert.match(pluginUi, /const payload = \{ action, source, workspace, config \};/);
   assert.match(pluginUi, /if \(action === 'remove' && removeSecrets === true\) payload\.removeSecrets = true;/);
   assert.match(pluginUi, /JSON\.stringify\(payload\)/);
-  assert.doesNotMatch(pluginUi, /JSON\.parse\(basePayload\)/);
   assert.match(pluginUi, /await api\('\/api\/secrets', \{ method: 'PUT', body: JSON\.stringify\(secrets\) \}\)/);
   assert.match(pluginUi, /const secrets = Object\.fromEntries\(\[\.\.\.body\.querySelectorAll\('\[data-plugin-secret-key\]'\)[\s\S]*?filter\(\(\[, value\]\) => value\)\)/);
   assert.match(pluginUi, /filter\(\(\[name\]\) => !secretNames\.has\(name\)\)/);
@@ -193,12 +193,75 @@ test("control-panel settings use typed controls instead of one raw config textar
   const pluginViews = script.slice(script.indexOf("function renderMarkdown(target, content)"), script.indexOf("$('connect').onclick"));
   assert.match(pluginViews, /api\('\/api\/plugin-views/);
   assert.match(pluginViews, /markdown-collection/);
+  assert.match(script, /function formatLogTimestamp\(value\)/);
+  assert.match(script, /timestamp\.getHours\(\)/);
+  assert.match(script, /function formatLogFields\(record\)/);
+  assert.match(script, /Object\.keys\(record\.data \|\| \{\}\)\.sort\(\)/);
+  assert.doesNotMatch(script, /\$\('(usage|logs)'\)\.textContent = JSON\.stringify/);
+  assert.match(html, /id="usage" class="usage-content"[\s\S]*id="logs" class="log-list"/);
+  assert.ok(html.indexOf('id="usage"') < html.indexOf('id="logs"'));
+  assert.match(script, /usageCost = value => value == null \? '未提供費率'/);
+  assert.match(script, /data\.reasoningTokens/);
+  assert.match(script, /values\.reasoningTokens/);
+  assert.match(script, /推理（屬於輸出的一部分）/);
+  assert.match(script, /sampledRuns \?\? data\.completedRuns/);
+  assert.match(script, /const styles = \{ debug: 'log-muted', info: 'log-info', warn: 'log-warning', error: 'log-danger' \}/);
+  assert.match(script, /severity\.textContent = String\(record\.level\)\.toUpperCase\(\)/);
+  assert.match(script, /timestamp\.textContent = formatLogTimestamp\(String\(record\.occurredAt\)\)/);
+  assert.match(css, /\.log-info \.log-level \{ color: var\(--info\); \}/);
+  assert.match(css, /\.log-warning \.log-level \{ color: var\(--restart-required\); \}/);
+  assert.match(css, /\.log-danger \.log-level \{ color: var\(--danger\); \}/);
+  assert.match(script, /marker\.className = 'log-marker'/);
+  assert.doesNotMatch(script.slice(script.indexOf('async function logs()'), script.indexOf('function renderRuntime')), /content\.textContent = formatLogRecord\(record\)/);
+  assert.match(css, /\.log-row \{ display: grid; grid-template-columns: 8px minmax\(0, 1fr\)/);
+  assert.match(css, /\.usage-summary \.stat-card:nth-child\(3n\)[^}]*border: 1px solid var\(--border\)/);
+  assert.match(css, /\.usage-summary \{ grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 145px\), 1fr\)\)/);
+  assert.match(script, /refreshUsage'\)\.onclick = \(\) => withBusy/);
+  assert.match(script, /refreshLogs'\)\.onclick = \(\) => withBusy/);
+  assert.match(css, /\.usage-grid \{ display: grid; grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /\.log-row:last-child/);
   assert.match(pluginViews, /page\.dataset\.title = metadata\.title\.trim\(\)/);
   assert.match(pluginViews, /renderMarkdown\(entry\.page\.querySelector/);
   assert.doesNotMatch(pluginViews, /innerHTML|contenteditable/);
-  assert.match(script, /\$\('state'\)\.textContent = '已連線';\s*\$\('state'\)\.classList\.add\('connected'\);\s*showPage\(\);/);
+  assert.match(script, /\$\('state'\)\.textContent = 'Connected';\s*\$\('state'\)\.classList\.add\('connected'\);\s*sessionStorage\.setItem\('umiroToken', token\);\s*showPage\(\);/);
+  assert.match(script, /if \(\$\('state'\)\.classList\.contains\('connected'\)\) \{[\s\S]*?if \(loader\) loader\(\)\.catch\(\(\) => \{\}\);/);
   assert.match(css, /\.plugin-view-layout \{[^}]*grid-template-columns:/);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.plugin-view-layout \{ grid-template-columns: 1fr; \}/);
+});
+
+test("control-panel reconnects from tab session and clears a failed token visibly", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+  const connectSource = script.slice(script.indexOf("async function connect()"), script.indexOf("async function load(name)"));
+  const handlers = script.slice(script.indexOf("function handleConnectError(error"), script.indexOf("$('connect').onclick"));
+  const values = new Map([["umiroToken", "stale-token"]]);
+  const state = { textContent: "", classList: { remove: (name: string) => removedClasses.push(name) } };
+  const token = { value: "stale-token" };
+  const removedClasses: string[] = [];
+  const errors: unknown[] = [];
+  const ctx = {
+    $: (id: string) => id === "token" ? token : state,
+    api: async () => { throw new Error("unauthorized"); },
+    sessionStorage: { setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) },
+    reportError: (error: unknown) => errors.push(error),
+    errorMessage: (error: Error) => error.message,
+    showPage: () => undefined,
+    clearInterval: () => undefined,
+    setInterval: () => 0,
+    Promise,
+  };
+  await assert.rejects(runInNewContext(`${connectSource} connect()`, ctx), /unauthorized/);
+  runInNewContext(`${handlers} handleConnectError(new Error('unauthorized'), true)`, ctx);
+  assert.equal(values.has("umiroToken"), false);
+  assert.equal(token.value, "");
+  assert.equal(state.textContent, "Not connected");
+  assert.match(script, /reportError\(error\);/);
+  assert.deepEqual(removedClasses, ["connected"]);
+  assert.equal(errors.length, 1);
+  assert.match(script, /localStorage\.removeItem\('umiroToken'\)/);
+  assert.match(script, /const savedToken = sessionStorage\.getItem\('umiroToken'\)/);
+  assert.match(script, /if \(savedToken\) withBusy\(\$\('connect'\), connect, 'Connecting…'\)\.catch\(error => handleConnectError\(error, true\)\)/);
+  assert.match(script, /if \(!\$\('state'\)\.classList\.contains\('connected'\)\)/);
+  assert.match(script, /sessionStorage\.setItem\('umiroToken', token\);/);
 });
 
 test("settings save only reads edited config fields and secrets", async () => {
@@ -247,14 +310,77 @@ test("settings save only reads edited config fields and secrets", async () => {
 test("user schedule rows render with a summary and actions", async () => {
   const script = await readFile(scriptUrl, "utf8");
   const source = script.slice(script.indexOf("function scheduleSummary(x, owner)"), script.indexOf("function renderManagedSchedule(x, plugin)"));
-  const createElement = () => {
-    const children: unknown[] = [];
-    return { children, append: (...nodes: unknown[]) => children.push(...nodes), setAttribute: () => undefined };
+  type TestElement = {
+    children: TestElement[];
+    textContent: string;
+    value: string;
+    type: string;
+    onclick?: () => unknown;
+    append: (...nodes: TestElement[]) => void;
+    setAttribute: (name: string, value: string) => void;
+    getAttribute: (name: string) => string | undefined;
   };
-  const row = runInNewContext(`${source}\nrenderUserSchedule(input)`, {
+  const createElement = () => {
+    const attributes = new Map<string, string>();
+    const element: TestElement = {
+      children: [],
+      textContent: '',
+      value: '',
+      type: '',
+      append: (...nodes) => element.children.push(...nodes),
+      setAttribute: (name, value) => attributes.set(name, value),
+      getAttribute: name => attributes.get(name),
+    };
+    return element;
+  };
+  const apiCalls: Array<{ path: string; options: { method: string; body?: string } }> = [];
+  const controlIds = ["scheduleName", "scheduleKind", "scheduleWhen", "scheduleFrequency", "scheduleTimezone", "schedulePrompt", "scheduleChannel", "scheduleChannelId", "createSchedule"] as const;
+  const controls = Object.fromEntries(controlIds.map(id => [id, createElement()])) as Record<(typeof controlIds)[number], TestElement>;
+  let confirmArguments: unknown[] = [];
+  let scheduleRefreshes = 0;
+  const row = runInNewContext(`let editingSchedule;\n${source}\nrenderUserSchedule(input)`, {
     document: { createElement },
     scheduleLabel: () => "每天 09:00",
-    input: { id: "schedule-1", name: "晨間提醒", enabled: true },
-  }) as { children: unknown[] };
-  assert.equal(row.children.length, 4);
+    input: {
+      id: "schedule-1",
+      name: "晨間提醒",
+      enabled: true,
+      schedule: { kind: "cron", expression: "0 9 * * *" },
+      timezone: "Asia/Taipei",
+      prompt: "整理晨間摘要",
+      destination: { channelId: "channel-1" },
+    },
+    $: (id: (typeof controlIds)[number]) => controls[id],
+    channelCatalog: new Map([["channel-1", {}]]),
+    updateScheduleControls: () => undefined,
+    withBusy: async (_button: TestElement, work: () => Promise<unknown>) => work(),
+    api: async (path: string, options: { method: string; body?: string }) => { apiCalls.push({ path, options: structuredClone(options) }); },
+    schedules: async () => { scheduleRefreshes++; },
+    showToast: () => undefined,
+    confirmAction: async (...args: unknown[]) => { confirmArguments = args; return true; },
+    reportError: () => undefined,
+  }) as TestElement;
+  const [summary, toggle, edit, remove] = row.children;
+  assert.ok(summary && toggle && edit && remove);
+  assert.equal(summary.children[0]?.children[0]?.textContent, "啟用");
+  assert.equal(summary.children[0]?.children[1]?.textContent, "晨間提醒");
+  assert.equal(toggle.textContent, "停用");
+  assert.equal(toggle.getAttribute("aria-label"), "停用排程 晨間提醒");
+  assert.equal(edit.textContent, "編輯");
+  assert.equal(remove.textContent, "刪除");
+  await toggle.onclick?.();
+  assert.deepEqual(apiCalls[0], { path: "/api/schedules/schedule-1", options: { method: "PATCH", body: JSON.stringify({ enabled: false }) } });
+  assert.equal(scheduleRefreshes, 1);
+  edit.onclick?.();
+  assert.equal(controls.scheduleName.value, "晨間提醒");
+  assert.equal(controls.scheduleWhen.value, "0 9 * * *");
+  assert.equal(controls.scheduleFrequency.value, "custom");
+  assert.equal(controls.scheduleTimezone.value, "Asia/Taipei");
+  assert.equal(controls.schedulePrompt.value, "整理晨間摘要");
+  assert.equal(controls.scheduleChannel.value, "channel-1");
+  assert.equal(controls.scheduleChannelId.value, "");
+  await remove.onclick?.();
+  assert.deepEqual(confirmArguments, ["刪除排程", "確定刪除「晨間提醒」？這個操作無法復原。", "刪除"]);
+  assert.deepEqual(apiCalls[1], { path: "/api/schedules/schedule-1", options: { method: "DELETE" } });
+  assert.equal(scheduleRefreshes, 2);
 });

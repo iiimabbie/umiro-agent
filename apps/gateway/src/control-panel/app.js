@@ -6,7 +6,6 @@ let pluginCatalog = new Map();
 let channelRefreshTimer;
 let selectedChannelId;
 let loadedConfig;
-let configSchema;
 let configDirty = false;
 const editedConfigPaths = new Set();
 let workspaceDirty = false;
@@ -267,7 +266,6 @@ function configControl(field, value, models) {
 function renderConfigForm(schema, config, models) {
   loadedConfig = structuredClone(config);
   editedConfigPaths.clear();
-  configSchema = schema;
   const nav = $('configNav');
   nav.replaceChildren(...CONFIG_GROUPS.map((group, index) => {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = group.title;
@@ -461,12 +459,81 @@ async function api(path, options = {}) {
   return data;
 }
 
+const usageNumber = value => new Intl.NumberFormat().format(Number.isFinite(value) ? value : 0);
+const usageCost = value => value == null ? '未提供費率' : '$' + new Intl.NumberFormat(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 }).format(value / 1_000_000);
+
+function usageStat(label, value, detail) {
+  const card = document.createElement('div'); card.className = 'stat-card';
+  const title = document.createElement('small'); title.textContent = label;
+  const strong = document.createElement('strong'); strong.textContent = value;
+  const meta = document.createElement('small'); meta.textContent = detail;
+  card.append(title, strong, meta); return card;
+}
+
 async function usage() {
-  $('usage').textContent = JSON.stringify(await api('/api/usage'), null, 2);
+  const data = await api('/api/usage');
+  const target = $('usage');
+  const summary = document.createElement('div'); summary.className = 'stat-grid usage-summary';
+  summary.append(
+    usageStat('樣本 Runs', usageNumber(data.sampledRuns ?? data.completedRuns), '最多統計最新 200 個 Runs'),
+    usageStat('模型呼叫', usageNumber(data.calls), '統計範圍內總呼叫數'),
+    usageStat('輸入 Token', usageNumber(data.inputTokens), '所有模型呼叫'),
+    usageStat('輸出 Token', usageNumber(data.outputTokens), '包含下方推理 Token'),
+    usageStat('推理 Token', usageNumber(data.reasoningTokens), '屬於輸出 Token 的一部分，不另行加總'),
+    usageStat('估計成本', usageCost(data.estimatedCostMicrousd), data.estimatedCostMicrousd == null ? '尚未設定模型費率' : '美元估計值'),
+  );
+  const heading = document.createElement('h4'); heading.className = 'usage-model-heading'; heading.textContent = '逐模型明細';
+  const models = Object.entries(data.byModel || {}).sort(([a], [b]) => a.localeCompare(b));
+  const modelList = document.createElement('div'); modelList.className = 'usage-model-list';
+  if (!models.length) {
+    const empty = document.createElement('p'); empty.className = 'usage-empty'; empty.textContent = '目前沒有模型用量'; modelList.append(empty);
+  } else for (const [model, values] of models) {
+    const row = document.createElement('article'); row.className = 'usage-model-row';
+    const name = document.createElement('strong'); name.className = 'usage-model-name'; name.textContent = model;
+    const detail = document.createElement('small'); detail.textContent = `${usageNumber(values.calls)} 次呼叫 · ${usageNumber(values.inputTokens)} 輸入 · ${usageNumber(values.outputTokens)} 輸出 · ${usageNumber(values.reasoningTokens)} 推理（屬於輸出的一部分） · 成本 ${usageCost(values.estimatedCostMicrousd)}`;
+    row.append(name, detail); modelList.append(row);
+  }
+  target.replaceChildren(summary, heading, modelList);
+}
+
+function formatLogTimestamp(value) {
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime())) return escapeLogControls(value);
+  const pad = part => String(part).padStart(2, '0');
+  return `${timestamp.getFullYear()}-${pad(timestamp.getMonth() + 1)}-${pad(timestamp.getDate())} ${pad(timestamp.getHours())}:${pad(timestamp.getMinutes())}:${pad(timestamp.getSeconds())}`;
+}
+
+function escapeLogControls(text) {
+  return text.replace(/[\x00-\x1f\x7f-\x9f]/g, character => JSON.stringify(character).slice(1, -1)).replaceAll(String.fromCharCode(0x2028), '\\u2028').replaceAll(String.fromCharCode(0x2029), '\\u2029');
+}
+
+function formatLogFields(record) {
+  const contextFields = ['runId', 'stepId', 'operationId', 'pluginId', 'conversationId', 'turnId', 'correlationId'];
+  const value = item => typeof item === 'string' ? JSON.stringify(item) : JSON.stringify(item) ?? String(item);
+  const fields = contextFields.filter(key => record[key] !== undefined).map(key => `${key}=${value(record[key])}`);
+  for (const key of Object.keys(record.data || {}).sort()) fields.push(`${escapeLogControls(key)}=${value(record.data[key])}`);
+  return `${escapeLogControls(record.event)} — ${escapeLogControls(record.message)}${fields.length ? ` | ${fields.join(' ')}` : ''}`;
 }
 
 async function logs() {
-  $('logs').textContent = JSON.stringify(await api('/api/logs?limit=100'), null, 2);
+  const records = await api('/api/logs?limit=100');
+  const target = $('logs');
+  if (!Array.isArray(records) || records.length === 0) {
+    const empty = document.createElement('p'); empty.className = 'log-empty'; empty.textContent = '目前沒有日誌紀錄';
+    target.replaceChildren(empty); return;
+  }
+  const styles = { debug: 'log-muted', info: 'log-info', warn: 'log-warning', error: 'log-danger' };
+  target.replaceChildren(...records.map(record => {
+    const level = String(record.level).toLowerCase();
+    const row = document.createElement('div'); row.className = 'log-row ' + (styles[level] || 'log-neutral');
+    const marker = document.createElement('span'); marker.className = 'log-marker'; marker.setAttribute('aria-hidden', 'true');
+    const content = document.createElement('span'); content.className = 'log-content';
+    const timestamp = document.createElement('span'); timestamp.className = 'log-time'; timestamp.textContent = formatLogTimestamp(String(record.occurredAt));
+    const severity = document.createElement('span'); severity.className = 'log-level'; severity.textContent = String(record.level).toUpperCase();
+    const message = document.createElement('span'); message.className = 'log-message'; message.textContent = formatLogFields(record);
+    content.append(timestamp, document.createTextNode(' | '), severity, document.createTextNode(' | '), message);
+    row.append(marker, content); return row;
+  }));
 }
 
 function renderRuntime(runtime) {
@@ -906,7 +973,7 @@ function updateScheduleControls() {
     const field = control.closest('.form-field');
     if (field) field.hidden = control.hidden;
   }
-  if ($('state').textContent !== '已連線') { $('scheduleAdvancedHint').textContent = once ? '填入時間後可預覽下次執行' : '連線後會顯示下次執行時間'; return; }
+  if (!$('state').classList.contains('connected')) { $('scheduleAdvancedHint').textContent = once ? '填入時間後可預覽下次執行' : '連線後會顯示下次執行時間'; return; }
   clearTimeout(previewTimer);
   previewTimer = setTimeout(async () => {
     try {
@@ -1174,7 +1241,6 @@ function renderPluginRow(x) {
 
 function renderPluginGroup(container, items) {
   if (items.length === 0) {
-    const empty = document.createElement('small');
     container.replaceChildren(emptyState(container.id === 'pluginsExternal' ? '尚無外掛' : '尚無內掛', container.id === 'pluginsExternal' ? '貼上 GitHub HTTPS URL 或本機路徑即可安裝。' : '目前安裝沒有提供內掛。', container.id === 'pluginsExternal' ? '安裝第一個外掛' : undefined, container.id === 'pluginsExternal' ? () => $('pluginSource').focus() : undefined));
     return;
   }
@@ -1222,7 +1288,7 @@ async function runs() {
 }
 
 async function connect() {
-  localStorage.umiroToken = $('token').value;
+  const token = $('token').value;
   const [schema, config, runtime, secrets, names, modelResult] = await Promise.all([
     api('/api/schema'),
     api('/api/config'),
@@ -1247,8 +1313,9 @@ async function connect() {
   await discoverPluginViews();
   clearInterval(channelRefreshTimer);
   channelRefreshTimer = setInterval(() => channels().catch(() => {}), 60000);
-  $('state').textContent = '已連線';
+  $('state').textContent = 'Connected';
   $('state').classList.add('connected');
+  sessionStorage.setItem('umiroToken', token);
   showPage();
 }
 
@@ -1379,9 +1446,16 @@ function rebuildPluginViews(metadata) {
   }
   navSection.hidden = pluginViews.size === 0;
 }
-async function discoverPluginViews() { rebuildPluginViews(await api('/api/plugin-views')); showPage(); }
+async function discoverPluginViews() { rebuildPluginViews(await api('/api/plugin-views')); }
 
-$('connect').onclick = () => withBusy($('connect'), connect, '連線中…').catch(error => { $('state').textContent = errorMessage(error); $('state').classList.remove('connected'); reportError(error); });
+function handleConnectError(error, automatic = false) {
+  sessionStorage.removeItem('umiroToken');
+  if (automatic) $('token').value = '';
+  $('state').textContent = 'Not connected';
+  $('state').classList.remove('connected');
+  reportError(error);
+}
+$('connect').onclick = () => withBusy($('connect'), connect, 'Connecting…').catch(error => handleConnectError(error));
 $('saveConfig').onclick = () => withBusy($('saveConfig'), async () => {
   try {
     const next = readConfigForm();
@@ -1446,7 +1520,9 @@ async function restartGateway() {
 }
 $('restartGateway').onclick = restartGateway;
 $('restartPlugins').onclick = restartGateway;
-$('token').value = localStorage.umiroToken || '';
+localStorage.removeItem('umiroToken');
+const savedToken = sessionStorage.getItem('umiroToken');
+$('token').value = savedToken || '';
 const selectedTheme = ['light', 'dark'].includes(localStorage.umiroTheme) ? localStorage.umiroTheme : 'system';
 document.querySelector(`input[name="theme"][value="${selectedTheme}"]`).checked = true;
 $('themeMode').onchange = event => {
@@ -1513,10 +1589,10 @@ function showPage() {
   for (const page of pages()) page.hidden = page.id !== 'page-' + name;
   for (const link of navLinks()) link.classList.toggle('active', link.dataset.page === name);
   const activePage = document.getElementById('page-' + name);
-  const title = activePage?.dataset.title || activePage?.querySelector('.page-heading h2')?.textContent || '外掛檢視';
+  const title = activePage?.dataset.title || '外掛檢視';
   $('currentPageTitle').textContent = title;
   document.title = 'ümiro 控制台 · ' + title;
-  if ($('state').textContent === '已連線') {
+  if ($('state').classList.contains('connected')) {
     const loader = pageLoaders[name] ?? (name.startsWith('plugin-view-') ? () => loadPluginView(name.slice('plugin-view-'.length)) : undefined);
     if (loader) loader().catch(() => {});
   }
@@ -1533,3 +1609,4 @@ function guardNavigation(event, link) {
 window.addEventListener('hashchange', showPage);
 for (const link of navLinks()) link.addEventListener('click', event => guardNavigation(event, link));
 showPage();
+if (savedToken) withBusy($('connect'), connect, 'Connecting…').catch(error => handleConnectError(error, true));

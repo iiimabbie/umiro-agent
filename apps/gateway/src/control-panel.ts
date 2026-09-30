@@ -15,6 +15,7 @@ const JS = readFileSync(new URL("./control-panel/app.js", import.meta.url), "utf
 const THEME_JS = readFileSync(new URL("./control-panel/theme.js", import.meta.url), "utf8");
 const CSS = readFileSync(new URL("./control-panel/app.css", import.meta.url), "utf8");
 const FAVICON = readFileSync(new URL("./control-panel/favicon.png", import.meta.url));
+const SPACE_GROTESK = readFileSync(new URL("./control-panel/SpaceGrotesk-wght.woff2", import.meta.url));
 
 const BASE_EDITABLE_FILES = ["AGENT.md", "SOUL.md", "OWNER.md", "memory/PREFERENCES.md", "memory/LESSONS.md", "memory/WORKFLOWS.md", "memory/ONGOING.md", "memory/FACTS.md"] as const;
 const KNOWN_EDITABLE_FILES: ReadonlySet<string> = new Set(BASE_EDITABLE_FILES);
@@ -22,9 +23,9 @@ const MAX_BODY = 1024 * 1024;
 
 export interface ControlPanelSchedules {
   list(): Promise<readonly ControlPanelScheduleView[]>;
-  create(input: { readonly name: string; readonly kind: "cron" | "once"; readonly expression?: string; readonly at?: string; readonly timezone: string; readonly prompt: string; readonly channelId?: string }): Promise<unknown>;
+  create(input: SchedulePayload): Promise<unknown>;
   setEnabled(id: string, enabled: boolean): Promise<unknown>;
-  update(id: string, input: { readonly name: string; readonly kind: "cron" | "once"; readonly expression?: string; readonly at?: string; readonly timezone: string; readonly prompt: string; readonly channelId?: string }): Promise<unknown>;
+  update(id: string, input: SchedulePayload): Promise<unknown>;
   remove(id: string): Promise<boolean>;
   preview?(input: { readonly kind: "cron" | "once"; readonly expression?: string; readonly at?: string; readonly timezone: string }): Promise<string | null> | string | null;
 }
@@ -102,6 +103,25 @@ function secureEqual(left: string, right: string): boolean { const a = Buffer.fr
 const SECURITY_HEADERS = { "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'" } as const;
 function json(response: ServerResponse, status: number, value: unknown): void { const body = JSON.stringify(value); response.writeHead(status, { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body) }); response.end(body); }
 function text(response: ServerResponse, status: number, value: string, type = "text/plain; charset=utf-8"): void { response.writeHead(status, { ...SECURITY_HEADERS, "content-type": type, "content-length": Buffer.byteLength(value) }); response.end(value); }
+
+type SchedulePayload = {
+  readonly name: string;
+  readonly kind: "cron" | "once";
+  readonly expression?: string;
+  readonly at?: string;
+  readonly timezone: string;
+  readonly prompt: string;
+  readonly channelId?: string;
+};
+
+function parseSchedulePayload(value: unknown): SchedulePayload {
+  const input = value as Record<string, unknown>;
+  if (typeof input.name !== "string" || !input.name.trim() || (input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone || typeof input.prompt !== "string" || !input.prompt.trim()) throw new TypeError("name, kind, timezone and prompt are required");
+  if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required");
+  if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required");
+  if (input.channelId !== undefined && (typeof input.channelId !== "string" || !/^[0-9]{2,32}$/.test(input.channelId))) throw new TypeError("channelId must be a Discord snowflake");
+  return { name: input.name.trim(), kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone, prompt: input.prompt, ...(typeof input.channelId === "string" ? { channelId: input.channelId } : {}) };
+}
 
 async function body(request: IncomingMessage): Promise<unknown> {
   if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) throw new TypeError("content-type must be application/json");
@@ -212,6 +232,7 @@ export class ControlPanelServer {
       if (request.method === "GET" && url.pathname === "/app.js") return text(response, 200, JS, "text/javascript; charset=utf-8");
       if (request.method === "GET" && url.pathname === "/theme.js") return text(response, 200, THEME_JS, "text/javascript; charset=utf-8");
       if (request.method === "GET" && url.pathname === "/app.css") return text(response, 200, CSS, "text/css; charset=utf-8");
+      if (request.method === "GET" && url.pathname === "/fonts/SpaceGrotesk-wght.woff2") { response.writeHead(200, { ...SECURITY_HEADERS, "cache-control": "public, max-age=31536000, immutable", "content-type": "font/woff2", "content-length": SPACE_GROTESK.byteLength }); response.end(SPACE_GROTESK); return; }
       if (request.method === "GET" && url.pathname === "/favicon.png") { response.writeHead(200, { ...SECURITY_HEADERS, "cache-control": "public, max-age=86400", "content-type": "image/png", "content-length": FAVICON.byteLength }); response.end(FAVICON); return; }
       if (request.method === "GET" && url.pathname === "/healthz") return json(response, 200, { status: "alive" });
       if (request.method === "GET" && url.pathname === "/readyz") {
@@ -329,11 +350,8 @@ export class ControlPanelServer {
       if (request.method === "GET" && url.pathname === "/api/schedules") { if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); return json(response, 200, await this.options.schedules.list()); }
       if (request.method === "POST" && url.pathname === "/api/schedules/preview") { if (!this.options.schedules?.preview) return json(response, 503, { error: "schedule preview unavailable" }); const input = await body(request) as Record<string, unknown>; if ((input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone) throw new TypeError("kind and timezone are required"); if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required"); if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required"); return json(response, 200, { nextFireAt: await this.options.schedules.preview({ kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone }) }); }
       if (request.method === "POST" && url.pathname === "/api/schedules") {
-        if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); const input = await body(request) as Record<string, unknown>;
-        if (typeof input.name !== "string" || !input.name.trim() || (input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone || typeof input.prompt !== "string" || !input.prompt.trim()) throw new TypeError("name, kind, timezone and prompt are required");
-        if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required"); if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required");
-        if (input.channelId !== undefined && (typeof input.channelId !== "string" || !/^[0-9]{2,32}$/.test(input.channelId))) throw new TypeError("channelId must be a Discord snowflake");
-        const created = await this.options.schedules.create({ name: input.name.trim(), kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone, prompt: input.prompt, ...(typeof input.channelId === "string" ? { channelId: input.channelId } : {}) }); this.audit("control.schedule.created", { kind: input.kind }); return json(response, 201, created);
+        if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" }); const input = parseSchedulePayload(await body(request));
+        const created = await this.options.schedules.create(input); this.audit("control.schedule.created", { kind: input.kind }); return json(response, 201, created);
       }
       const scheduleMatch = /^\/api\/schedules\/([^/]+)$/.exec(url.pathname);
       let scheduleId: string | undefined;
@@ -347,25 +365,22 @@ export class ControlPanelServer {
         if (!target) return json(response, 404, { error: "schedule not found" });
         const input = await body(request) as Record<string, unknown>;
         if (typeof input.enabled === "boolean" && Object.keys(input).length === 1) {
-          assertUserManagedSchedule(target, "toggle");
+          assertUserManagedSchedule(target);
           const changed = await this.options.schedules.setEnabled(scheduleId, input.enabled);
           this.audit("control.schedule.toggled", { scheduleId, enabled: input.enabled });
           return json(response, 200, changed);
         }
-        if (typeof input.name !== "string" || !input.name.trim() || (input.kind !== "cron" && input.kind !== "once") || typeof input.timezone !== "string" || !input.timezone || typeof input.prompt !== "string" || !input.prompt.trim()) throw new TypeError("name, kind, timezone and prompt are required");
-        if (input.kind === "cron" && typeof input.expression !== "string") throw new TypeError("cron expression is required");
-        if (input.kind === "once" && typeof input.at !== "string") throw new TypeError("reminder time is required");
-        if (input.channelId !== undefined && (typeof input.channelId !== "string" || !/^[0-9]{2,32}$/.test(input.channelId))) throw new TypeError("channelId must be a Discord snowflake");
-        assertUserManagedSchedule(target, "edit");
-        const changed = await this.options.schedules.update(scheduleId, { name: input.name.trim(), kind: input.kind, ...(input.kind === "cron" ? { expression: input.expression as string } : { at: input.at as string }), timezone: input.timezone, prompt: input.prompt, ...(typeof input.channelId === "string" ? { channelId: input.channelId } : {}) });
-        this.audit("control.schedule.updated", { scheduleId, kind: input.kind });
+        const payload = parseSchedulePayload(input);
+        assertUserManagedSchedule(target);
+        const changed = await this.options.schedules.update(scheduleId, payload);
+        this.audit("control.schedule.updated", { scheduleId, kind: payload.kind });
         return json(response, 200, changed);
       }
       if (scheduleId && request.method === "DELETE") {
         if (!this.options.schedules) return json(response, 503, { error: "scheduler unavailable" });
         const target = (await this.options.schedules.list()).find(item => item.id === scheduleId);
         if (!target) return json(response, 404, { error: "schedule not found" });
-        assertUserManagedSchedule(target, "delete");
+        assertUserManagedSchedule(target);
         const removed = await this.options.schedules.remove(scheduleId);
         this.audit("control.schedule.removed", { scheduleId, removed });
         return json(response, 200, { removed });

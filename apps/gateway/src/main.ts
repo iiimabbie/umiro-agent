@@ -17,7 +17,7 @@ import { reconcilePluginSchedules, DurableScheduler, previewNextFire, type Plugi
 import { ArtifactFileService, safeArtifactFilename } from "./artifact-files.js";
 import { acquireSingletonLock } from "./singleton-lock.js";
 import { SemanticRecallProvider } from "./semantic-recall.js";
-import { JsonLineLogger } from "./structured-logger.js";
+import { HumanReadableLogger } from "./structured-logger.js";
 import { ControlPanelServer, validateControlConfig } from "./control-panel.js";
 import { artifactModelContent, resolveArtifactModelContent } from "./artifact-input.js";
 import { ActiveWorkTracker } from "./active-work.js";
@@ -133,7 +133,7 @@ providers.register(runtimeModelContextProvider);
 providers.register(discordRuntimeContextProvider);
 providers.register(discordOutputPolicyProvider);
 providers.register(createDiscordApplicationEmojiContextProvider(() => discord.applicationEmojis()));
-const logger = new JsonLineLogger();
+const logger = new HumanReadableLogger();
 for (const failure of pluginStartupFailures) logger.write({ level: "error", event: "plugin.startup.failed", message: "Optional plugin failed during startup", occurredAt: new Date().toISOString(), data: { pluginId: failure.id, phase: failure.phase, errorName: failure.error } });
 
 const reportImageRenditionFailure = (artifact: { readonly id: string }, error: unknown): void => {
@@ -435,19 +435,19 @@ let connectDiscordFromSecrets: () => Promise<boolean> = async () => false;
 let discordStartAttempted = false;
 let shutdown: ((exitCode?: number, restart?: boolean) => Promise<void>) | undefined;
 let restartRequested = false;
-const userSchedule = async (id: string, action: "toggle" | "edit" | "delete") => {
+const userSchedule = async (id: string) => {
   const trigger = (await scheduler.list()).find(item => item.id === id);
   if (!trigger) throw new Error(`scheduled trigger not found: ${id}`);
   const view = toControlPanelScheduleView(trigger, pluginJobOwners);
-  assertUserManagedSchedule(view, action);
+  assertUserManagedSchedule(view);
   return trigger;
 };
 const controlPanel = webUiConfig.enabled === false ? undefined : new ControlPanelServer({ host: webUiConfig.host ?? "127.0.0.1", port: webUiConfig.port ?? 3210, token: process.env.UMIRO_WEB_UI_TOKEN?.trim() ?? "", configFile: paths.configFile, workspace: paths.workspace, schedules: {
   list: async () => (await scheduler.list()).map(trigger => toControlPanelScheduleView(trigger, pluginJobOwners)),
   create: input => scheduler.create({ name: input.name, enabled: true, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, jobRef: "agent.prompt", input: { prompt: input.prompt }, creatorPrincipalId: "owner", creatorRoles: ["owner"], authority: ownerAuthority, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
-  setEnabled: async (id, enabled) => scheduler.setEnabled((await userSchedule(id, "toggle")).id, enabled),
-  update: async (id, input) => scheduler.update((await userSchedule(id, "edit")).id, { name: input.name, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, input: { prompt: input.prompt }, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
-  remove: async id => scheduler.remove((await userSchedule(id, "delete")).id),
+  setEnabled: async (id, enabled) => scheduler.setEnabled((await userSchedule(id)).id, enabled),
+  update: async (id, input) => scheduler.update((await userSchedule(id)).id, { name: input.name, schedule: input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, timezone: input.timezone, input: { prompt: input.prompt }, ...(input.channelId ? { destination: { kind: "discord", channelId: input.channelId } } : {}), misfirePolicy: "coalesce", maxAttempts: 3, retryBackoffMs: 15_000 }),
+  remove: async id => scheduler.remove((await userSchedule(id)).id),
   preview: input => previewNextFire(input.kind === "cron" ? { kind: "cron", expression: input.expression! } : { kind: "once", at: input.at! }, input.timezone),
 }, plugins: {
   list: async () => {
@@ -925,7 +925,7 @@ const handleMessage: Parameters<typeof discord.onMessage>[0] = async message => 
   await delivery.drain();
   if (profile.capabilities.includes("vision") && importedArtifacts.some(artifact => artifact.mediaType.toLowerCase().startsWith("image/")) && store.updateArtifactExtractedText) {
     void describeImageArtifacts(modelPort, profile.model, importedArtifacts, undefined, profile.reasoningEffort, imported.modelRenditions, reportImageRenditionFailure, artifact => artifacts.resolveArtifactFile(artifact)).then(async descriptions => {
-      for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description!, new Date().toISOString());
+      for (const item of descriptions) await store.updateArtifactExtractedText!(item.artifactId, item.description, new Date().toISOString());
       if (descriptions.length) await store.rebuildSearchProjection();
     }).catch(error => logger.write({ level: "warn", event: "artifact.image_description.failed", message: "Image description indexing failed; the original attachment remains available", occurredAt: new Date().toISOString(), data: { messageId: message.messageId, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: safeErrorMessage(error, runtimeSecrets()) } }));
   }

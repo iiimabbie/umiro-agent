@@ -18,19 +18,16 @@
   --warning: #faa731;
   --warning-soft: #fff2db;
   --danger: #d86e74;
-  --danger-accent: #fb9091;
   --danger-soft: #fff0f0;
   --info: #687ca4;
   --info-soft: #e9edf5;
   --restart-required: #b87816;
   --overlay: rgba(18, 26, 45, 0.56);
-  --shadow-soft: rgba(18, 26, 45, 0.06);
   --shadow-strong: rgba(18, 26, 45, 0.18);
   --sidebar: #363c4c;
   --sidebar-muted: #c6cbd5;
   --sidebar-hover: #424b60;
   --sidebar-active: #4c5e80;
-  --radius: 8px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
@@ -54,13 +51,11 @@
   --warning: #ffc05a;
   --warning-soft: #4c402e;
   --danger: #fb9091;
-  --danger-accent: #fb9091;
   --danger-soft: #49343a;
   --info: #b1c3e4;
   --info-soft: #364153;
   --restart-required: #ffc05a;
   --overlay: rgba(8, 12, 22, 0.76);
-  --shadow-soft: rgba(0, 0, 0, 0.2);
   --shadow-strong: rgba(0, 0, 0, 0.5);
   --sidebar: #121a2d;
   --sidebar-muted: #aeb8ca;
@@ -75,6 +70,14 @@ html { min-width: 320px; scrollbar-gutter: stable; scrollbar-color: #78849a var(
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 8px; background: #78849a; background-clip: padding-box; }
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("fonts/SpaceGrotesk-wght.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+}
+
 body {
   min-height: 100vh;
   margin: 0;
@@ -82,7 +85,7 @@ body {
   grid-template-columns: 244px minmax(0, 1fr);
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 14px/1.5 "Space Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 .sidebar {
@@ -149,8 +152,8 @@ body {
 .header-kicker { color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .4px; }
 .page { min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .page-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 16px; }
-.page-heading, .section-heading, .workspace-toolbar, .config-page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.page-heading h2, .section-heading h3, .workspace-toolbar h3 { margin: 0; }
+.section-heading, .workspace-toolbar, .config-page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-heading h3, .workspace-toolbar h3 { margin: 0; }
 
 h1, h2, h3, p { margin-top: 0; }
 h2 { margin-bottom: 12px; color: var(--text); font-size: 20px; font-weight: 650; }
@@ -206,10 +209,31 @@ pre:empty { display: none; }
 .empty-state button { margin-top: 7px; }
 .list-panel:empty::before { content: '目前沒有資料'; display: block; padding: 15px 0; color: var(--muted); }
 
-.usage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
-.usage-panel { padding-top: 4px; border-top: 2px solid var(--border-strong); }
+.usage-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+.usage-panel { min-width: 0; padding-top: 4px; border-top: 2px solid var(--border-strong); }
 .usage-panel .section-heading { min-height: 48px; }
-.usage-panel pre { max-height: 68vh; margin-top: 0; }
+.usage-summary { grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); gap: 8px; margin: 0 0 16px; border: 0; }
+.usage-summary .stat-card, .usage-summary .stat-card:nth-child(3n), .usage-summary .stat-card:nth-child(2n), .usage-summary .stat-card:nth-child(n+4) { padding: 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); }
+.usage-model-heading { margin: 0 0 8px; }
+.usage-model-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 8px; }
+.usage-model-row { min-width: 0; display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); }
+.usage-model-name { overflow-wrap: anywhere; }
+.usage-model-row small { overflow-wrap: anywhere; }
+.usage-empty, .log-empty { margin: 0; padding: 12px 0; color: var(--muted); }
+.log-list { max-height: 68vh; overflow: auto; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); }
+.log-row { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 9px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.log-row:last-child { border-bottom: 0; }
+.log-marker { width: 6px; height: 6px; margin-top: 6px; border-radius: 50%; background: var(--muted); }
+.log-content { min-width: 0; overflow-wrap: anywhere; color: var(--text); font: 12px/1.5 var(--mono); }
+.log-level { font-weight: 700; }
+.log-info .log-level { color: var(--info); }
+.log-warning .log-level { color: var(--restart-required); }
+.log-danger .log-level { color: var(--danger); }
+.log-muted .log-marker { background: var(--muted); }
+.log-info .log-marker { background: var(--info); }
+.log-warning .log-marker { background: var(--restart-required); }
+.log-danger .log-marker { background: var(--danger); }
+.log-neutral .log-marker { background: var(--border-strong); }
 .section-heading button { flex: 0 0 auto; }
 
 #page-channels .page-actions { margin-bottom: 8px; }
@@ -350,8 +374,6 @@ pre:empty { display: none; }
 .radio-group, .checkbox-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 38px; }
 .radio-option, .checkbox-option { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 13px; }
 .radio-option input, .checkbox-option input { width: auto; margin: 0; box-shadow: none; }
-.config-error { margin: 7px 0; color: var(--danger); font-size: 12px; }
-
 .plugin-view-layout { display: grid; grid-template-columns: minmax(170px, 240px) minmax(0, 1fr); gap: 20px; }
 .plugin-document-list { display: grid; align-content: start; gap: 3px; border-right: 1px solid var(--border); padding-right: 12px; }
 .plugin-document-item { margin: 0; border-color: transparent; background: transparent; text-align: left; overflow-wrap: anywhere; }

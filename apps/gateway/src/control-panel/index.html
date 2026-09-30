@@ -11,35 +11,35 @@
   <div class="brand-row">
     <img class="brand-mark" src="favicon.png" alt="">
     <div><h1>ümiro</h1><span>CONTROL PANEL</span></div>
-    <button id="mobileMenu" class="mobile-menu" aria-expanded="false" aria-label="開啟導覽">選單</button>
+    <button id="mobileMenu" class="mobile-menu" aria-expanded="false" aria-label="Mobile Menu">Mobile Menu</button>
   </div>
 
-  <nav aria-label="主要導覽">
-    <div class="nav-section-label">管理</div>
-    <a href="#status" data-page="status">狀態</a>
-    <a href="#channels" data-page="channels">Discord 頻道</a>
-    <a href="#schedules" data-page="schedules">排程與提醒</a>
-    <a href="#plugins" data-page="plugins">外掛管理</a>
-    <a href="#workspace" data-page="workspace">工作區</a>
-    <a href="#config" data-page="config">設定</a>
-    <div id="pluginNavSection" class="nav-section-label" hidden>外掛檢視</div>
+  <nav aria-label="Navigation">
+    <div class="nav-section-label">Management</div>
+    <a href="#status" data-page="status">Status</a>
+    <a href="#channels" data-page="channels">Discord Channels</a>
+    <a href="#schedules" data-page="schedules">Schedules &amp; Reminders</a>
+    <a href="#plugins" data-page="plugins">Plugins</a>
+    <a href="#workspace" data-page="workspace">Workspace</a>
+    <a href="#config" data-page="config">Settings</a>
+    <div id="pluginNavSection" class="nav-section-label" hidden>Plugin Views</div>
     <div id="pluginNavLinks"></div>
-    <div class="nav-section-label">診斷</div>
-    <a class="nav-subitem" href="#runs" data-page="runs">執行紀錄</a>
-    <a class="nav-subitem" href="#usage" data-page="usage">用量與日誌</a>
+    <div class="nav-section-label">Diagnostics</div>
+    <a class="nav-subitem" href="#runs" data-page="runs">Runs</a>
+    <a class="nav-subitem" href="#usage" data-page="usage">Usage &amp; Logs</a>
   </nav>
 
   <div class="sidebar-footer">
     <details class="connection-panel">
-      <summary>連線設定 <span id="state" class="connection-state">未連線</span></summary>
+      <summary>Connection <span id="state" class="connection-state">Not connected</span></summary>
       <label for="token">Web UI Token<input id="token" type="password" autocomplete="off"></label>
-      <button id="connect">連線</button>
+      <button id="connect">Connect</button>
     </details>
-    <fieldset id="themeMode" class="theme-control" aria-label="外觀主題">
-      <legend>外觀主題</legend>
-      <label class="theme-option" title="淺色"><input type="radio" name="theme" value="light" aria-label="淺色"><span class="theme-dot theme-dot-light"></span></label>
-      <label class="theme-option" title="跟隨系統"><input type="radio" name="theme" value="system" aria-label="跟隨系統"><span class="theme-dot theme-dot-system"></span></label>
-      <label class="theme-option" title="深色"><input type="radio" name="theme" value="dark" aria-label="深色"><span class="theme-dot theme-dot-dark"></span></label>
+    <fieldset id="themeMode" class="theme-control" aria-label="Theme">
+      <legend>Theme</legend>
+      <label class="theme-option" title="Light"><input type="radio" name="theme" value="light" aria-label="Light"><span class="theme-dot theme-dot-light"></span></label>
+      <label class="theme-option" title="System"><input type="radio" name="theme" value="system" aria-label="System"><span class="theme-dot theme-dot-system"></span></label>
+      <label class="theme-option" title="Dark"><input type="radio" name="theme" value="dark" aria-label="Dark"><span class="theme-dot theme-dot-dark"></span></label>
     </fieldset>
   </div>
 </aside>
@@ -62,8 +62,8 @@
 
   <section id="page-usage" class="page" data-title="用量與日誌">
     <div class="usage-grid">
-      <section class="usage-panel"><div class="section-heading"><h3>用量</h3><button id="refreshUsage">重新整理</button></div><pre id="usage"></pre></section>
-      <section class="usage-panel"><div class="section-heading"><h3>日誌</h3><button id="refreshLogs">重新整理</button></div><pre id="logs"></pre></section>
+      <section class="usage-panel" aria-labelledby="usageHeading"><div class="section-heading"><h3 id="usageHeading">用量</h3><button id="refreshUsage">重新整理</button></div><div id="usage" class="usage-content" aria-live="polite"><p class="usage-empty">載入用量中…</p></div></section>
+      <section class="usage-panel" aria-labelledby="logsHeading"><div class="section-heading"><h3 id="logsHeading">日誌</h3><button id="refreshLogs">重新整理</button></div><div id="logs" class="log-list" aria-live="polite"><p class="log-empty">載入日誌中…</p></div></section>
     </div>
   </section>
 

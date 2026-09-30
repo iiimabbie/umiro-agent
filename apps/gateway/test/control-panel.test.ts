@@ -66,6 +66,15 @@ test("localhost control panel authenticates config and fixed workspace file oper
     assert.doesNotThrow(() => new Script(script));
     assert.match(script, /new URL\('\.',location\.href\)/);
     assert.ok(script.includes("replace(/^\\/+/,''"));
+    const styles = await (await fetch(`${endpoint}/app.css`)).text();
+    assert.match(styles, /@font-face\s*\{[^}]*font-family:\s*"Space Grotesk";[^}]*url\("fonts\/SpaceGrotesk-wght\.woff2"\) format\("woff2"\);[^}]*font-weight:\s*300 700;/s);
+    assert.match(styles, /font:\s*14px\/1\.5 "Space Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif/);
+    const fontResponse = await fetch(`${endpoint}/fonts/SpaceGrotesk-wght.woff2`);
+    assert.equal(fontResponse.status, 200);
+    assert.match(fontResponse.headers.get("content-type") ?? "", /font\/woff2/);
+    assert.match(fontResponse.headers.get("content-security-policy") ?? "", /style-src 'self'/);
+    assert.doesNotMatch(fontResponse.headers.get("content-security-policy") ?? "", /fonts\.googleapis|fonts\.gstatic|font-src/);
+    assert.ok((await fontResponse.arrayBuffer()).byteLength > 40_000);
     const themeScriptResponse = await fetch(`${endpoint}/theme.js`);
     assert.equal(themeScriptResponse.status, 200);
     assert.match(themeScriptResponse.headers.get("content-type") ?? "", /text\/javascript/);
