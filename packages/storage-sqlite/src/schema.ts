@@ -356,11 +356,9 @@ CREATE TABLE conversation_locations (
 
 CREATE UNIQUE INDEX operations_idempotency ON operations(kind, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX operations_step ON operations(step_id);
-CREATE INDEX steps_run_sequence ON steps(run_id, sequence);
 CREATE INDEX audit_events_run_sequence ON audit_events(run_id, sequence);
 CREATE INDEX delivery_pending_retry ON delivery_intents(state, next_attempt_at, created_at);
 CREATE INDEX delivery_run_created ON delivery_intents(run_id, created_at, id);
-CREATE INDEX turns_conversation_sequence ON turns(conversation_id, sequence);
 CREATE INDEX turns_actor_identity_idx ON turns(actor_transport, actor_external_id, created_at);
 CREATE INDEX delegations_parent_created ON delegations(parent_run_id, created_at, id);
 CREATE INDEX scheduled_triggers_due ON scheduled_triggers(enabled, next_fire_at);
@@ -396,5 +394,4 @@ export function initializeSchema(database: Database.Database): void {
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'",
   ).get();
   if (!initialized) database.transaction(() => database.exec(CURRENT_SCHEMA))();
-  else if (!database.prepare("PRAGMA table_info(turns)").all().some((column: any) => column.name === "author_is_bot")) database.exec("ALTER TABLE turns ADD COLUMN author_is_bot INTEGER NOT NULL DEFAULT 0 CHECK (author_is_bot IN (0,1))");
 }
