@@ -6,7 +6,7 @@ const MAX_DESCRIPTION_CHARACTERS = 6_000;
 
 export interface ImageDescriptionResult {
   readonly artifactId: string;
-  readonly description?: string;
+  readonly description: string;
 }
 
 /** Produces bounded, explicitly descriptive text for image artifacts after the user Run. */
