@@ -1,9 +1,8 @@
-import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, ComponentType, GatewayIntentBits, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
+import { ActionRowBuilder, ActivityType, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, ChannelType, Client, ComponentType, GatewayIntentBits, MessageFlags, type ApplicationCommandDataResolvable, type AutocompleteInteraction, type ButtonInteraction, type ChatInputCommandInteraction, type Message } from "discord.js";
 import { normalizeDiscordMentions, toDiscordAttachmentEnvelope, type DiscordMessageEnvelope, type DiscordTextTransport } from "./index.js";
 import type { DiscordPresenceConfig } from "./trigger-policy.js";
 import { ApplicationEmojiCatalog, type ApplicationEmoji } from "./emoji.js";
 import { extractDiscordMessageText } from "./message-text.js";
-import { suppressDiscordLinkEmbeds } from "./outgoing-text.js";
 
 type DiscordCommandDefinition = { name: string; description: string; ownerOnly?: boolean; ephemeral?: boolean; options?: readonly { name: string; description: string; type: "string" | "integer" | "boolean" | "channel"; required?: boolean; autocomplete?: boolean; choices?: readonly { name: string; value: string | number }[] }[] };
 type DiscordCommandManager = { set(commands: readonly ApplicationCommandDataResolvable[]): Promise<unknown> };
@@ -115,7 +114,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
   async stop(): Promise<void> { if (this.emojiRefreshTimer) clearInterval(this.emojiRefreshTimer); this.emojiRefreshTimer = undefined; this.client.destroy(); }
   identity(): { readonly id: string; readonly tag: string } | undefined { return this.client.user ? { id: this.client.user.id, tag: this.client.user.tag } : undefined; }
   applicationEmojis(): readonly ApplicationEmoji[] { return this.emojis.list(); }
-  prepareText(text: string): string { return suppressDiscordLinkEmbeds(this.emojis.resolveText(text)); }
+  prepareText(text: string): string { return this.emojis.resolveText(text); }
 
   async listChannels(channelIds: readonly string[]): Promise<readonly { readonly id: string; readonly name: string; readonly guildId: string; readonly guildName: string; readonly kind: "direct" | "channel" | "forum" | "thread"; readonly parentId?: string; readonly parentName?: string }[]> {
     const supported = new Set<ChannelType>([ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]);
@@ -160,7 +159,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
     if (signal?.aborted) throw signal.reason;
-    const sent = await channel.send({ content: this.prepareText(text) });
+    const sent = await channel.send({ content: this.prepareText(text), flags: MessageFlags.SuppressEmbeds });
     return { messageId: sent.id };
   }
 
@@ -183,7 +182,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error(`Discord channel is not sendable: ${channelId}`);
     if (signal?.aborted) throw signal.reason;
-    const sent = await channel.send({ ...(text.trim() ? { content: this.prepareText(text) } : {}), files: files.map(file => ({ attachment: file.path, ...(file.name ? { name: file.name } : {}) })) });
+    const sent = await channel.send({ ...(text.trim() ? { content: this.prepareText(text) } : {}), files: files.map(file => ({ attachment: file.path, ...(file.name ? { name: file.name } : {}) })), flags: MessageFlags.SuppressEmbeds });
     return { messageId: sent.id };
   }
 
@@ -191,7 +190,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !("messages" in channel)) throw new Error(`Discord channel messages are unavailable: ${channelId}`);
     const message = await channel.messages.fetch(messageId);
-    const edited = await message.edit({ content: this.prepareText(text) });
+    const edited = await message.edit({ content: this.prepareText(text), flags: MessageFlags.SuppressEmbeds });
     return { messageId: edited.id };
   }
 
@@ -213,7 +212,7 @@ export class DiscordJsAdapter implements DiscordTextTransport {
       rows.push(row);
     }
     if (input.signal?.aborted) throw input.signal.reason;
-    const sent = await channel.send({ content: this.prepareText(input.content).slice(0, 2_000), components: rows });
+    const sent = await channel.send({ content: this.prepareText(input.content).slice(0, 2_000), components: rows, flags: MessageFlags.SuppressEmbeds });
     return { messageId: sent.id };
   }
 
